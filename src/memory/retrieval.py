@@ -79,6 +79,7 @@ class MemoryRetriever:
         enable_rerank: bool = False,
         max_memory_tokens: int = 1000,
         decay: Optional["MemoryDecay"] = None,
+        relevance_threshold: float = 0.6,
     ) -> None:
         """初始化记忆检索器。
 
@@ -103,6 +104,8 @@ class MemoryRetriever:
         self.max_memory_tokens = max_memory_tokens
         # Phase 7 Task 1: 三因子衰减排序（可选，None 时回退到静态 importance）
         self.decay = decay
+        # 记忆相关性过滤阈值（低于此值的记忆不会注入上下文）
+        self.relevance_threshold = relevance_threshold
 
     # ------------------------------------------------------------------
     # 检索主流程
@@ -154,6 +157,83 @@ class MemoryRetriever:
             )
             decayed = imp_val
         return (bucket, decayed)
+
+    def _filter_by_relevance(
+        self,
+        memories: List[Dict[str, Any]],
+        user_input: str,
+    ) -> List[Dict[str, Any]]:
+        """按语义相关性过滤记忆，阻断弱相关记忆污染上下文。
+
+        在 ChromaDB 已按向量相似度排序的基础上，再用 content ↔ user_input
+        的余弦相似度做二次校验。低于 ``relevance_threshold`` 的记忆被丢弃。
+        嵌入失败时保守放行；不会过滤到空列表（至少保留最高相关那条）。
+
+        参数:
+            memories: 待过滤的记忆列表。
+            user_input: 用户输入文本。
+
+        返回:
+            过滤后的记忆列表。
+        """
+        if not memories or not user_input or self.relevance_threshold <= 0.0:
+            return memories
+
+        try:
+            user_vec = self.chroma_store._embed(user_input)
+        except Exception as e:
+            logger.debug("相关性过滤：用户输入嵌入失败，跳过过滤: %s", e)
+            return memories
+
+        kept: List[Dict[str, Any]] = []
+        for mem in memories:
+            content = str(mem.get("content", ""))
+            if not content:
+                continue
+            try:
+                mem_vec = self.chroma_store._embed(content)
+            except Exception as e:
+                logger.debug(
+                    "相关性过滤：记忆嵌入失败，保守放行: %s, content=%s",
+                    e, content[:40],
+                )
+                kept.append(mem)
+                continue
+
+            if user_vec is None or mem_vec is None:
+                kept.append(mem)
+                continue
+
+            sim = self._cosine_similarity(user_vec, mem_vec)
+            if sim >= self.relevance_threshold:
+                kept.append(mem)
+            else:
+                logger.debug(
+                    "过滤低相关记忆: sim=%.3f < threshold=%.2f, content=%s",
+                    sim, self.relevance_threshold, content[:60],
+                )
+
+        return kept if kept else memories[:1]
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """计算余弦相似度。
+
+        参数:
+            a: 向量 A。
+            b: 向量 B。
+
+        返回:
+            余弦相似度（0.0 ~ 1.0）。任一向量为零向量时返回 0.0。
+        """
+        if not a or not b:
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(y * y for y in b) ** 0.5
+        if na <= 0 or nb <= 0:
+            return 0.0
+        return dot / (na * nb)
 
     def retrieve(
         self,
@@ -209,6 +289,9 @@ class MemoryRetriever:
                 "过滤掉 %d 条 user_profile 残留向量（由 memory.md 注入）",
                 len(raw_memories) - len(memories),
             )
+
+        # 2.5 相关性过滤：阻断弱相关记忆污染上下文
+        memories = self._filter_by_relevance(memories, user_input)
 
         # 3. 可选 LLM 重排；enable_rerank=False 时直接用向量检索的原始排序
         if self.enable_rerank and self.llm_client is not None and memories:

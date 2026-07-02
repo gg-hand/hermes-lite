@@ -478,6 +478,9 @@ class Orchestrator:
                     llm_client=self.llm_client,
                     top_k=int(memory_config.get("retrieval_top_k", 5)),
                     decay=self.decay,
+                    relevance_threshold=float(
+                        memory_config.get("retrieval_relevance_threshold", 0.6)
+                    ),
                 )
             except Exception as e:
                 logger.warning("MemoryRetriever 初始化失败: %s", e)

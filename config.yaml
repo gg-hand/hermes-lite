@@ -15,6 +15,7 @@ memory:
   consolidation_threshold: 15
   dedup_similarity_threshold: 0.85
   retrieval_top_k: 5
+  retrieval_relevance_threshold: 0.6    # 记忆相关性过滤阈值（低于此值不注入上下文）
   surprise_gate_enabled: true
   surprise_similarity_threshold: 0.85
   surprise_skip_threshold: 0.92
