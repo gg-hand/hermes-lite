@@ -1,0 +1,25 @@
+{
+  "scenario": "scenario_d",
+  "timestamp": "2026-07-01T02:10:58.466160",
+  "latency_ms": {
+    "min": 4872.953,
+    "p50": 5603.999,
+    "p95": 5683.25,
+    "p99": 5683.25,
+    "max": 5683.25,
+    "mean": 5391.063,
+    "stdev": 366.172,
+    "n": 12
+  },
+  "phase_times": {},
+  "system": {
+    "cpu_mean": 552.9671641791044,
+    "cpu_max": 900.0,
+    "mem_peak_mb": 505.08203125,
+    "mem_final_mb": 245.5859375
+  },
+  "gc": {
+    "collected": 3302
+  },
+  "process_rss_mb": 244.96875
+}

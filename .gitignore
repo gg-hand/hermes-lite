@@ -1,0 +1,37 @@
+# 备份配置（含敏感信息）
+config.yaml.bak
+
+# 运行时数据（数据库、日志、审计、向量库、会话历史）
+data/
+
+# 但保留 data/.gitkeep
+!data/.gitkeep
+
+# 启动输出重定向
+server_out.txt
+server_err.txt
+
+# Python 字节码缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv/
+
+# 环境变量文件（含 API Key）
+.env
+
+# 运行时 PID 文件
+.server.pid
+
+# 测试缓存
+.pytest_cache/
+
+# Windows 工件
+$null
+
+# 系统生成
+*.log
+
+# ONNX 模型（可重新下载）
+_onnx_model/

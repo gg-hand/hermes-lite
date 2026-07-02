@@ -1,0 +1,43 @@
+[Unit]
+Description=Hermes Lite AI Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/hermes-lite
+EnvironmentFile=/opt/hermes-lite/.env
+
+# 启动命令（可调整 port 和 host）
+ExecStart=/opt/hermes-lite/.venv/bin/uvicorn src.server:app \
+  --host 0.0.0.0 \
+  --port 7007 \
+  --workers 1 \
+  --loop uvloop \
+  --http httptools \
+  --log-level info
+
+# 自动重启策略
+Restart=always
+RestartSec=10
+
+# 资源限制
+LimitNOFILE=65536
+
+# ONNX/HuggingFace 模型缓存路径（避免 ProtectHome=true 导致写 /home/ubuntu 报错）
+Environment="HF_HOME=/opt/hermes-lite/data/hf-cache"
+Environment="XDG_CACHE_HOME=/opt/hermes-lite/data/cache"
+Environment="SENTENCE_TRANSFORMERS_HOME=/opt/hermes-lite/data/hf-cache"
+Environment="HOME=/opt/hermes-lite/data"
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/hermes-lite/data
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

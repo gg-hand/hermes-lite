@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-07-01T02:11:05.771314",
+  "python": "3.11.5 (tags/v3.11.5:cce6ba9, Aug 24 2023, 14:38:34) [MSC v.1936 64 bit (AMD64)]",
+  "platform": "win32",
+  "results": {
+    "scenario_a": "E:\\Java\\webser\\web_app\\webme\\hermes-lite\\tests\\performance\\results\\scenario_a\\report.json",
+    "scenario_b": "E:\\Java\\webser\\web_app\\webme\\hermes-lite\\tests\\performance\\results\\scenario_b\\report.json",
+    "scenario_c": "E:\\Java\\webser\\web_app\\webme\\hermes-lite\\tests\\performance\\results\\scenario_c\\report.json",
+    "scenario_d": "E:\\Java\\webser\\web_app\\webme\\hermes-lite\\tests\\performance\\results\\scenario_d\\report.json",
+    "scenario_e": "E:\\Java\\webser\\web_app\\webme\\hermes-lite\\tests\\performance\\results\\scenario_e\\report.json"
+  }
+}

@@ -1,0 +1,63 @@
+# Performance Test Configuration for Hermes Lite
+# Uses mock LLM backend with isolated test data directories
+
+llm:
+  main_provider: mock
+  main_model: mock-main
+  main_api_key: mock-key
+  consolidation_provider: mock
+  consolidation_model: mock-consolidation
+  consolidation_api_key: mock-key
+  max_context_tokens: 200000
+  context_threshold: 0.8
+
+memory:
+  chroma_path: data/test_chroma
+  memory_md_path: data/test_memory.md
+  consolidation_threshold: 3  # Lower for faster consolidation in benchmarks
+  dedup_similarity_threshold: 0.85
+  retrieval_top_k: 5
+  surprise_gate_enabled: true
+  surprise_similarity_threshold: 0.85
+  surprise_skip_threshold: 0.92
+  decay_rate: 0.01
+  frequency_weight: 0.5
+  history_max_turns: 50
+  archive_turns_on_evict: true
+  condenser:
+    enabled: true
+    strategy: masking
+    keep_recent_n: 6
+    keep_first: 2
+    llm_summary_threshold: 100000
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+storage:
+  sqlite_path: data/test_sessions.db
+  session_ttl_days: 30
+  cleanup_interval_hours: 24
+
+history:
+  persistence_dir: data/test_history
+
+tools:
+  max_react_loops: 5  # Reduced for faster benchmark iterations
+  defer_loading_threshold: 20
+
+monitoring:
+  enabled: true
+
+skills:
+  hermes: []
+  mcp: []
+
+security:
+  enabled: true
+  approval_timeout_seconds: 300
+  rules: []
+
+tasks: {}
+schedules: []

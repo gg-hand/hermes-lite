@@ -1,0 +1,46 @@
+{
+  "scenario": "scenario_a",
+  "timestamp": "2026-07-01T02:09:12.852834",
+  "latency_ms": {
+    "min": 1964.863,
+    "p50": 2032.619,
+    "p95": 2274.386,
+    "p99": 2274.386,
+    "max": 2274.386,
+    "mean": 2050.345,
+    "stdev": 82.725,
+    "n": 10
+  },
+  "phase_times": {
+    "context_build_ms": {
+      "min": 1674.448,
+      "p50": 1674.448,
+      "p95": 1674.448,
+      "p99": 1674.448,
+      "max": 1674.448,
+      "mean": 1674.448,
+      "stdev": 0,
+      "n": 1
+    },
+    "sqlite_log_2msg_ms": {
+      "min": 1.852,
+      "p50": 1.852,
+      "p95": 1.852,
+      "p99": 1.852,
+      "max": 1.852,
+      "mean": 1.852,
+      "stdev": 0,
+      "n": 1
+    }
+  },
+  "system": {
+    "cpu_mean": 0,
+    "cpu_max": 0,
+    "mem_peak_mb": 0,
+    "mem_final_mb": 0
+  },
+  "gc": {
+    "collected": 2020
+  },
+  "process_rss_mb": 181.38671875
+}

@@ -1,0 +1,76 @@
+llm:
+  main_provider: deepseek
+  main_model: deepseek-v4-flash
+  main_api_key: ${DEEPSEEK_API_KEY}
+  main_base_url: https://api.deepseek.com
+  consolidation_provider: deepseek
+  consolidation_model: deepseek-v4-pro
+  consolidation_api_key: ${DEEPSEEK_API_KEY}
+  consolidation_base_url: https://api.deepseek.com
+  max_context_tokens: 200000
+  context_threshold: 0.8
+memory:
+  chroma_path: data/chroma
+  memory_md_path: data/memory.md
+  consolidation_threshold: 15
+  dedup_similarity_threshold: 0.85
+  retrieval_top_k: 5
+  surprise_gate_enabled: true
+  surprise_similarity_threshold: 0.85
+  surprise_skip_threshold: 0.92
+  decay_rate: 0.01
+  frequency_weight: 0.5
+  history_max_turns: 50
+  archive_turns_on_evict: true
+  condenser:
+    enabled: true
+    strategy: masking
+    keep_recent_n: 6
+    keep_first: 2
+    llm_summary_threshold: 100000
+server:
+  host: 0.0.0.0
+  port: 7007
+  # CORS 允许的来源列表。生产环境请替换为你的前端域名。
+  # 如：["https://myapp.example.com"]
+  cors_origins:
+    - http://localhost:3000
+storage:
+  sqlite_path: data/sessions.db
+  session_ttl_days: 30
+  cleanup_interval_hours: 24
+history:
+  # 对话历史 JSONL 持久化目录（相对 cwd）。非空时 HistoryBuffer 启用磁盘持久化：
+  # add_message 追加写入 {persistence_dir}/{session_id}.jsonl，get_history 内存未命中时
+  # 从磁盘加载，clear_session 同步删除磁盘文件。磁盘保留全量历史，内存仅保留最近 N 条。
+  # 变更此项需重启服务（见 server.py _RESTART_REQUIRED_KEYS）。
+  persistence_dir: data/history
+tools:
+  max_react_loops: 50
+  defer_loading_threshold: 20
+  bash_timeout: 120
+monitoring:
+  enabled: true
+interrupt:
+  # 流输出中断/打断配置
+  enabled: true
+  # 优雅中断模式下断点检测阈值（BreakpointDetector 评分达到此值触发）
+  breakpoint_threshold: 40
+  # 优雅中断超时（秒），超过此时间未检测到断点时强制中断
+  graceful_timeout_seconds: 5.0
+skills:
+  hermes: []
+  mcp: []
+security:
+  enabled: true
+  # API 认证密钥。客户端需在请求头中携带 Authorization: Bearer <api_key>。
+  # 留空时认证中间件不启用（仅开发环境建议）。
+  api_key: ${HERMES_API_KEY}
+  # 工作空间根目录。LLM 在此目录内写文件走现有 smart 策略（新建/修改自动放行），
+  # 跨出此目录写文件必须 HIL 审批。支持相对路径（基于 cwd）和绝对路径。
+  # 使用 . 表示项目根目录，空值则不启用边界检查（与不配置一致）。
+  workspace_root: "."
+  approval_timeout_seconds: 300
+  rules: []
+tasks: {}
+schedules: []
