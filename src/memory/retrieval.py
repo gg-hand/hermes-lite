@@ -110,19 +110,46 @@ class MemoryRetriever:
     # ------------------------------------------------------------------
     # 检索主流程
     # ------------------------------------------------------------------
+    @staticmethod
+    def _get_type_priority(mem: Dict[str, Any]) -> int:
+        """获取记忆类型的优先级分值。
+
+        fact 类（结构化沉淀的事实）优先级最高，conversation_turn（原始对话）最低。
+        同 similarity 桶内，高优先级类型排在前面。
+
+        参数:
+            mem: 记忆条目。
+
+        返回:
+            优先级分值（越高越优先）。
+        """
+        mem_type = str(mem.get("metadata", {}).get("type", "")).lower()
+        priority_map = {
+            "fact": 3,
+            "preference": 2,
+            "decision": 2,
+            "error_lesson": 2,
+            "user_profile": 1,
+            "conversation_turn": 0,
+        }
+        return priority_map.get(mem_type, 0)
+
     def _sort_key(self, mem: Dict[str, Any]) -> tuple:
-        """构造记忆排序键：similarity 分桶 + 桶内 decayed_importance 降序。
+        """构造记忆排序键：similarity 分桶 + 类型优先级 + 桶内 decayed_importance 降序。
 
         Phase 7 Task 1: 当 ``self.decay`` 非 None 时，桶内排序使用
         ``MemoryDecay.decayed_importance``（recency × frequency × importance）
         替代静态 importance；``self.decay`` 为 None 时回退到静态 importance
         逻辑（向后兼容，与模块级 :func:`_sort_key` 一致）。
 
+        Phase 10: 增加 ``type_priority`` 维度，fact 类记忆在同等相似度下优先于
+        conversation_turn 类记忆，确保结构化知识优先被注入上下文。
+
         参数:
             mem: 记忆条目，含 similarity 字段与 metadata 字段。
 
         返回:
-            (bucket, importance_score) 二元组，用作 sorted 的 key。
+            (bucket, type_priority, importance_score) 三元组，用作 sorted 的 key。
             importance_score 为 decayed_importance 或静态 importance。
         """
         sim = mem.get("similarity", 0.0)
@@ -131,6 +158,8 @@ class MemoryRetriever:
         except (TypeError, ValueError):
             sim_val = 0.0
         bucket = round(sim_val / BUCKET_PRECISION)
+
+        type_priority = self._get_type_priority(mem)
 
         metadata = mem.get("metadata", {}) or {}
         imp = metadata.get("importance", 0.5)
@@ -144,7 +173,7 @@ class MemoryRetriever:
         decay = getattr(self, "decay", None)
         if decay is None:
             # 回退到静态 importance
-            return (bucket, imp_val)
+            return (bucket, type_priority, imp_val)
         # 三因子衰减：recency × frequency × importance
         last_accessed = metadata.get("last_accessed")
         access_count = metadata.get("access_count")
@@ -156,7 +185,7 @@ class MemoryRetriever:
                 e,
             )
             decayed = imp_val
-        return (bucket, decayed)
+        return (bucket, type_priority, decayed)
 
     def _filter_by_relevance(
         self,
