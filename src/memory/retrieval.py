@@ -125,9 +125,9 @@ class MemoryRetriever:
         """
         mem_type = str(mem.get("metadata", {}).get("type", "")).lower()
         priority_map = {
-            "fact": 3,
+            "fact": 4,
+            "decision": 3,
             "preference": 2,
-            "decision": 2,
             "error_lesson": 2,
             "user_profile": 1,
             "conversation_turn": 0,
