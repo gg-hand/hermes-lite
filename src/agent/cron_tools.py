@@ -87,7 +87,7 @@ def register_cron_tools(
 ) -> None:
     """注册 4 个 cron 工具到 ``ToolRegistry`` 的 Core Tier（用户会话可用）。
 
-    所有工具通过 ``register_core`` 注册，保证字节级稳定（KV cache 100% 命中）。
+    所有工具通过 ``register_deferred`` 注册为 Deferred Tier（低频调度工具，按需加载，不占缓存 key）。
     工具 handler 通过 closure 捕获 ``cron_scheduler`` 与 ``proposal_store``
     实例。
 
@@ -138,7 +138,7 @@ def _register_list_schedules(
         except Exception as e:
             return f"list_schedules 执行出错: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="cron_list",
         description=(
             "列出当前所有 cron 调度项（精简视图）。返回每个调度项的 id / name "
@@ -238,7 +238,7 @@ def _register_propose_schedule(
         except Exception as e:
             return f"propose_schedule 执行出错: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="cron_propose",
         description=(
             "提议一个新的 cron 调度项，返回 proposal_id 等待用户确认。"
@@ -405,7 +405,7 @@ def _register_create_schedule(
         except Exception as e:
             return f"create_schedule 执行出错: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="cron_create",
         description=(
             "[需确认] 根据已确认的 proposal 创建 cron 调度项。"
@@ -506,7 +506,7 @@ def _register_update_schedule(
         except Exception as e:
             return f"update_schedule 执行出错: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="cron_update",
         description=(
             "[需确认] 更新已有 cron 调度项的字段。支持更新 name / cron / task "

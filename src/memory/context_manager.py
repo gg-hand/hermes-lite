@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 # 加载 chromadb / numpy / anthropic 等重依赖。
 if TYPE_CHECKING:
     from ..agent.tool_registry import ToolRegistry
+    from ..files.context_injector import FileContextInjector
     from ..memory.cron_isolation import CronIsolation
     from ..memory.decay import MemoryDecay
     from ..memory.memory_md import MemoryMdManager
@@ -121,6 +122,7 @@ class ContextManager:
         history_buffer: Optional["HistoryBuffer"] = None,
         condenser: Optional["Condenser"] = None,
         decay: Optional["MemoryDecay"] = None,
+        file_context_injector: Optional["FileContextInjector"] = None,
     ) -> None:
         """初始化上下文管理器。
 
@@ -146,6 +148,8 @@ class ContextManager:
         self.condenser = condenser
         # Phase 7 Task 1: 三因子衰减（保留属性，便于 orchestrator 装配与热更新）
         self.decay = decay
+        # 文件摘要注入器（可选，用于文件 ETL 管道）
+        self.file_context_injector = file_context_injector
         # 透传给 memory_retriever：若已注入 retriever 且未显式设置 decay，则透传
         # （orchestrator 通常会同时传 decay 给 retriever 构造函数，此处为兜底）
         if self.memory_retriever is not None and decay is not None:
@@ -592,9 +596,13 @@ class ContextManager:
         """
         messages: List[Dict[str, Any]] = []
 
-        # 1. 检索记忆注入（每轮可能变）：作为第一条 user 消息
-        injection_text = self._get_memory_injection(user_input)
-        if injection_text:
+        # 1. 文件摘要注入 + 检索记忆注入（每轮可能变）：合并为第一条 user 消息
+        #    文件摘要在前，记忆检索在后，\n\n 分隔；两者均为空时跳过整条消息
+        file_injection = self._get_file_injection(session_id)
+        memory_injection = self._get_memory_injection(user_input)
+        parts = [p for p in [file_injection, memory_injection] if p]
+        if parts:
+            injection_text = "\n\n".join(parts)
             messages.append({"role": "user", "content": injection_text})
 
         # 2. 对话历史（每轮增长）
@@ -624,6 +632,24 @@ class ContextManager:
         messages.append({"role": "user", "content": user_input})
 
         return messages
+
+    def _get_file_injection(self, session_id: str) -> str:
+        """获取文件摘要注入文本。
+
+        参数:
+            session_id: 会话 ID。
+
+        返回:
+            注入文本。无 file_context_injector 或无已完成文件时返回空字符串。
+        """
+        if self.file_context_injector is None:
+            return ""
+        try:
+            text = self.file_context_injector.get_injection_text(session_id)
+            return text or ""
+        except Exception as e:
+            logger.error("文件摘要注入失败，跳过注入: %s", e)
+            return ""
 
     def _get_memory_injection(self, user_input: str) -> str:
         """获取检索记忆注入文本。

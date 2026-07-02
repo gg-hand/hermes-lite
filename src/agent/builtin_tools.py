@@ -4,10 +4,11 @@
 plan 模式的 plan_task / update_todo 工具。每个工具提供：name,
 description, input_schema, handler。
 
-所有内置工具归 Core Tier（通过 register_core 注册），原因：
-1. 高频使用：file_read/file_write/bash_exec 等是 Agent 日常操作的基础；
-2. 字节级稳定：工具列表固定不变，保证 KV cache 100% 命中；
-3. 元工具常驻：list_tools/call_tool 必须始终可用，Agent 才能发现扩展能力。
+高频内置工具归 Core Tier（通过 register_core 注册），低频/高风险工具
+归 Deferred Tier（通过 register_deferred 注册，按需加载），原因：
+1. Core Tier 高频使用：file_read/file_query/bash_exec 等是 Agent 日常操作的基础；
+2. Core Tier 字节级稳定，保证 KV cache 100% 命中；
+3. Deferred Tier 按需加载，不占缓存 key，LLM 需要时通过 list_tools 发现。
 
 工具清单（Core Tier，由 ``register_builtin_tools`` 注册）：
 - file_read: 读取文件内容
@@ -256,6 +257,8 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
 
 if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环依赖
     from .file_registry import FileOperationRegistry
+    from ..files.etl_engine import ETLEngine
+    from ..files.upload_manager import UploadManager
     from ..memory.consolidation import ConsolidationEngine
     from ..storage.chroma_store import ChromaMemoryStore
 
@@ -779,7 +782,7 @@ BUILTIN_TOOLS = [
     ),
     (
         "file_write",
-        "将内容写入指定路径文件（覆盖写入）。写入文件应优先使用此工具，而非通过 bash_exec 执行 echo/重定向——本工具自动创建父目录、编码安全、记录操作到审计。写入文件应优先使用此工具，而非通过 bash_exec 执行 echo/重定向——本工具自动创建父目录、编码安全、记录操作到审计。",
+        "将内容写入指定路径文件（覆盖写入）。自动创建父目录、编码安全、记录操作到审计。✅ 写入代码、配置、文档 ❌ 简单文本拼接（用 echo）",
         {
             "type": "object",
             "properties": {
@@ -852,7 +855,7 @@ BUILTIN_TOOLS = [
     ),
     (
         "file_glob",
-        "按通配符模式查找文件，如 ``**/*.py``、``src/**/*.ts``。查找文件应优先使用此工具，而非通过 bash_exec 执行 find/ls。",
+        "【文件名搜索】按通配符模式查找文件路径。适合知道文件名但不确定路径的场景，如 ``**/*.py``、``src/**/*.ts``。",
         {
             "type": "object",
             "properties": {
@@ -872,7 +875,7 @@ BUILTIN_TOOLS = [
     ),
     (
         "file_grep",
-        "在文件中搜索文本模式，返回匹配行（格式：文件路径:行号:行内容）。搜索文件内容应优先使用此工具，而非通过 bash_exec 执行 grep/rg。",
+        "【文本字符串搜索】在文件中搜索精确关键词，返回 文件路径:行号:行内容。适合搜索代码变量名、函数名、特定字符串等精确匹配场景。",
         {
             "type": "object",
             "properties": {
@@ -954,8 +957,8 @@ def register_builtin_tools(
 ) -> None:
     """将内置工具与元工具注册到 ToolRegistry 实例。
 
-    所有工具通过 ``register_core()`` 注册为 Core Tier，保证始终全量注入
-    （字节级稳定，KV cache 100% 命中）。
+    Core Tier 工具通过 ``register_core()`` 注册（高频，字节级稳定）；
+    Deferred Tier 工具通过 ``register_deferred()`` 注册（低频/高风险，按需加载）。
 
     注册清单：
     - 6 个内置工具（BUILTIN_TOOLS 列表，含基础版 write_file / delete_file）
@@ -1107,7 +1110,7 @@ def _register_write_file_v2(
     registry.register_core(
         name="file_write",
         description=(
-            "将内容写入指定路径文件（覆盖写入）。写入文件应优先使用此工具，而非通过 bash_exec 执行 echo/重定向——本工具自动创建父目录、编码安全、记录操作到审计。会话内新建/修改的文件将记录"
+            "将内容写入指定路径文件（覆盖写入）。自动创建父目录、编码安全、记录操作到审计。会话内新建/修改的文件将记录"
             "到 file_registry，用于 PolicyEngine 决策（会话内创建的文件后续"
             "修改/删除享有豁免）。"
         ),
@@ -1320,7 +1323,7 @@ def register_plan_tools(
         except Exception as e:
             return f"plan_task 执行失败: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="plan_create",
         description="规划一个复杂任务的执行步骤并初始化 todo 清单。当用户提出多步骤任务时主动启用。",
         input_schema={
@@ -1360,7 +1363,7 @@ def register_plan_tools(
         except Exception as e:
             return f"update_todo 执行失败: {e}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="plan_update_step",
         description="更新某个 todo 步骤的状态。仅可标记当前 in_progress 的 step 为 completed 或 failed。",
         input_schema={
@@ -1451,10 +1454,10 @@ def register_memory_tools(
     registry.register_core(
         name="memory_search",
         description=(
-            "检索向量库长期记忆，返回匹配的记忆列表。"
-            "每条记忆含 id / content / similarity / metadata 字段。"
-            "用于在删除/更新前查找目标记忆，或主动回忆相关历史事实。"
-            "不会触发记忆强化（不影响检索排序）。"
+            "【个人记忆】检索对话历史中形成的长期记忆。"
+            "每条记忆含 content / similarity / metadata 字段。"
+            "✅ 回忆之前说过什么、查找用户偏好和背景信息\n"
+            "❌ 搜索上传文档的内容（请用 file_query）"
         ),
         input_schema={
             "type": "object",
@@ -1499,7 +1502,7 @@ def register_memory_tools(
             f"（action=delete, memory_id={memory_id}）"
         )
 
-    registry.register_core(
+    registry.register_deferred(
         name="memory_delete",
         description=(
             "删除向量库中指定 ID 的长期记忆。操作不会立即生效，而是加入"
@@ -1548,7 +1551,7 @@ def register_memory_tools(
             f"（action=update, memory_id={memory_id}）"
         )
 
-    registry.register_core(
+    registry.register_deferred(
         name="memory_update",
         description=(
             "更新向量库中指定 ID 的长期记忆内容。操作不会立即生效，而是加入"
@@ -1588,10 +1591,10 @@ def register_bash_tool(registry, timeout: int = 30) -> None:
         name="bash_exec",
         description=(
             "在终端执行 shell 命令并返回输出。"
-            "仅用于运行程序、编译构建、git 操作等真正需要 shell 的场景。"
-            "文件读取/写入/删除/编辑/查找/搜索请分别用 file_read/file_write/"
-            "file_delete/file_edit/file_glob/file_grep；"
-            "HTTP 请求请用 web_fetch。"
+            "✅ 运行程序、编译构建、git 操作\n"
+            "❌ 读取文件（用 file_read）、编辑文件（用 file_edit）、"
+            "搜索文件名（用 file_glob）、搜索文件内容（用 file_grep/file_query）、"
+            "HTTP 请求（用 web_fetch）"
         ),
         input_schema={
             "type": "object",
@@ -1604,4 +1607,217 @@ def register_bash_tool(registry, timeout: int = 30) -> None:
             "required": ["command"],
         },
         handler=lambda command: execute_command(command, timeout=timeout),
+    )
+
+
+def register_file_tools(
+    registry,
+    etl_engine: "ETLEngine",
+    upload_manager: "UploadManager",
+    get_session_id: Callable[[], Optional[str]] = lambda: None,
+) -> None:
+    """注册文件操作工具到 ToolRegistry 的 Core Tier。
+
+    注册 3 个工具：
+    - file_list_uploads: 列出当前会话已上传文件
+    - file_query: 混合检索（Vector + FTS5 + RRF）
+    - file_read_uploaded: 按 file_id 读取文件全文
+
+    所有工具通过 register_core 注册，保证字节级稳定（KV cache 100% 命中）。
+    均为读取类操作，不走 confirm。
+
+    参数:
+        registry: ToolRegistry 实例。
+        etl_engine: ETLEngine 实例，提供 query_hybrid / get_parsed_text 接口。
+        upload_manager: UploadManager 实例，提供元数据查询与 touch_accessed 接口。
+        get_session_id: 一个 callable，调用时返回当前请求的 session_id 字符串
+            或 None。
+    """
+    import json as _json
+
+    # file_list_uploads 工具
+    def _file_list_uploads() -> str:
+        """列出当前会话已上传文件。"""
+        try:
+            session_id = get_session_id()
+            if session_id is None:
+                return "错误：无法获取 session_id"
+            files = upload_manager.get_session_files(session_id)
+            if not files:
+                return "（当前会话无已上传文件）"
+            output = [
+                {
+                    "file_id": f["file_id"],
+                    "name": f["original_name"],
+                    "size": f["size"],
+                    "type": f["type"],
+                    "status": f["etl_status"],
+                    "chunk_count": f.get("chunk_count", 0),
+                    "summary": f.get("summary", "")[:100] if f.get("summary") else "",
+                }
+                for f in files
+            ]
+            return _json.dumps(output, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return f"file_list_uploads 执行出错: {e}"
+
+    registry.register_core(
+        name="file_list_uploads",
+        description=(
+            "列出当前会话已上传的所有文件（含 file_id / 名称 / 大小 / ETL 处理状态 / 摘要）。"
+            "用于查看有哪些文件可供检索或全文阅读。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        handler=_file_list_uploads,
+    )
+
+    # file_query 工具
+    def _file_query(
+        query: str,
+        file_id: str = "",
+        top_k: int = 5,
+        offset: int = 0,
+    ) -> str:
+        """混合检索文件内容（Vector + FTS5 + RRF 融合）。"""
+        try:
+            fid = file_id if file_id else None
+            results = etl_engine.query_hybrid(
+                query=query,
+                file_id=fid,
+                top_k=top_k,
+                offset=offset,
+            )
+            if not results:
+                return "（无匹配结果）"
+            output = [
+                {
+                    "chunk_id": r.get("chunk_id", ""),
+                    "file_id": r.get("file_id", ""),
+                    "content": r.get("content", ""),
+                    "score": round(r.get("score", 0.0), 4),
+                    "source": r.get("source", ""),
+                }
+                for r in results
+            ]
+            return _json.dumps(output, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return f"file_query 执行出错: {e}"
+
+    registry.register_core(
+        name="file_query",
+        description=(
+            "【文件知识库】搜索上传到知识库的文档内容（语义+关键词混合检索，RRF 融合排序）。"
+            "支持分页。传 file_id 按特定文件过滤；不传则全局搜索。"
+            "✅ 查找文档内容、分析报告、提取文件中的信息\n"
+            "❌ 搜索对话历史或个人记忆（请用 memory_search）"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "查询文本（自然语言关键词）。",
+                },
+                "file_id": {
+                    "type": "string",
+                    "description": "可选，按文件 ID 过滤。不传则搜索所有文件。",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "返回条数，默认 5。",
+                    "default": 5,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "分页偏移量，默认 0。",
+                    "default": 0,
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_file_query,
+    )
+
+    # file_read_uploaded 工具
+    def _file_read_uploaded(
+        file_id: str,
+        max_chars: int = 50000,
+    ) -> str:
+        """按 file_id 读取文件全文。"""
+        try:
+            meta = upload_manager.get_metadata(file_id)
+            if meta is None:
+                return f"错误：文件不存在（file_id={file_id}）"
+
+            status = meta.get("etl_status", "")
+
+            if status == "disk_expired":
+                return (
+                    f"文件已到期，仅支持通过 file_query 搜索其内容"
+                    f"（file_id={file_id}）"
+                )
+
+            if status == "failed":
+                reason = meta.get("error_reason", "未知错误")
+                return f"文件处理失败，无法读取（{reason}）"
+
+            if status in ("pending", "processing"):
+                return "文件正在处理中，请稍后重试"
+
+            # 读取内容
+            file_type = meta.get("type", "")
+            is_image = file_type in (".png", ".jpg", ".jpeg", ".gif")
+
+            if is_image:
+                img_text = meta.get("img_text", "")
+                result = f"⬤ 图片中的文字：\n{img_text}" if img_text else "（图片无文字）"
+            else:
+                text = etl_engine.get_parsed_text(file_id)
+                if text is None:
+                    return f"错误：无法读取文件内容（file_id={file_id}）"
+                result = text
+
+            # 截断
+            if len(result) > max_chars:
+                result = result[:max_chars] + "\n...（内容已截断）"
+
+            # 更新访问时间
+            try:
+                upload_manager.touch_accessed(file_id)
+            except Exception:
+                pass
+
+            return result
+        except Exception as e:
+            return f"file_read_uploaded 执行出错: {e}"
+
+    registry.register_core(
+        name="file_read_uploaded",
+        description=(
+            "【文件全文】按 file_id 读取已上传文件的完整内容。"
+            "文本类返回解析后的纯文本；图片类返回 OCR 提取的文字（标注来源）。"
+            "✅ 全文翻译、逐段分析、总结、对比文件差异\n"
+            "❌ 只需要查找信息片段（请用 file_query）\n"
+            "⚠ 文件已到期时仅返回提示，请改用 file_query 搜索。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "文件 ID（来自 file_list_uploads 或 file_query 返回的 file_id 字段）。",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "最大返回字符数，默认 50000。超出截断并标注。",
+                    "default": 50000,
+                },
+            },
+            "required": ["file_id"],
+        },
+        handler=_file_read_uploaded,
     )

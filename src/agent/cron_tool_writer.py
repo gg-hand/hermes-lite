@@ -196,7 +196,7 @@ def register_write_cron_tool(
         except Exception as exc:
             return f"write_cron_tool 执行出错: {exc}"
 
-    registry.register_core(
+    registry.register_deferred(
         name="cron_tool_create",
         description=(
             "生成一个新的 cron_tool（Layer 2 能力扩展），写入 .pending/ 等待"

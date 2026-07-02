@@ -652,7 +652,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
         """生成 SKILL.md 与 tools.py 模板内容。"""
         return _handle_skill_template({})
 
-    registry.register_core(
+    registry.register_deferred(
         name="skill_template",
         description=(
             "生成 Skill 模板：返回各结构化字段说明（name/description/"
@@ -674,7 +674,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
         """新增一个本地 Skill 到 skills/ 目录并激活。"""
         return _handle_propose_skill(kwargs, registry, skill_loader)
 
-    registry.register_core(
+    registry.register_deferred(
         name="skill_propose",
         description=(
             "新增一个本地 Skill 到 skills/ 目录：传入结构化字段（name/description/version/requires/skill_body），系统自动组装 SKILL.md；可选传入 tools_py，语法检查通过后注册到 Deferred Tier 并激活。"
@@ -732,7 +732,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
         """重新加载指定 Skill。"""
         return _handle_reload_skill(kwargs, registry, skill_loader)
 
-    registry.register_core(
+    registry.register_deferred(
         name="skill_reload",
         description=(
             "重新加载指定 Skill：从 registry 卸载旧工具，清除缓存后重新读取"
@@ -758,7 +758,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
         """启用或禁用指定 Skill。"""
         return _handle_toggle_skill(kwargs, registry, skill_loader)
 
-    registry.register_core(
+    registry.register_deferred(
         name="skill_toggle",
         description=(
             "启用或禁用指定 Skill。禁用时从注册中心移除所有工具并记入禁用清单；"
@@ -789,7 +789,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
         """列出可用技能或查询单技能详情。"""
         return _handle_list_skills(kwargs, registry, skill_loader)
 
-    registry.register_core(
+    registry.register_deferred(
         name="skill_list",
         description=(
             "列出可用技能或查询单技能详情。不含 name 参数时返回概览"

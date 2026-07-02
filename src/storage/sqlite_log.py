@@ -426,6 +426,108 @@ class SessionLogger:
             self.conn.commit()
             return len(ids)
 
+    # ------------------------------------------------------------------
+    # 文件分块 FTS5 全文索引（文件 ETL 管道使用）
+    # ------------------------------------------------------------------
+
+    def _ensure_file_chunks_fts(self) -> None:
+        """确保 file_chunks_fts 虚拟表存在。"""
+        with self._lock:
+            try:
+                self.conn.execute(
+                    "SELECT count(*) FROM file_chunks_fts LIMIT 1"
+                )
+            except sqlite3.OperationalError:
+                self.conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS file_chunks_fts USING fts5(
+                        content, chunk_id, file_id, original_name,
+                        tokenize='unicode61'
+                    )
+                    """
+                )
+                self.conn.commit()
+
+    def insert_file_chunk(
+        self, chunk_id: str, file_id: str, content: str, original_name: str
+    ) -> None:
+        """插入一条文件分块到 FTS5 索引。
+
+        Args:
+            chunk_id: 分块唯一 ID。
+            file_id: 所属文件 ID。
+            content: 分块文本内容。
+            original_name: 原始文件名（用于检索结果显示）。
+        """
+        self._ensure_file_chunks_fts()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO file_chunks_fts "
+                "(chunk_id, file_id, content, original_name) "
+                "VALUES (?, ?, ?, ?)",
+                (chunk_id, file_id, content, original_name),
+            )
+            self.conn.commit()
+
+    def search_file_chunks(
+        self,
+        query: str,
+        file_id: Optional[str] = None,
+        top_k: int = 10,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """全文检索文件分块。
+
+        Args:
+            query: 搜索关键词（FTS5 phrase 查询）。
+            file_id: 可选，按文件 ID 过滤。
+            top_k: 返回条数上限。
+            offset: 分页偏移量。
+
+        Returns:
+            匹配的分块列表，每项含 chunk_id / file_id / content / original_name。
+        """
+        self._ensure_file_chunks_fts()
+        escaped = query.replace('"', '""')
+        match_query = f'"{escaped}"'
+        params: List[Any] = [match_query]
+        sql = (
+            "SELECT chunk_id, file_id, content, original_name "
+            "FROM file_chunks_fts WHERE file_chunks_fts MATCH ?"
+        )
+        if file_id:
+            sql += " AND file_id = ?"
+            params.append(file_id)
+        sql += " ORDER BY rank LIMIT ? OFFSET ?"
+        params.extend([top_k, offset])
+
+        with self._lock:
+            cur = self.conn.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    def delete_file_chunks(self, file_id: str) -> int:
+        """删除指定文件的所有分块（仅供管理端点使用）。
+
+        Args:
+            file_id: 文件 ID。
+
+        Returns:
+            删除的分块数量。
+        """
+        self._ensure_file_chunks_fts()
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM file_chunks_fts WHERE file_id = ?", (file_id,)
+            )
+            self.conn.commit()
+            deleted = cur.rowcount
+            if deleted > 0:
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "已删除 %d 条文件分块 FTS 索引: file_id=%s", deleted, file_id
+                )
+            return deleted
+
     def close(self):
         """关闭数据库连接。"""
         with self._lock:

@@ -1162,6 +1162,54 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .send-btn-stop:disabled {
   background: var(--bg-tertiary);
   color: var(--text-muted);
+
+/* ========== 附件按钮 ========== */
+.attach-btn {
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+  flex-shrink: 0;
+  line-height: 1;
+  margin-top: 2px;
+}
+.attach-btn:hover { background: var(--bg-hover); color: var(--accent); }
+
+.input-area-row {
+  display: flex; gap: 8px; align-items: flex-start;
+}
+
+
+
+
+
+/* ========== 侧边栏文件面板 ========== */
+.file-panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.file-toolbar { padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.file-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
+.file-list::-webkit-scrollbar { width: 6px; }
+.file-list::-webkit-scrollbar-track { background: transparent; }
+.file-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.file-item {
+  padding: 6px 8px; border-radius: var(--radius-sm);
+  margin-bottom: 3px; font-size: 12px;
+  display: flex; align-items: center; gap: 6px;
+  transition: background var(--transition);
+}
+.file-item:hover { background: var(--bg-tertiary); }
+.file-icon { font-size: 14px; flex-shrink: 0; }
+.file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.file-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
+.file-status.done { color: var(--success); background: rgba(158,206,106,0.1); }
+.file-status.failed { color: var(--danger); background: rgba(247,118,142,0.1); }
+.file-status.processing { color: #e0af68; background: rgba(224,175,104,0.1); animation: statusPulse 1s infinite; }
+.file-status.pending { color: var(--text-muted); background: rgba(86,95,137,0.1); }
+.file-status.disk_expired { color: var(--text-muted); }
+.file-size { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.file-empty { padding: 30px 10px; text-align: center; color: var(--text-muted); font-size: 12px; }
   cursor: not-allowed;
 }
 
@@ -1297,6 +1345,17 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border: 1px solid var(--border);
 }
 .btn-secondary:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-danger {
+  padding: 8px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--danger);
+  color: #fff;
+  border: 1px solid var(--danger);
+  cursor: pointer;
+}
+.btn-danger:hover { opacity: 0.85; }
 
 /* ========== Toast 提示 ========== */
 .toast {
@@ -2092,6 +2151,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     <div class="sidebar-tabs">
       <button class="sidebar-tab active" data-tab="sessions">会话</button>
       <button class="sidebar-tab" data-tab="memories">记忆</button>
+      <button class="sidebar-tab" data-tab="files">文件</button>
     </div>
     <!-- 会话列表 -->
     <div class="session-list tab-pane active" id="sessionList">
@@ -2117,6 +2177,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
       </div>
       <div class="memory-list" id="memoryList">
         <div class="empty-state">切换到「记忆」Tab 后<br>点击搜索或选择类型浏览</div>
+      </div>
+    </div>
+    <!-- 文件面板 -->
+    <div class="file-panel tab-pane" id="filePanel">
+      <div class="file-list" id="fileList">
+        <div class="file-empty">无已上传文件</div>
       </div>
     </div>
   </aside>
@@ -2224,13 +2290,18 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
       </div>
     </div>
 
-    <div class="input-area">
-      <div class="status-bar" id="statusBar" style="display:none"></div>
-      <div class="input-wrapper">
-        <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1"></textarea>
-        <button class="send-btn" id="sendBtn">发送</button>
+          <div class="input-area">
+        <div class="status-bar" id="statusBar" style="display:none"></div>
+        <div class="input-area-row">
+          <button class="attach-btn" id="attachBtn" title="上传文件">+</button>
+          <div class="input-wrapper">
+            <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1"></textarea>
+            <button class="send-btn" id="sendBtn">发送</button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" multiple style="display:none"
+               accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif">
       </div>
-    </div>
   </main>
 </div>
 
@@ -2244,9 +2315,12 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
     <div class="modal-body" id="settingsBody">
       <div style="text-align:center; color: var(--text-muted);">加载配置中...</div>
     </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('settingsModal')">取消</button>
-      <button class="btn btn-primary" id="saveConfigBtn">保存配置</button>
+    <div class="modal-footer" style="display:flex;justify-content:space-between">
+      <button class="btn btn-danger" id="restartServerBtn">重启服务</button>
+      <div>
+        <button class="btn btn-secondary" onclick="closeModal('settingsModal')">取消</button>
+        <button class="btn btn-primary" id="saveConfigBtn">保存配置</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3591,9 +3665,12 @@ async function openSettings() {
 function renderSettingsForm(config) {
   const llm = config.llm || {};
   const memory = config.memory || {};
+  const condenser = memory.condenser || {};
   const tools = config.tools || {};
   const storage = config.storage || {};
+  const files = config.files || {};
   const security = config.security || {};
+  const interrupt = config.interrupt || {};
   const securityEnabled = security.enabled === true || security.enabled === 'true';
   const rulesCount = security.rules && Array.isArray(security.rules) ? security.rules.length : 0;
 
@@ -3707,6 +3784,173 @@ function renderSettingsForm(config) {
         <label>审批规则<span class="config-tag restart">需重启</span></label>
         <div class="hint" style="padding:8px 10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);">
           当前规则数：${rulesCount} 条。规则配置需编辑 config.yaml 后重启服务生效，暂不支持页面编辑。
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">文件上传<span class="config-tag restart">需重启</span></div>
+      <div class="form-group">
+        <label>允许图片上传 (OCR)<span class="config-tag restart">需重启</span></label>
+        <select class="form-select" data-cfg="files.ocr_enabled" data-type="boolean">
+          <option value="true" ${files.ocr_enabled===true?'selected':''}>开启</option>
+          <option value="false" ${files.ocr_enabled===false?'selected':''}>关闭</option>
+        </select>
+        <div class="hint">关闭时 .jpg/.png/.gif 等图片文件将被拒绝上传</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>单文件上限 (MB)<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" type="number" data-cfg="files.max_upload_size_mb" value="${files.max_upload_size_mb||50}">
+        </div>
+        <div class="form-group">
+          <label>每会话文件数<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" type="number" data-cfg="files.max_files_per_session" value="${files.max_files_per_session||50}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>分块大小<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" type="number" data-cfg="files.chunk_size" value="${files.chunk_size||512}">
+        </div>
+        <div class="form-group">
+          <label>分块重叠<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" type="number" data-cfg="files.chunk_overlap" value="${files.chunk_overlap||64}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>LLM 摘要兜底<span class="config-tag restart">需重启</span></label>
+          <select class="form-select" data-cfg="files.llm_fallback_enabled" data-type="boolean">
+            <option value="true" ${files.llm_fallback_enabled===true?'selected':''}>开启</option>
+            <option value="false" ${files.llm_fallback_enabled===false?'selected':''}>关闭</option>
+          </select>
+          <div class="hint">ETL 解析失败时使用 LLM 生成摘要</div>
+        </div>
+        <div class="form-group">
+          <label>ETL 队列上限<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" type="number" data-cfg="files.etl_max_queue" value="${files.etl_max_queue||100}">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">LLM 进阶<span class="config-tag restart">需重启</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>主对话 Base URL<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" data-cfg="llm.main_base_url" value="${llm.main_base_url||''}" placeholder="https://api.deepseek.com">
+        </div>
+        <div class="form-group">
+          <label>Consolidation Base URL<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" data-cfg="llm.consolidation_base_url" value="${llm.consolidation_base_url||''}" placeholder="https://api.deepseek.com">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>最大上下文 Tokens</label>
+          <input class="form-input" type="number" data-cfg="llm.max_context_tokens" value="${llm.max_context_tokens||200000}">
+        </div>
+        <div class="form-group">
+          <label>上下文阈值</label>
+          <input class="form-input" type="number" step="0.01" data-cfg="llm.context_threshold" value="${llm.context_threshold||0.8}">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">记忆系统进阶</div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">记忆衰减</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>衰减速率<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" step="0.001" data-cfg="memory.decay_rate" value="${memory.decay_rate||0.01}">
+        </div>
+        <div class="form-group">
+          <label>频率权重<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" step="0.1" data-cfg="memory.frequency_weight" value="${memory.frequency_weight||0.5}">
+        </div>
+      </div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">惊喜记忆</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>惊喜记忆开关<span class="config-tag hot">即时生效</span></label>
+          <select class="form-select" data-cfg="memory.surprise_gate_enabled" data-type="boolean">
+            <option value="true" ${memory.surprise_gate_enabled===true||memory.surprise_gate_enabled===undefined?'selected':''}>开启</option>
+            <option value="false" ${memory.surprise_gate_enabled===false?'selected':''}>关闭</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>相似度阈值<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" step="0.01" data-cfg="memory.surprise_similarity_threshold" value="${memory.surprise_similarity_threshold||0.85}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>跳过阈值<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" step="0.01" data-cfg="memory.surprise_skip_threshold" value="${memory.surprise_skip_threshold||0.92}">
+        </div>
+      </div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">对话压缩 (Condenser)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>启用压缩<span class="config-tag hot">即时生效</span></label>
+          <select class="form-select" data-cfg="memory.condenser.enabled" data-type="boolean">
+            <option value="true" ${condenser.enabled===true?'selected':''}>开启</option>
+            <option value="false" ${condenser.enabled===false?'selected':''}>关闭</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>保留最近 N 轮<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" data-cfg="memory.condenser.keep_recent_n" value="${condenser.keep_recent_n||6}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>保留开头轮数<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" data-cfg="memory.condenser.keep_first" value="${condenser.keep_first||2}">
+        </div>
+        <div class="form-group">
+          <label>LLM 摘要阈值<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" data-cfg="memory.condenser.llm_summary_threshold" value="${condenser.llm_summary_threshold||100000}">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">工具进阶</div>
+      <div class="form-group">
+        <label>Bash 超时(秒)<span class="config-tag hot">即时生效</span></label>
+        <input class="form-input" type="number" data-cfg="tools.bash_timeout" value="${tools.bash_timeout||120}">
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">流中断<span class="config-tag hot">即时生效</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>断点检测阈值</label>
+          <input class="form-input" type="number" data-cfg="interrupt.breakpoint_threshold" value="${interrupt.breakpoint_threshold||40}">
+          <div class="hint">优雅中断模式下，评分达到此值触发断点</div>
+        </div>
+        <div class="form-group">
+          <label>优雅中断超时(秒)</label>
+          <input class="form-input" type="number" step="0.1" data-cfg="interrupt.graceful_timeout_seconds" value="${interrupt.graceful_timeout_seconds||5.0}">
+          <div class="hint">超过此时间未检测到断点时强制中断</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">存储进阶<span class="config-tag restart">需重启</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>会话保留天数</label>
+          <input class="form-input" type="number" data-cfg="storage.session_ttl_days" value="${storage.session_ttl_days||30}">
+        </div>
+        <div class="form-group">
+          <label>清理间隔(小时)</label>
+          <input class="form-input" type="number" data-cfg="storage.cleanup_interval_hours" value="${storage.cleanup_interval_hours||24}">
         </div>
       </div>
     </div>
@@ -4916,6 +5160,16 @@ document.getElementById('menuToggle').addEventListener('click', () => {
 document.getElementById('btnNewSession').addEventListener('click', newSession);
 document.getElementById('btnSettings').addEventListener('click', openSettings);
 document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+document.getElementById('restartServerBtn').addEventListener('click', async () => {
+  if (!confirm('确认重启服务？未保存的配置将丢失。')) return;
+  try {
+    await api('/restart', { method: 'POST' });
+    showToast('服务正在重启...', '');
+    setTimeout(() => window.location.reload(), 3000);
+  } catch (e) {
+    showToast('重启失败: ' + e.message, 'error');
+  }
+});
 
 // ========== 调度管理绑定 ==========
 document.getElementById('createScheduleBtn').addEventListener('click', createScheduleUI);
@@ -4992,6 +5246,75 @@ checkHealth();
   }
 })();
 setInterval(checkHealth, 30000); // 30秒检查一次
+
+// ========== 文件上传管理 ==========
+const attachBtn = document.getElementById('attachBtn');
+const fileList = document.getElementById('fileList');
+const fileInput = document.getElementById('fileInput');
+let filePollTimer = null;
+
+async function uploadFile(file) {
+  if (!currentSessionId) { showToast('请先新建或选择一个会话', 'error'); return; }
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('session_id', currentSessionId);
+  try {
+    const res = await fetch('/files/upload?' + new URLSearchParams({ session_id: currentSessionId }), { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.message || 'HTTP ' + res.status);
+    showToast(data.is_dup ? '文件已在知识库中' : '上传成功: ' + file.name, data.is_dup ? '' : 'success');
+    loadFiles();
+  } catch (e) {
+    showToast('上传失败: ' + e.message, 'error');
+  }
+}
+
+async function loadFiles() {
+  try {
+    const sid = currentSessionId || '__none__';
+    const res = await fetch('/sessions/' + sid + '/files');
+    if (!res.ok) { fileList.innerHTML = '<div class="file-empty">获取文件列表失败</div>'; return; }
+    const data = await res.json();
+    const files = data.files || [];
+    if (!files.length) { fileList.innerHTML = '<div class="file-empty">无已上传文件</div>'; stopFilePolling(); return; }
+    let html = ''; let hasPending = false;
+    for (const f of files) {
+      const status = f.etl_status || 'pending';
+      const statusLabel = ({done:'完成',failed:'失败',processing:'处理中',pending:'等待中',disk_expired:'已过期'})[status]||status;
+      const icon = {'.pdf':'PDF','.docx':'DOC','.txt':'TXT','.md':'MD','.png':'IMG','.jpg':'IMG','.jpeg':'IMG','.gif':'IMG'}[f.type]||'FILE';
+      const sizeLabel = f.size > 1048576 ? (f.size/1048576).toFixed(1)+'MB' : (f.size/1024).toFixed(1)+'KB';
+      html += '<div class="file-item"><span class="file-icon">' + icon + '</span><span class="file-name" title="' + escapeHtml(f.original_name) + '">' + escapeHtml(f.original_name) + '</span><span class="file-size">' + sizeLabel + '</span><span class="file-status ' + status + '">' + statusLabel + '</span></div>';
+      if (status === 'pending' || status === 'processing') hasPending = true;
+    }
+    fileList.innerHTML = html;
+    if (hasPending) startFilePolling(); else stopFilePolling();
+  } catch (e) { if (currentSessionId) fileList.innerHTML = '<div class="file-empty">加载失败</div>'; }
+}
+function startFilePolling() { if (!filePollTimer) filePollTimer = setInterval(loadFiles, 5000); }
+function stopFilePolling() { if (filePollTimer) { clearInterval(filePollTimer); filePollTimer = null; } }
+
+// + 按钮：直接打开文件选择器
+attachBtn.addEventListener('click', () => {
+  if (!currentSessionId) { showToast('请先新建或选择一个会话', 'error'); return; }
+  fileInput.click();
+});
+fileInput.addEventListener('change', (e) => {
+  for (const f of e.target.files) uploadFile(f);
+  e.target.value = '';
+});
+
+// 会话切换 / 新建时同步文件列表
+const _origSelectSession = selectSession;
+selectSession = async function(sessionId) {
+  await _origSelectSession(sessionId);
+  setTimeout(loadFiles, 200);
+};
+const _origNewSession = newSession;
+newSession = function() {
+  _origNewSession();
+  setTimeout(loadFiles, 500);
+};
+
 messageInput.focus();
 </script>
 </body>

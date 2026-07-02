@@ -165,6 +165,31 @@ except ImportError:
         SKILL_TOOLS_AVAILABLE = False
 
 
+# 文件上传与 ETL 模块（可选，加载失败时降级）
+try:
+    from .files.upload_manager import UploadManager
+    from .files.parser import WaterfallParser
+    from .files.chunker import DocumentChunker
+    from .files.etl_engine import ETLEngine
+    from .files.context_injector import FileContextInjector
+    FILE_MODULE_AVAILABLE = True
+except ImportError:
+    try:
+        from files.upload_manager import UploadManager  # type: ignore
+        from files.parser import WaterfallParser  # type: ignore
+        from files.chunker import DocumentChunker  # type: ignore
+        from files.etl_engine import ETLEngine  # type: ignore
+        from files.context_injector import FileContextInjector  # type: ignore
+        FILE_MODULE_AVAILABLE = True
+    except ImportError:
+        UploadManager = None  # type: ignore
+        WaterfallParser = None  # type: ignore
+        DocumentChunker = None  # type: ignore
+        ETLEngine = None  # type: ignore
+        FileContextInjector = None  # type: ignore
+        FILE_MODULE_AVAILABLE = False
+
+
 # ---------- 常量 ----------
 
 VERSION = "0.1.0"
@@ -306,6 +331,10 @@ cron_tool_registry: Optional["CronToolRegistry"] = None
 health_checker: Optional[HealthChecker] = None
 # 流中断管理器
 stream_manager: Optional[StreamManager] = None
+# 文件上传与 ETL 管道组件（lifespan 中初始化）
+upload_manager: Optional[Any] = None
+etl_engine: Optional[Any] = None
+file_context_injector: Optional[Any] = None
 
 
 # ---------- Pydantic 请求/响应模型 ----------
@@ -481,6 +510,43 @@ class ScheduleResponse(BaseModel):
     message: str
 
 
+# 文件上传响应模型
+class FileUploadResponse(BaseModel):
+    """文件上传响应体。"""
+
+    file_id: str
+    is_dup: bool = False
+    message: str = ""
+
+
+class FileItem(BaseModel):
+    """文件条目。"""
+
+    file_id: str
+    original_name: str
+    size: int
+    type: str
+    etl_status: str
+    summary: str = ""
+    chunk_count: int = 0
+    uploaded_at: str
+    last_accessed: str
+
+
+class FileListResponse(BaseModel):
+    """文件列表响应体。"""
+
+    files: List[FileItem]
+
+
+class FileDeleteResponse(BaseModel):
+    """文件删除响应体。"""
+
+    status: str
+    file_id: str
+    details: dict = {}
+
+
 # ---------- 生命周期管理 ----------
 
 
@@ -546,6 +612,64 @@ async def cleanup_loop():
         await asyncio.sleep(interval_hours * 3600)
 
 
+async def file_cleanup_loop() -> None:
+    """定时清理过期文件磁盘的后台任务。
+
+    从配置文件读取 ``storage.session_ttl_days`` 与
+    ``files.cleanup_interval_hours``，周期性删除超过 TTL 的文件磁盘内容。
+    仅删除磁盘文件（原始 + 解析缓存），不动 ChromaDB / FTS5 / SQLite 元数据。
+    """
+    try:
+        config = load_config(CONFIG_PATH)
+    except Exception as e:
+        logger.warning("file_cleanup_loop 读取配置失败，跳过清理: %s", e)
+        return
+
+    storage_cfg = config.get("storage", {})
+    files_cfg = config.get("files", {})
+    ttl_days = storage_cfg.get("session_ttl_days")
+    interval_hours = files_cfg.get("cleanup_interval_hours", 24)
+    if not ttl_days:
+        return
+
+    while True:
+        try:
+            if upload_manager is not None:
+                expired_ids = upload_manager.get_expired(ttl_days)
+                for file_id in expired_ids:
+                    try:
+                        meta = upload_manager.get_metadata(file_id)
+                        if meta is None:
+                            continue
+                        # 跳过 processing 状态（防御性二次检查）
+                        if meta.get("etl_status") == "processing":
+                            continue
+                        # 删除磁盘原始文件
+                        saved_path = meta.get("saved_path")
+                        if saved_path:
+                            try:
+                                os.remove(saved_path)
+                                logger.info("清理过期磁盘文件: %s", saved_path)
+                            except OSError as e:
+                                logger.warning("清理磁盘文件失败: %s -> %s", saved_path, e)
+                        # 删除解析缓存
+                        cache_dir = files_cfg.get("upload_dir", "data/uploads")
+                        cache_path = os.path.join(cache_dir, f"{file_id}.parsed")
+                        try:
+                            os.remove(cache_path)
+                        except OSError:
+                            pass  # 缓存可能不存在
+                        # 标记为 disk_expired
+                        upload_manager.mark_disk_expired(file_id)
+                    except Exception as e:
+                        logger.warning("清理文件 %s 失败: %s", file_id, e)
+                if expired_ids:
+                    logger.info("文件清理完成: 清理了 %d 个过期文件", len(expired_ids))
+        except Exception as e:
+            logger.error("定时清理文件失败: %s", e)
+        await asyncio.sleep(interval_hours * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI 生命周期：启动时初始化资源，关闭时释放。
@@ -559,6 +683,7 @@ async def lifespan(app: FastAPI):
     global proposal_store
     global cron_tool_registry
     global skill_tools_registered
+    global upload_manager, etl_engine, file_context_injector
 
     # Phase 6: cron_task 在 startup 段赋值，shutdown 段引用；
     # 预初始化为 None 避免 CronScheduler 启动失败时 shutdown 抛 NameError
@@ -711,6 +836,99 @@ async def lifespan(app: FastAPI):
                 logger.info("Skill 处于禁用状态: %s（启动时跳过注册）", skill_name)
         except Exception as e:
             logger.warning("恢复 Skill 状态失败: %s", e)
+
+    # 文件上传与 ETL 管道初始化
+    if FILE_MODULE_AVAILABLE and orchestrator is not None:
+        try:
+            files_cfg = config.get("files", {}) or {}
+            upload_dir = files_cfg.get("upload_dir", "data/uploads")
+            max_upload_size_mb = float(files_cfg.get("max_upload_size_mb", 50))
+            max_files_per_session = int(files_cfg.get("max_files_per_session", 50))
+            allowed_extensions = files_cfg.get("allowed_extensions", None)
+            ocr_enabled = bool(files_cfg.get("ocr_enabled", False))
+            chunk_size = int(files_cfg.get("chunk_size", 512))
+            chunk_overlap = int(files_cfg.get("chunk_overlap", 64))
+
+            # UploadManager
+            sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
+            upload_manager = UploadManager(
+                db_path=sqlite_path,
+                upload_dir=upload_dir,
+                max_upload_size_mb=max_upload_size_mb,
+                max_files_per_session=max_files_per_session,
+                allowed_extensions=allowed_extensions,
+                ocr_enabled=ocr_enabled,
+            )
+            logger.info("UploadManager 已初始化: %s (max=%dMB)", upload_dir, max_upload_size_mb)
+
+            # WaterfallParser
+            llm_fallback = bool(files_cfg.get("llm_fallback_enabled", False))
+            parse_timeouts = files_cfg.get("parse_timeout_seconds", {})
+            water_parser = WaterfallParser(
+                llm_fallback_enabled=llm_fallback,
+                llm_client=orchestrator.llm_client if llm_fallback else None,
+                parse_timeouts=parse_timeouts,
+            )
+            logger.info("WaterfallParser 已初始化 (llm_fallback=%s)", llm_fallback)
+
+            # DocumentChunker
+            doc_chunker = DocumentChunker(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            logger.info("DocumentChunker 已初始化 (chunk_size=%d, overlap=%d)", chunk_size, chunk_overlap)
+
+            # ETLEngine
+            if (
+                orchestrator.chroma_store is not None
+                and session_logger is not None
+            ):
+                etl_engine = ETLEngine(
+                    upload_manager=upload_manager,
+                    chroma_store=orchestrator.chroma_store,
+                    session_logger=session_logger,
+                    parser=water_parser,
+                    chunker=doc_chunker,
+                    llm_client=orchestrator.llm_client,
+                    config=files_cfg,
+                )
+                logger.info("ETLEngine 已初始化")
+
+                # FileContextInjector
+                max_injected = int(files_cfg.get("max_injected_files", 5))
+                max_tokens = int(files_cfg.get("max_file_injection_tokens", 1000))
+                file_context_injector = FileContextInjector(
+                    upload_manager=upload_manager,
+                    max_files=max_injected,
+                    max_tokens=max_tokens,
+                )
+                # 注入到 ContextManager
+                if orchestrator.context_manager is not None:
+                    orchestrator.context_manager.file_context_injector = file_context_injector
+                logger.info("FileContextInjector 已初始化 (max_files=%d, max_tokens=%d)", max_injected, max_tokens)
+
+                # 注册文件工具到 ToolRegistry
+                if orchestrator.tool_registry is not None:
+                    try:
+                        from .agent.builtin_tools import register_file_tools
+                    except ImportError:
+                        from agent.builtin_tools import register_file_tools  # type: ignore
+                    register_file_tools(
+                        orchestrator.tool_registry,
+                        etl_engine,
+                        upload_manager,
+                        get_session_id=lambda: getattr(orchestrator, "_current_session_id", None),
+                    )
+                    logger.info("文件工具已注册: file_query / file_list_uploads / file_read_uploaded")
+
+        except Exception as e:
+            logger.error("文件模块初始化失败: %s", e)
+            upload_manager = None
+            etl_engine = None
+            file_context_injector = None
+
+    # 启动文件清理后台任务
+    file_cleanup_task = asyncio.create_task(file_cleanup_loop())
 
     # 启动定时清理古早会话的后台任务
     cleanup_task = asyncio.create_task(cleanup_loop())
@@ -2487,6 +2705,176 @@ def delete_session(session_id: str):
         raise HTTPException(status_code=500, detail=f"内部错误: {e}")
 
 
+# ---------- 文件上传与 ETL 端点 ----------
+
+
+@app.post("/files/upload", response_model=FileUploadResponse)
+async def upload_file(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """上传文件并触发 ETL 处理。
+
+    接收 multipart/form-data 格式的文件上传。
+    全局 SHA256 去重：相同内容的文件返回已有 file_id。
+    上传成功后后台异步执行 ETL 流水线。
+    """
+    if upload_manager is None:
+        raise HTTPException(status_code=503, detail="文件模块未初始化")
+
+    # 获取 session_id：query param → form 字段 → request.state（auth 中间件）
+    session_id = request.query_params.get("session_id")
+
+    if not session_id:
+        try:
+            form = await request.form()
+            session_id = form.get("session_id")
+        except Exception:
+            session_id = None
+
+    if not session_id:
+        session_id = getattr(request.state, "session_id", None) if hasattr(request.state, "session_id") else None
+
+    if not session_id:
+        raise HTTPException(status_code=401, detail="缺少 session_id")
+
+    # 读取文件（form 已在上面的 try 中解析，若未尝试过则这里取）
+    try:
+        form = await request.form()
+    except Exception:
+        form = None
+    uploaded_file = form.get("file") if form is not None else None
+    if uploaded_file is None:
+        raise HTTPException(status_code=400, detail="未提供文件")
+
+    filename = uploaded_file.filename or "unknown"
+    content = await uploaded_file.read()
+
+    # 保存
+    file_id, is_dup = upload_manager.save(filename, content, session_id)
+    if file_id is None:
+        raise HTTPException(status_code=400, detail="文件上传失败（校验未通过）")
+
+    # 后台 ETL
+    if not is_dup and etl_engine is not None:
+        background_tasks.add_task(_run_etl, file_id, session_id)
+
+    message = "文件已在知识库中" if is_dup else "上传成功"
+    return FileUploadResponse(file_id=file_id, is_dup=bool(is_dup), message=message)
+
+
+def _run_etl(file_id: str, session_id: str) -> None:
+    """后台执行 ETL 处理。"""
+    try:
+        if etl_engine is not None:
+            result = etl_engine.process_file(file_id, session_id)
+            if result.get("status") == "failed":
+                logger.warning(
+                    "ETL 失败: file_id=%s, error=%s", file_id, result.get("error")
+                )
+            else:
+                logger.info("ETL 完成: file_id=%s, chunks=%d", file_id, result.get("chunk_count", 0))
+    except Exception as e:
+        logger.exception("ETL 后台任务异常: file_id=%s", file_id)
+
+
+@app.get("/files", response_model=FileListResponse)
+def list_files():
+    """列出所有已上传文件。"""
+    if upload_manager is None:
+        raise HTTPException(status_code=503, detail="文件模块未初始化")
+    try:
+        files = upload_manager.list_all()
+        items = [
+            FileItem(
+                file_id=f.get("file_id", ""),
+                original_name=f.get("original_name", ""),
+                size=f.get("size", 0),
+                type=f.get("type", ""),
+                etl_status=f.get("etl_status", "pending"),
+                summary=f.get("summary", ""),
+                chunk_count=f.get("chunk_count", 0),
+                uploaded_at=f.get("uploaded_at", ""),
+                last_accessed=f.get("last_accessed", ""),
+            )
+            for f in files
+        ]
+        return FileListResponse(files=items)
+    except Exception as e:
+        logger.exception("列出文件失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
+@app.get("/files/{file_id}")
+def get_file_metadata(file_id: str):
+    """获取单个文件的元数据。"""
+    if upload_manager is None:
+        raise HTTPException(status_code=503, detail="文件模块未初始化")
+    try:
+        meta = upload_manager.get_metadata(file_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail=f"文件 {file_id} 不存在")
+        return dict(meta)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("获取文件元数据失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
+@app.get("/sessions/{session_id}/files", response_model=FileListResponse)
+def get_session_files(session_id: str):
+    """获取指定会话的上传文件列表。"""
+    if upload_manager is None:
+        raise HTTPException(status_code=503, detail="文件模块未初始化")
+    try:
+        files = upload_manager.get_session_files(session_id)
+        items = [
+            FileItem(
+                file_id=f.get("file_id", ""),
+                original_name=f.get("original_name", ""),
+                size=f.get("size", 0),
+                type=f.get("type", ""),
+                etl_status=f.get("etl_status", "pending"),
+                summary=f.get("summary", ""),
+                chunk_count=f.get("chunk_count", 0),
+                uploaded_at=f.get("uploaded_at", ""),
+                last_accessed=f.get("last_accessed", ""),
+            )
+            for f in files
+        ]
+        return FileListResponse(files=items)
+    except Exception as e:
+        logger.exception("获取会话文件列表失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
+@app.delete("/admin/files/{file_id}", response_model=FileDeleteResponse)
+def admin_delete_file(file_id: str, request: Request):
+    """管理员应急清理：全链路删除文件知识。
+
+    删除：磁盘原始文件 + 解析缓存 + ChromaDB 向量块 + FTS5 索引 + SQLite 元数据。
+    需要 Bearer Token 认证。
+    """
+    if etl_engine is None:
+        raise HTTPException(status_code=503, detail="ETL 模块未初始化")
+    try:
+        result = etl_engine.delete_file_knowledge(file_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail=f"文件 {file_id} 不存在或已删除")
+        logger.info("管理员删除文件: file_id=%s, details=%s", file_id, result.get("details"))
+        return FileDeleteResponse(
+            status="deleted",
+            file_id=file_id,
+            details=result.get("details", {}),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("管理员删除文件失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
 @app.get("/recall")
 def recall_messages(
     keyword: str = Query(..., description="搜索关键词"),
@@ -2506,6 +2894,40 @@ def recall_messages(
     except Exception as e:
         logger.exception("检索消息失败: %s", e)
         raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
+# ---------- 服务重启 ----------
+
+
+@app.post("/restart")
+def restart_server():
+    """重启服务：异步触发重启脚本，先返回响应再退出当前进程。
+
+    用于配置修改后一键重启使需重启的配置项生效。
+    启动辅助进程执行重启脚本，然后当前进程退出。
+    restart.ps1 会杀死当前进程并启动新进程。
+    """
+    import subprocess
+    import threading
+    import sys
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _do_restart():
+        time.sleep(1.5)
+        try:
+            subprocess.Popen(
+                [sys.executable, "-c",
+                 "import time,subprocess,os;"
+                 f"time.sleep(2);os.chdir({script_dir!r});"
+                 "subprocess.run(['powershell','-ExecutionPolicy','Bypass','-File','restart.ps1'])"],
+                cwd=script_dir,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return {"status": "restarting", "message": "服务正在重启..."}
 
 
 # ---------- 配置管理 ----------

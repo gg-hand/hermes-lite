@@ -102,6 +102,8 @@ DEFAULT_RULES = [
     {"tool": "skill_toggle", "risk": "confirm", "reason": "启用/禁用 Skill 会修改注册中心状态，需确认"},
     {"tool": "file_edit", "risk": "confirm", "reason": "修改文件内容，需确认"},
     # 注：search_memory 为读取类操作，不在 DEFAULT_RULES 中（默认放行）。
+    # 文件工具（file_query / file_list_uploads / file_read_uploaded）均为
+    # 读取类操作，不在 DEFAULT_RULES 中（默认放行）。
 ]
 
 

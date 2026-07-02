@@ -334,6 +334,136 @@ class _MockUvicornModule:
 
 
 # ---------------------------------------------------------------------------
+# PyMuPDF (fitz) mock
+# ---------------------------------------------------------------------------
+
+
+class _MockPage:
+    """Mock PDF 页。"""
+
+    def get_text(self) -> str:
+        return "mock pdf page text"
+
+
+class _MockPdfDoc:
+    """Mock PDF 文档。"""
+
+    def __init__(self, stream=None, filetype=None):
+        self._pages = [_MockPage(), _MockPage()]
+
+    def __iter__(self):
+        return iter(self._pages)
+
+    def __getitem__(self, idx):
+        return self._pages[idx]
+
+    def __len__(self):
+        return len(self._pages)
+
+    def close(self):
+        pass
+
+
+def _mock_fitz_open(stream=None, filetype=None):
+    return _MockPdfDoc(stream=stream, filetype=filetype)
+
+
+class _MockPyMuPDFModule:
+    """PyMuPDF (fitz) mock。"""
+
+    @staticmethod
+    def open(stream=None, filetype=None):
+        return _MockPdfDoc(stream=stream, filetype=filetype)
+
+
+# ---------------------------------------------------------------------------
+# python-docx mock
+# ---------------------------------------------------------------------------
+
+
+class _MockPara:
+    """Mock 段落。"""
+
+    def __init__(self, text="mock paragraph text"):
+        self.text = text
+
+
+class _MockDocxDoc:
+    """Mock DOCX 文档。"""
+
+    def __init__(self, fileobj=None):
+        self.paragraphs = [
+            _MockPara("第一章 概述"),
+            _MockPara("这是一段 mock 文档内容，用于测试 DOCX 解析功能。"),
+            _MockPara("包含营收数据和市场分析预测。"),
+        ]
+
+
+class _MockDocxModule:
+    """python-docx mock。"""
+
+    @staticmethod
+    def Document(fileobj=None):
+        return _MockDocxDoc(fileobj=fileobj)
+
+
+# ---------------------------------------------------------------------------
+# pytesseract mock
+# ---------------------------------------------------------------------------
+
+
+def _mock_image_to_string(image, lang="chi_sim+eng"):
+    return "mock ocr extracted text from image"
+
+
+class _MockTesseractModule:
+    """pytesseract mock。"""
+
+    @staticmethod
+    def image_to_string(image, lang="chi_sim+eng"):
+        return _mock_image_to_string(image, lang)
+
+
+# ---------------------------------------------------------------------------
+# Pillow mock
+# ---------------------------------------------------------------------------
+
+
+class _MockImage:
+    """Mock PIL Image。"""
+
+    format = "PNG"
+    size = (100, 100)
+
+    @staticmethod
+    def open(fp):
+        return _MockImage()
+
+
+class _MockImageModule:
+    """PIL mock。"""
+
+    Image = _MockImage()
+    Image.open = staticmethod(lambda fp: _MockImage())
+
+
+class _MockPillowModule:
+    """Pillow 模块 mock（PIL 命名空间）。"""
+
+    Image = _MockImageModule
+
+
+# ---------------------------------------------------------------------------
+# multipart mock（用于 FastAPI UploadFile 测试）
+# ---------------------------------------------------------------------------
+
+
+class _MockMultipartModule:
+    """python-multipart mock（测试中不使用真实 multipart 解析）。"""
+    __version__ = "0.0.9"
+
+
+# ---------------------------------------------------------------------------
 # 安装 mock 到 sys.modules
 # ---------------------------------------------------------------------------
 
@@ -356,6 +486,11 @@ def install_mocks() -> None:
     _maybe_inject("numpy", _MockNumpyModule)
     _maybe_inject("sentence_transformers", _MockSentenceTransformersModule)
     _maybe_inject("uvicorn", _MockUvicornModule)
+    # 文件处理 mock（仅未安装时注入）
+    _maybe_inject("fitz", _MockPyMuPDFModule)       # PyMuPDF
+    _maybe_inject("docx", _MockDocxModule)           # python-docx
+    _maybe_inject("pytesseract", _MockTesseractModule)  # pytesseract
+    _maybe_inject("PIL", _MockPillowModule)           # Pillow
 
 
 def _maybe_inject(name: str, mock_factory) -> None:
