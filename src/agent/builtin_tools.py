@@ -47,7 +47,7 @@ import subprocess
 import sys as _sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -1388,6 +1388,7 @@ def register_memory_tools(
     chroma_store: "ChromaMemoryStore",
     consolidation_engine: "ConsolidationEngine",
     get_session_id: Callable[[], Optional[str]],
+    memory_retriever: Optional[Any] = None,
 ) -> None:
     """注册记忆管理工具到 ToolRegistry 的 Core Tier（Phase 7 Task 3）。
 
@@ -1418,12 +1419,14 @@ def register_memory_tools(
             不依赖 session_id）。
     """
     # search_memory 工具（读取类，不走 confirm）
-    def _search_memory(query: str, top_k: int = 5) -> str:
-        """search_memory 工具 handler（closure 捕获 chroma_store）。
+    # 优先走 memory_retriever（带相关性过滤）；退化到 chroma_store 直查
+    _memory_retriever_for_search = memory_retriever
 
-        检索向量库长期记忆。reinforce=False 避免工具搜索触发强化（仅
-        Agent 正常检索路径才强化，工具搜索是用户/LLM 主动查询，不应
-        影响记忆的 recency/frequency 排序）。
+    def _search_memory(query: str, top_k: int = 5) -> str:
+        """search_memory 工具 handler。
+
+        检索向量库长期记忆。优先走 memory_retriever（带相关性过滤），
+        退化到直接 chroma_store 查询（向后兼容无 retriever 场景）。
 
         参数:
             query: 查询文本（自然语言关键词）。
@@ -1435,17 +1438,29 @@ def register_memory_tools(
             一致，保证 ReactLoop 稳定）。
         """
         try:
-            results = chroma_store.query_memory(query, top_k=top_k, reinforce=False)
-            # 仅保留 id / content / similarity / metadata 字段，
-            # 去掉 distance 等内部字段，减少返回给 LLM 的 token 量
+            if _memory_retriever_for_search is not None:
+                result = _memory_retriever_for_search.retrieve(
+                    query,
+                )
+                memories = result.get("long_term_memories", [])
+            else:
+                raw = chroma_store.query_memory(query, top_k=top_k, reinforce=False)
+                memories = [
+                    m for m in raw
+                    if str(m.get("metadata", {}).get("type", "")).lower() != "user_profile"
+                ]
+
+            if not memories:
+                return "（未找到与当前问题相关的记忆）\n\n如需查找文档内容，请用 file_query 搜索知识库。"
+
             output = [
                 {
-                    "id": r.get("id", ""),
-                    "content": r.get("content", ""),
-                    "similarity": r.get("similarity", 0.0),
-                    "metadata": r.get("metadata", {}),
+                    "id": m.get("id", ""),
+                    "content": m.get("content", ""),
+                    "similarity": m.get("similarity", 0.0),
+                    "metadata": m.get("metadata", {}),
                 }
-                for r in results
+                for m in memories
             ]
             return json.dumps(output, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -1455,9 +1470,10 @@ def register_memory_tools(
         name="memory_search",
         description=(
             "【个人记忆】检索对话历史中形成的长期记忆。"
-            "每条记忆含 content / similarity / metadata 字段。"
-            "✅ 回忆之前说过什么、查找用户偏好和背景信息\n"
-            "❌ 搜索上传文档的内容（请用 file_query）"
+            "⚠ 仅用于回忆过往对话和用户偏好。"
+            "✅ 回忆用户说过什么、查找个人背景信息\n"
+            "❌ 查找文档内容、分析报告、搜索信息（请先用 file_query）\n"
+            "❌ 如果你不确定信息在哪，先试 file_query（知识库比记忆更完整）"
         ),
         input_schema={
             "type": "object",

@@ -579,6 +579,7 @@ class Orchestrator:
                     _chroma_store,
                     _consolidation_engine,
                     lambda: getattr(self, "_current_session_id", None),
+                    memory_retriever=self.memory_retriever,
                 )
             except Exception as e:
                 logger.warning(
