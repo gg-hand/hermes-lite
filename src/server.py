@@ -711,9 +711,12 @@ async def lifespan(app: FastAPI):
     # 预加载 ONNX 嵌入模型（all-MiniLM-L6-v2），避免首次对话时
     # 临时下载模型权重导致 20+ 秒等待。模型约 80MB，首次启动时
     # 自动下载到 ~/.cache/chroma/onnx_models/，后续启动直接加载。
+    # 注意：_get_onnx_embedder() 只初始化包装类，不会触发模型下载；
+    # 必须实际调用一次嵌入才能触发 _download_model_if_not_exists。
     try:
         logger.info("正在预加载 ONNX 嵌入模型...")
-        _get_onnx_embedder()
+        model = _get_onnx_embedder()
+        model(["warmup"])  # 触发模型下载/解压
         logger.info("ONNX 嵌入模型已就绪")
     except Exception as e:
         logger.warning("ONNX 嵌入模型预加载失败（首次使用时将按需加载）: %s", e)
