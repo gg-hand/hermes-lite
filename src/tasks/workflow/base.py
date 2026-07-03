@@ -279,7 +279,7 @@ class WorkflowTemplate(abc.ABC):
 
         messages = [{"role": "user", "content": user_input}]
         try:
-            response = context.llm_client.chat_main(
+            response = context.llm_client.chat_main_sync(
                 messages=messages,
                 tools=tools,
                 system=system,

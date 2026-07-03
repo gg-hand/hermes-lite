@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,11 @@ class StreamManager:
         self._events: dict[str, threading.Event] = {}
         # graceful 模式下暂存的新消息：session_id -> new_message
         self._graceful_pending: dict[str, str] = {}
+        # per-session 的主动取消回调（async callable，指向 await stream.close()）
+        # 与 _events 平行，受同一个 _lock 保护。
+        # 用途：/chat/cancel immediate 模式主动断开 LLM HTTP 连接，
+        # 不必等下一个 token 到达才检测 cancel_event。
+        self._cancel_callbacks: dict[str, Optional[Awaitable]] = {}
 
     # ── 基础操作 ──
 
@@ -63,6 +68,8 @@ class StreamManager:
                 existing.set()
                 # 清理旧 graceful 暂存消息
                 self._graceful_pending.pop(session_id, None)
+                # 清理旧流的 cancel_callback（防止旧流 callback 误刷新流）
+                self._cancel_callbacks.pop(session_id, None)
                 logger.info(
                     "检测到活跃会话 %s，已自动取消旧流", session_id
                 )
@@ -92,6 +99,7 @@ class StreamManager:
         with self._lock:
             self._events.pop(session_id, None)
             self._graceful_pending.pop(session_id, None)
+            self._cancel_callbacks.pop(session_id, None)
         logger.debug("StreamManager unregister: %s", session_id)
 
     def unregister_event(
@@ -110,6 +118,8 @@ class StreamManager:
             if stored is cancel_event:
                 self._events.pop(session_id, None)
                 self._graceful_pending.pop(session_id, None)
+                # 同步清理 cancel_callback 槽位（防止旧流 callback 误刷新流）
+                self._cancel_callbacks.pop(session_id, None)
                 logger.debug("StreamManager unregister_event: %s (owned)", session_id)
             else:
                 logger.debug(
@@ -175,3 +185,74 @@ class StreamManager:
         """
         with self._lock:
             return self._graceful_pending.pop(session_id, None)
+
+    # ── 主动流取消（cancel_callback）──
+    #
+    # 与 cancel_event（threading.Event）平行的中断机制：
+    # - cancel_event 用于同步工具 handler 中断（_cancel_context ContextVar 机制不变）
+    # - cancel_callback 用于 /chat/cancel immediate 模式主动断开 LLM HTTP 连接，
+    #   不必等下一个 token 到达才检测 cancel_event
+    # backend 启动流时注册 stream.close（async callable），流结束时清理。
+
+    async def set_cancel_callback(
+        self, session_id: str, callback: Optional[Callable]
+    ) -> None:
+        """注册或清理 per-session 的主动取消回调。
+
+        backend 启动 LLM 流时注册 ``stream.close``（async callable，调用返回
+        coroutine），流结束后传 ``None`` 清理。
+
+        线程安全：字典读写受 ``_lock`` 保护。
+        若 session_id 已有旧 callback，直接覆盖（旧流可能已结束）。
+
+        参数:
+            session_id: 会话 ID。
+            callback: async callable（调用返回 coroutine），或 None 表示清理。
+        """
+        with self._lock:
+            if callback is None:
+                self._cancel_callbacks.pop(session_id, None)
+            else:
+                # 覆盖旧 callback（旧流可能已结束）
+                self._cancel_callbacks[session_id] = callback
+        logger.debug(
+            "StreamManager set_cancel_callback: %s (%s)",
+            session_id,
+            "cleared" if callback is None else "set",
+        )
+
+    async def trigger_cancel(self, session_id: str) -> bool:
+        """触发 per-session 的主动取消回调。
+
+        从 ``_cancel_callbacks`` 取出 callback，在锁外 ``await callback()``
+        立即关闭 LLM HTTP 连接（不等下一个 token）。
+
+        线程安全：取 callback 时用 ``_lock`` 保护，``await`` 在锁外执行
+        （避免持锁 await 死锁）。await 后清理槽位。
+
+        参数:
+            session_id: 会话 ID。
+
+        返回:
+            True 表示 callback 已注册并被调用；
+            False 表示未注册（流未启动或已结束），调用方应降级为
+            仅 ``cancel_event.set()`` 的兜底路径。
+        """
+        with self._lock:
+            callback = self._cancel_callbacks.get(session_id)
+        if callback is None:
+            logger.debug(
+                "StreamManager trigger_cancel: %s 无 callback（未注册或已清理）",
+                session_id,
+            )
+            return False
+        # 在锁外 await，避免持锁 await 死锁
+        try:
+            await callback()
+        finally:
+            with self._lock:
+                self._cancel_callbacks[session_id] = None
+        logger.info(
+            "StreamManager trigger_cancel: %s (callback 已调用)", session_id
+        )
+        return True

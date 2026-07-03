@@ -28,7 +28,7 @@ import inspect
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -89,14 +89,14 @@ def _tool_use_block(
 
 
 class MockStreamLLMClient:
-    """Mock LLM 客户端，按预设的多轮响应序列返回 chat_main_stream 生成器。
+    """Mock LLM 客户端，按预设的多轮响应序列返回 chat_main_stream 异步生成器。
 
     每次 chat_main_stream 调用弹出 responses 队列首部的一项，该项是
     一个事件列表 [{type: "text", ...}, {type: "done", ...}]，按顺序 yield。
 
-    chat_main_stream 在 ReactLoop.run_stream 中被作为同步生成器使用
-    （``for event in self.llm_client.chat_main_stream(...)``），因此本 mock
-    也实现为同步生成器（用 yield 而非 async yield）。
+    chat_main_stream 在 ReactLoop.run_stream 中被作为异步生成器使用
+    （``async for event in self.llm_client.chat_main_stream(...)``，spec Task 4），
+    因此本 mock 实现为 async generator（``async def`` + ``yield``）。
     """
 
     def __init__(self, responses):
@@ -104,7 +104,7 @@ class MockStreamLLMClient:
         self._responses = list(responses)
         self._call_count = 0
 
-    def chat_main_stream(self, messages=None, tools=None, system=None, max_tokens=None, cancel_event=None):
+    async def chat_main_stream(self, messages=None, tools=None, system=None, max_tokens=None, cancel_event=None, stream_manager=None, session_id=None, activity_timeout=None):
         if self._call_count >= len(self._responses):
             raise RuntimeError(
                 f"MockStreamLLMClient: responses exhausted at call "
@@ -211,6 +211,18 @@ def _collect_events(loop: ReactLoop, user_input: str, session_id=None):
 
     asyncio.run(_run())
     return events
+
+
+def _async_gen(events):
+    """将事件列表包装为 async generator（供 chat_main_stream mock）。
+
+    ``chat_main_stream`` 已改为 async generator（spec Task 4），mock 需返回
+    async iterable；用本函数把事件列表包装为 ``async for`` 可消费的对象。
+    """
+    async def _gen():
+        for evt in events:
+            yield evt
+    return _gen()
 
 
 # ---------------------------------------------------------------------------
@@ -379,10 +391,13 @@ class TestRunStreamMultipleRoundsTextSeparated(unittest.TestCase):
         self.assertEqual(len(rounds[2]["tools"]), 0)
 
 
-class TestRunMethodAcceptsSessionId(unittest.TestCase):
-    """验证 run 方法接受可选 session_id 参数（向后兼容）。"""
+class TestRunMethodAcceptsSessionId(unittest.IsolatedAsyncioTestCase):
+    """验证 run 方法接受可选 session_id 参数（向后兼容）。
 
-    def test_run_method_accepts_session_id(self):
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
+
+    async def test_run_method_accepts_session_id(self):
         """run 方法签名包含 session_id 参数，默认 None，可正常调用。"""
         sig = inspect.signature(ReactLoop.run)
         self.assertIn("session_id", sig.parameters)
@@ -391,6 +406,7 @@ class TestRunMethodAcceptsSessionId(unittest.TestCase):
 
         # 构造一个返回 end_turn 的 mock 响应
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
         mock_resp = MagicMock()
         mock_resp.content = [{"type": "text", "text": "ok"}]
         mock_resp.stop_reason = "end_turn"
@@ -399,12 +415,12 @@ class TestRunMethodAcceptsSessionId(unittest.TestCase):
         loop = ReactLoop(llm_client=mock_llm, tool_registry=None)
 
         # 传 session_id 不应报错
-        final, _, _ = loop.run("Hi", session_id="sess-xyz")
+        final, _, _ = await loop.run("Hi", session_id="sess-xyz")
         self.assertEqual(final, "ok")
 
         # 不传 session_id 也应正常工作（向后兼容）
         mock_llm.chat_main.return_value = mock_resp
-        final2, _, _ = loop.run("Hi")
+        final2, _, _ = await loop.run("Hi")
         self.assertEqual(final2, "ok")
 
 
@@ -443,9 +459,9 @@ class TestRunStreamSingleRound(unittest.TestCase):
         self.assertEqual(len(dones), 1)
         self.assertEqual(dones[0]["response"], "single round text")
 
-        # 顺序：round_start -> text -> done
+        # 顺序：round_start -> status(thinking) -> text -> done
         types = [e["type"] for e in events]
-        self.assertEqual(types, ["round_start", "text", "done"])
+        self.assertEqual(types, ["round_start", "status", "text", "done"])
 
 
 # ---------------------------------------------------------------------------
@@ -453,10 +469,13 @@ class TestRunStreamSingleRound(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestDenyResultContentRun(unittest.TestCase):
-    """验证非流式 run() deny 后 tool_result 包含明确拒绝提示。"""
+class TestDenyResultContentRun(unittest.IsolatedAsyncioTestCase):
+    """验证非流式 run() deny 后 tool_result 包含明确拒绝提示。
 
-    def test_run_deny_result_contains_explicit_message(self):
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
+
+    async def test_run_deny_result_contains_explicit_message(self):
         """run() deny 后 tool_result 包含 [用户已拒绝] 与 请停止重试。"""
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
@@ -464,6 +483,7 @@ class TestDenyResultContentRun(unittest.TestCase):
         )
 
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
         # 第 1 轮：tool_use（触发 deny）
         resp_tool = MagicMock()
         resp_tool.content = [{
@@ -491,7 +511,7 @@ class TestDenyResultContentRun(unittest.TestCase):
             policy_engine=mock_policy,
         )
 
-        final, messages, _ = loop.run("delete everything")
+        final, messages, _ = await loop.run("delete everything")
 
         # execute_tool 不应被调用（被 deny）
         mock_registry.execute_tool.assert_not_called()
@@ -511,7 +531,7 @@ class TestDenyResultContentRun(unittest.TestCase):
         # 最终回复为第 2 轮文本
         self.assertEqual(final, "好的，我不再尝试。")
 
-    def test_run_deny_empty_reason_uses_default(self):
+    async def test_run_deny_empty_reason_uses_default(self):
         """reason 为空时使用 '用户未提供原因'。"""
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
@@ -519,6 +539,7 @@ class TestDenyResultContentRun(unittest.TestCase):
         )
 
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
         resp_tool = MagicMock()
         resp_tool.content = [{
             "type": "tool_use", "id": "tu_1",
@@ -539,7 +560,7 @@ class TestDenyResultContentRun(unittest.TestCase):
             llm_client=mock_llm, tool_registry=mock_registry,
             max_loops=5, policy_engine=mock_policy,
         )
-        _, messages, _ = loop.run("Hi")
+        _, messages, _ = await loop.run("Hi")
 
         tool_result_content = ""
         for msg in messages:
@@ -682,12 +703,16 @@ class TestDenyResultConfirmToDenyRunStream(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestMaxLoopsSummaryRun(unittest.TestCase):
-    """验证 run() 达到 max_loops 后调用 chat_main 做总结。"""
+class TestMaxLoopsSummaryRun(unittest.IsolatedAsyncioTestCase):
+    """验证 run() 达到 max_loops 后调用 chat_main 做总结。
 
-    def test_run_max_loops_triggers_summary(self):
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
+
+    async def test_run_max_loops_triggers_summary(self):
         """run() 达到 max_loops 后调用 chat_main 一次（不传 tools）做总结。"""
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
 
         # 循环中每次返回 tool_use（永不结束）
         resp_tool = MagicMock()
@@ -716,7 +741,7 @@ class TestMaxLoopsSummaryRun(unittest.TestCase):
             max_loops=2,
         )
 
-        final, _, _ = loop.run("Hi", session_id="sess-1")
+        final, _, _ = await loop.run("Hi", session_id="sess-1")
 
         # chat_main 调用 3 次：2 次循环 + 1 次总结
         self.assertEqual(mock_llm.chat_main.call_count, 3)
@@ -728,9 +753,10 @@ class TestMaxLoopsSummaryRun(unittest.TestCase):
         # 返回的是总结文本
         self.assertEqual(final, "这是总结回复。")
 
-    def test_run_max_loops_summary_failure_fallback(self):
+    async def test_run_max_loops_summary_failure_fallback(self):
         """总结调用失败时降级返回 last_text。"""
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
 
         # 循环中返回 tool_use + 文本（更新 last_text）
         resp_tool = MagicMock()
@@ -756,21 +782,28 @@ class TestMaxLoopsSummaryRun(unittest.TestCase):
             max_loops=2,
         )
 
-        final, _, _ = loop.run("Hi")
+        final, _, _ = await loop.run("Hi")
 
         # 降级返回 last_text
         self.assertEqual(final, "looping...")
 
 
 class TestMaxLoopsSummaryRunStream(unittest.TestCase):
-    """验证 run_stream() 达到 max_loops 后调用 chat_main 做总结。"""
+    """验证 run_stream() 达到 max_loops 后调用 chat_main 做总结。
+
+    注：``run_stream`` / ``chat_main_stream`` / ``chat_main`` 已 async，
+    ``chat_main_stream`` mock 用 :func:`_async_gen` 包装为 async iterable，
+    ``chat_main`` mock 用 :class:`AsyncMock`；事件收集走 ``_collect_events``
+    （内部 ``asyncio.run`` + ``async for``）。
+    """
 
     def test_run_stream_max_loops_triggers_summary(self):
         """run_stream() 达到 max_loops 后调用 chat_main 一次做总结。"""
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
         mock_llm.chat_main_stream.side_effect = [
-            iter(_make_tool_use_round_events()),
-            iter(_make_tool_use_round_events()),
+            _async_gen(_make_tool_use_round_events()),
+            _async_gen(_make_tool_use_round_events()),
         ]
 
         # 总结调用返回
@@ -807,9 +840,10 @@ class TestMaxLoopsSummaryRunStream(unittest.TestCase):
     def test_run_stream_max_loops_summary_failure_fallback(self):
         """run_stream() 总结调用失败时降级返回 last_text。"""
         mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock()
         mock_llm.chat_main_stream.side_effect = [
-            iter(_make_tool_use_round_events()),
-            iter(_make_tool_use_round_events()),
+            _async_gen(_make_tool_use_round_events()),
+            _async_gen(_make_tool_use_round_events()),
         ]
 
         # 总结调用抛异常

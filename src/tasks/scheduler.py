@@ -503,10 +503,8 @@ class CronScheduler:
                     outputs = list(wf_result.outputs)
                     errors = list(wf_result.errors)
             else:
-                # legacy 路径：直接 orchestrator.chat
-                response = await asyncio.to_thread(
-                    orchestrator.chat, session_id, task_text
-                )
+                # legacy 路径：直接 orchestrator.chat（Task 5 已改 async）
+                response = await orchestrator.chat(session_id, task_text)
                 assistant_response = response or ""
         except Exception as e:
             logger.exception("调度项 %s 触发失败", schedule.id)

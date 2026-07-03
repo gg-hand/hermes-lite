@@ -11,8 +11,17 @@ Phase 8 Task 4.4 增强：新增 ``decision_source`` / ``schedule_id`` /
   前缀提取），用于按调度项加速查询。非 cron 会话为 ``None``。
 - ``run_id``：执行批次 ID（可选），用于按执行批次筛选审计记录。
 
+Phase 9 Task 5 增强：新增 ``log_guardrail_decision`` 方法，用于记录护栏
+决策（注入扫描拦截/放行等），与工具调用审计区分。
+- ``entry_type``：记录类型（``tool_call`` / ``guardrail``），旧记录缺少
+  该字段时默认 ``tool_call``（向后兼容）。
+- ``log_guardrail_decision`` 记录护栏层（``input_scan`` /
+  ``tool_result_sanitize`` / ``output_filter``）的 allow/deny/warn 决策。
+- ``get_recent`` 新增可选 ``entry_type`` 参数，支持按记录类型过滤查询。
+
 存储策略：
 - 内存环形缓冲（``collections.deque``）：保留最近 N 条记录，供快速查询。
+  工具调用与护栏决策共用同一缓冲，通过 ``entry_type`` 字段区分。
 - JSONL 文件持久化：以 append 模式追加写入，每行一条 JSON 记录，便于
   离线分析与长期归档。
 
@@ -57,6 +66,14 @@ class AuditLogger:
     - 旧 JSONL 记录缺少这些字段时，``get_recent`` / ``get_by_schedule`` /
       ``get_by_run_id`` 读取时用 ``.get()`` 填充默认值（``decision_source``
       = ``"default_rule"``，``schedule_id`` / ``run_id`` = ``None``）。
+
+    Phase 9 Task 5 增强：
+    - 新增 ``log_guardrail_decision`` 方法，记录护栏层（input_scan /
+      tool_result_sanitize / output_filter）的 allow/deny/warn 决策。
+    - 护栏记录含 ``entry_type="guardrail"`` 字段，与工具调用记录区分；
+      旧工具调用记录无 ``entry_type`` 时默认 ``"tool_call"``（向后兼容）。
+    - ``get_recent`` 新增可选 ``entry_type`` 参数，支持按记录类型过滤查询。
+    - 护栏记录与工具调用记录共用同一内存环形缓冲与 JSONL 文件。
     """
 
     def __init__(
@@ -148,24 +165,104 @@ class AuditLogger:
             except Exception as e:
                 logger.warning("审计日志写入文件失败: %s", e)
 
-    def get_recent(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """获取最近的工具调用记录。
+    def log_guardrail_decision(
+        self,
+        layer: str,
+        action: str,
+        reason: str,
+        session_id: str,
+        matched_patterns: Optional[List[str]] = None,
+        risk_level: str = "medium",
+    ) -> None:
+        """记录一次护栏决策（Phase 9 Task 5）。
+
+        与 ``log_tool_call`` 区分：护栏决策不是工具调用，而是护栏层
+        （注入扫描 / 工具结果消毒 / 输出过滤）对内容做出的 allow/deny/warn
+        判定。记录含 ``entry_type="guardrail"`` 字段，与工具调用记录区分。
+
+        参数:
+            layer: 护栏层名称，取值：
+                - ``"input_scan"``：用户输入注入扫描
+                - ``"tool_result_sanitize"``：工具结果消毒
+                - ``"output_filter"``：LLM 输出过滤
+            action: 决策动作，取值：
+                - ``"allow"``：放行
+                - ``"deny"``：拦截
+                - ``"warn"``：警告但放行
+            reason: 决策原因描述（人类可读）。
+            session_id: 所属会话 ID。
+            matched_patterns: 命中的护栏模式列表（可选）。例如注入扫描
+                命中的敏感模式名称列表。``None`` 表示无命中模式。
+            risk_level: 风险等级（``"low"`` / ``"medium"`` / ``"high"``），
+                默认 ``"medium"``。用于后续按风险等级筛选审计记录。
+        """
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "layer": layer,
+            "action": action,
+            "reason": reason,
+            "matched_patterns": matched_patterns,
+            "risk_level": risk_level,
+            # Phase 9 Task 5: 记录类型字段，与工具调用记录区分
+            "entry_type": "guardrail",
+        }
+
+        with self._lock:
+            # 将 entry 副本追加到内存缓冲（与工具调用共用同一缓冲）
+            self._buffer.append(dict(entry))
+            # 尝试写入 JSONL 文件，失败时仅 warning 不抛异常
+            try:
+                self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                self._file.flush()
+            except Exception as e:
+                logger.warning("护栏审计日志写入文件失败: %s", e)
+
+    def get_recent(
+        self,
+        limit: int = 50,
+        entry_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """获取最近的审计记录（工具调用 + 护栏决策）。
+
+        Phase 9 Task 5: 新增 ``entry_type`` 参数支持按记录类型过滤。
+        - 不传 ``entry_type``（默认 ``None``）：返回所有类型记录（与旧行为一致）。
+        - ``entry_type="tool_call"``：仅返回工具调用记录。
+        - ``entry_type="guardrail"``：仅返回护栏决策记录。
 
         参数:
             limit: 返回的最大条数，默认 50。
+            entry_type: 可选记录类型过滤（``"tool_call"`` / ``"guardrail"``）。
+                默认 ``None`` 表示不过滤，返回所有记录。
 
         返回:
             按时间倒序（最新在前）排列的记录列表。返回深拷贝，避免外部
             修改影响内部缓冲。旧记录（缺少 Task 4.4 新字段）会用默认值
             填充：``decision_source="default_rule"`` / ``schedule_id=None``
-            / ``run_id=None``。
+            / ``run_id=None`` / ``entry_type="tool_call"``。
         """
         with self._lock:
-            # 从 deque 末尾向前取 limit 条（最新在前）
-            items = list(reversed(self._buffer))[:limit]
+            # 从 deque 末尾向前取（最新在前）
+            items = list(reversed(self._buffer))
+        # 先按 entry_type 过滤，再应用 limit
+        if entry_type is not None:
+            items = [
+                item for item in items
+                if self._entry_type_of(item) == entry_type
+            ]
+        items = items[:limit]
         # 返回深拷贝，避免外部修改污染内部缓冲
         # 同时为新字段填充默认值（向后兼容旧记录）
         return [self._normalize_entry(item) for item in items]
+
+    @staticmethod
+    def _entry_type_of(item: Dict[str, Any]) -> str:
+        """获取记录的 ``entry_type``，缺失时默认 ``"tool_call"``。
+
+        向后兼容：旧工具调用记录无 ``entry_type`` 字段，按 ``"tool_call"``
+        处理；新护栏记录显式写入 ``entry_type="guardrail"``。
+        """
+        return item.get("entry_type", "tool_call")
 
     def get_by_schedule(
         self,
@@ -239,10 +336,11 @@ class AuditLogger:
 
     @staticmethod
     def _normalize_entry(item: Dict[str, Any]) -> Dict[str, Any]:
-        """为旧记录填充 Task 4.4 新字段默认值（向后兼容）。
+        """为旧记录填充新字段默认值（向后兼容）。
 
         旧 JSONL 记录 / 旧内存缓冲项可能缺少 ``decision_source`` /
-        ``schedule_id`` / ``run_id`` 字段，此方法用默认值填充并返回深拷贝。
+        ``schedule_id`` / ``run_id`` 字段（Phase 8 Task 4.4）以及
+        ``entry_type`` 字段（Phase 9 Task 5），此方法用默认值填充并返回深拷贝。
 
         参数:
             item: 原始记录 dict。
@@ -257,6 +355,9 @@ class AuditLogger:
             copy["schedule_id"] = None
         if "run_id" not in copy:
             copy["run_id"] = None
+        # Phase 9 Task 5: 旧工具调用记录无 entry_type 时默认 "tool_call"
+        if "entry_type" not in copy:
+            copy["entry_type"] = "tool_call"
         return copy
 
     def close(self) -> None:

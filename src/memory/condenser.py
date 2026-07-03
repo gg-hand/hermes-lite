@@ -275,7 +275,7 @@ class LLMSummarizingCondenser(Condenser):
             "未完成的任务），丢弃冗余细节。不超过 800 字。\n\n"
             f"{serialized}"
         )
-        response = self.llm_client.chat_consolidation(
+        response = self.llm_client.chat_consolidation_sync(
             [{"role": "user", "content": prompt}],
             system="你是一个对话历史摘要助手。",
         )
@@ -427,7 +427,7 @@ if __name__ == "__main__":
     calls = []
 
     class FakeLLM:
-        def chat_consolidation(self, messages, system=None):
+        def chat_consolidation_sync(self, messages, system=None):
             calls.append(messages)
             class R:
                 content = [{"type": "text", "text": "摘要内容"}]
@@ -458,7 +458,7 @@ if __name__ == "__main__":
 
     # 6. LLM 摘要失败降级
     class FailLLM:
-        def chat_consolidation(self, messages, system=None):
+        def chat_consolidation_sync(self, messages, system=None):
             raise RuntimeError("LLM 故障")
 
     llm_sc3 = LLMSummarizingCondenser(

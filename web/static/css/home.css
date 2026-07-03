@@ -1,0 +1,312 @@
+/* ============================================================
+   home.css — 展示首页样式（经纬台 Loom）
+   依赖: tokens.css(变量) base.css(重置) components.css(组件)
+   ============================================================ */
+
+.home {
+  min-height: 100vh;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-x: hidden;
+}
+
+/* ========== 顶栏 ========== */
+.home-topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+}
+.home-topbar-brand {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.home-topbar-brand span { color: var(--accent); }
+.home-topbar-actions { display: flex; align-items: center; gap: 12px; }
+
+.home-cta-btn {
+  padding: 7px 18px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.home-cta-btn:hover { background: var(--accent); color: #fff; }
+
+/* ========== Hero ========== */
+.home-hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 80px 32px 40px;
+  position: relative;
+}
+
+/* 背景纹理 */
+.home-hero::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-image:
+    radial-gradient(circle at 20% 30%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 50%),
+    radial-gradient(circle at 80% 70%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 50%);
+  pointer-events: none;
+}
+
+.home-hero-content { position: relative; z-index: 1; max-width: 760px; }
+
+.home-hero-eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+  font-family: var(--font-mono);
+}
+
+.home-hero-title {
+  font-family: var(--font-display);
+  font-size: clamp(40px, 7vw, 72px);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  margin-bottom: 20px;
+}
+.home-hero-title em {
+  font-style: italic;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.home-hero-subtitle {
+  font-size: clamp(15px, 2vw, 18px);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  max-width: 580px;
+  margin: 0 auto 36px;
+}
+
+.home-hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+.home-btn-primary {
+  padding: 12px 28px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.home-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 30%, transparent); }
+
+.home-btn-ghost {
+  padding: 12px 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.home-btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Hero 记忆网络可视化 */
+.home-hero-loom {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 800px; height: 800px;
+  opacity: 0.08;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ========== 分区通用 ========== */
+.home-section {
+  padding: 80px 32px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.home-section-header { margin-bottom: 48px; }
+.home-section-label {
+  font-size: 12px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  margin-bottom: 8px;
+}
+.home-section-title {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+.home-section-desc {
+  font-size: 15px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-width: 600px;
+}
+
+/* ========== 能力矩阵 ========== */
+.capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.capability-card {
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  transition: border-color 0.2s, transform 0.2s;
+}
+.capability-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+.capability-icon {
+  width: 40px; height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 18px;
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+}
+.capability-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+.capability-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ========== ReAct 流程 ========== */
+.react-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.react-step {
+  flex: 1;
+  min-width: 140px;
+  padding: 24px 16px;
+  text-align: center;
+  position: relative;
+}
+.react-step-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.react-step-icon {
+  width: 48px; height: 48px;
+  margin: 0 auto 12px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  transition: border-color 0.2s, color 0.2s;
+}
+.react-step:hover .react-step-icon { border-color: var(--accent); color: var(--accent); }
+.react-step-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.react-step-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.react-arrow {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 18px;
+  padding: 0 4px;
+}
+
+/* ========== 记忆网络可视化（详细版） ========== */
+.loom-section {
+  text-align: center;
+}
+.loom-canvas {
+  width: 100%;
+  max-width: 800px;
+  height: 400px;
+  margin: 40px auto 0;
+}
+.loom-node {
+  fill: var(--bg-secondary);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  transition: fill 0.3s;
+}
+.loom-node-core {
+  fill: var(--accent);
+  stroke: none;
+}
+.loom-link {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.3;
+}
+.loom-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+/* ========== 页脚 ========== */
+.home-footer {
+  padding: 40px 32px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.home-footer a { color: var(--accent); text-decoration: none; }
+
+/* ========== 响应式 ========== */
+@media (max-width: 768px) {
+  .home-topbar { padding: 0 16px; }
+  .home-hero { padding: 70px 16px 32px; }
+  .home-section { padding: 48px 16px; }
+  .react-flow { flex-direction: column; }
+  .react-arrow { transform: rotate(90deg); padding: 8px 0; }
+  .home-hero-loom { width: 100%; height: 100%; opacity: 0.05; }
+}

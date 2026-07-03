@@ -239,8 +239,12 @@ class TestFormatTodoForInjection(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestUserSessionTodoInjection(unittest.TestCase):
-    """验证用户会话 _build_enhanced_context 注入 TodoList 状态到 messages[0]。"""
+class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
+    """验证用户会话 _build_enhanced_context 注入 TodoList 状态到 messages[0]。
+
+    注：``_build_enhanced_context`` 已 async（Phase 10 异步化改造），
+    本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def _make_orchestrator(
         self,
@@ -279,26 +283,26 @@ class TestUserSessionTodoInjection(unittest.TestCase):
         # 标记 step 0 完成（会自动推进 step 1 为 in_progress）
         orch.todo_registry.update_step(session_id, 0, "completed", "分析完成")
 
-    def test_messages_zero_contains_todo_section(self):
+    async def test_messages_zero_contains_todo_section(self):
         """有 TodoList 时 messages[0] 应含 '## 当前计划进度' 段。"""
         orch = self._make_orchestrator()
         session_id = "user_session_1"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续下一步", []
         )
         self.assertGreater(len(enhanced_history), 0)
         content = enhanced_history[0]["content"]
         self.assertIn("## 当前计划进度", content)
 
-    def test_todo_section_contains_goal_and_progress(self):
+    async def test_todo_section_contains_goal_and_progress(self):
         """messages[0] 的 todo 段应含 goal 与总进度。"""
         orch = self._make_orchestrator()
         session_id = "user_session_2"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -306,13 +310,13 @@ class TestUserSessionTodoInjection(unittest.TestCase):
         # step 0 已完成，总共 3 步
         self.assertIn("**总进度**: 1/3", content)
 
-    def test_todo_section_contains_step_markers(self):
+    async def test_todo_section_contains_step_markers(self):
         """messages[0] 的 todo 段应含 [x] / [ ] 步骤标记。"""
         orch = self._make_orchestrator()
         session_id = "user_session_3"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -322,13 +326,13 @@ class TestUserSessionTodoInjection(unittest.TestCase):
         self.assertIn("[ ] 步骤2：编写代码", content)
         self.assertIn("[ ] 步骤3：运行测试", content)
 
-    def test_todo_section_contains_reminder_footer(self):
+    async def test_todo_section_contains_reminder_footer(self):
         """messages[0] 的 todo 段末尾应含 update_todo 提醒。"""
         orch = self._make_orchestrator()
         session_id = "user_session_4"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -337,13 +341,13 @@ class TestUserSessionTodoInjection(unittest.TestCase):
             content,
         )
 
-    def test_todo_section_after_task_progress(self):
+    async def test_todo_section_after_task_progress(self):
         """TodoList 段应位于 TaskManager 进度段之后。"""
         orch = self._make_orchestrator(with_task_manager=True)
         session_id = "user_session_5"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -358,13 +362,13 @@ class TestUserSessionTodoInjection(unittest.TestCase):
             "（task_pos < todo_pos）",
         )
 
-    def test_todo_section_after_env_and_memory(self):
+    async def test_todo_section_after_env_and_memory(self):
         """TodoList 段应位于环境信息段和长期记忆段之后。"""
         orch = self._make_orchestrator()
         session_id = "user_session_6"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -377,13 +381,13 @@ class TestUserSessionTodoInjection(unittest.TestCase):
         self.assertLess(env_pos, memory_pos)
         self.assertLess(memory_pos, todo_pos)
 
-    def test_system_text_not_polluted_by_todo(self):
+    async def test_system_text_not_polluted_by_todo(self):
         """SYSTEM_PROMPT 不应被 TodoList 段污染。"""
         orch = self._make_orchestrator()
         session_id = "user_session_7"
         self._init_plan(orch, session_id)
 
-        system_text, _, _ = orch._build_enhanced_context(
+        system_text, _, _ = await orch._build_enhanced_context(
             session_id, "继续", []
         )
         self.assertNotIn("## 当前计划进度", system_text)
@@ -396,8 +400,12 @@ class TestUserSessionTodoInjection(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestTodoInjectionDegradation(unittest.TestCase):
-    """验证无 TodoList 时 _build_enhanced_context 不抛异常且不注入 todo 段。"""
+class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
+    """验证无 TodoList 时 _build_enhanced_context 不抛异常且不注入 todo 段。
+
+    注：``_build_enhanced_context`` 已 async（Phase 10 异步化改造），
+    本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def _make_orchestrator(self, with_todo_registry: bool):
         """通过 __new__ 构造 Orchestrator，仅设置测试需要的属性。"""
@@ -417,11 +425,11 @@ class TestTodoInjectionDegradation(unittest.TestCase):
         )
         return orch
 
-    def test_no_todo_registry_no_exception(self):
+    async def test_no_todo_registry_no_exception(self):
         """todo_registry 为 None 时 _build_enhanced_context 不抛异常。"""
         orch = self._make_orchestrator(with_todo_registry=False)
         # 不应抛异常
-        system_text, enhanced_history, _ = orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch._build_enhanced_context(
             "no_registry_session", "question", []
         )
         # messages[0] 不含 todo 段
@@ -429,11 +437,11 @@ class TestTodoInjectionDegradation(unittest.TestCase):
             content = enhanced_history[0]["content"]
             self.assertNotIn("## 当前计划进度", content)
 
-    def test_no_plan_no_exception(self):
+    async def test_no_plan_no_exception(self):
         """todo_registry 存在但 session 无 plan 时 _build_enhanced_context 不抛异常。"""
         orch = self._make_orchestrator(with_todo_registry=True)
         # 不调用 init_plan，get_todo_dict 返回 None
-        system_text, enhanced_history, _ = orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch._build_enhanced_context(
             "no_plan_session", "question", []
         )
         # 不应抛异常且 messages[0] 不含 todo 段
@@ -442,10 +450,10 @@ class TestTodoInjectionDegradation(unittest.TestCase):
             self.assertNotIn("## 当前计划进度", content)
             self.assertNotIn("**总进度**", content)
 
-    def test_no_todo_registry_does_not_pollute_system_text(self):
+    async def test_no_todo_registry_does_not_pollute_system_text(self):
         """todo_registry 为 None 时 system_text 不被污染。"""
         orch = self._make_orchestrator(with_todo_registry=False)
-        system_text, _, _ = orch._build_enhanced_context(
+        system_text, _, _ = await orch._build_enhanced_context(
             "no_registry_session", "question", []
         )
         self.assertNotIn("## 当前计划进度", system_text)
@@ -457,6 +465,8 @@ class TestTodoInjectionDegradation(unittest.TestCase):
         注：当前 TodoListRegistry 不支持 steps 为空的 plan（init_plan 会
         抛 ValueError），此用例通过手工构造空 steps 的 dict 模拟边界情况，
         验证 _format_todo_for_injection 的降级逻辑。
+
+        此用例仅调用同步方法 ``_format_todo_for_injection``，无需 async。
         """
         orch = self._make_orchestrator(with_todo_registry=True)
         # 直接调用 _format_todo_for_injection 验证空 steps 降级
@@ -471,8 +481,12 @@ class TestTodoInjectionDegradation(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestTodoInjectionStateUpdate(unittest.TestCase):
-    """验证 todo_registry 状态变化会反映到 messages[0] 的 todo 段。"""
+class TestTodoInjectionStateUpdate(unittest.IsolatedAsyncioTestCase):
+    """验证 todo_registry 状态变化会反映到 messages[0] 的 todo 段。
+
+    注：``_build_enhanced_context`` 已 async（Phase 10 异步化改造），
+    本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def _make_orchestrator(self):
         orch = Orchestrator.__new__(Orchestrator)
@@ -489,7 +503,7 @@ class TestTodoInjectionStateUpdate(unittest.TestCase):
         orch.todo_registry = TodoListRegistry()
         return orch
 
-    def test_progress_reflects_state_change(self):
+    async def test_progress_reflects_state_change(self):
         """同一 session 多次 update_step 后，messages[0] 的总进度应同步更新。"""
         orch = self._make_orchestrator()
         session_id = "state_update_session"
@@ -504,28 +518,28 @@ class TestTodoInjectionStateUpdate(unittest.TestCase):
         )
 
         # 初始：0/3
-        _, history, _ = orch._build_enhanced_context(
+        _, history, _ = await orch._build_enhanced_context(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 0/3", history[0]["content"])
 
         # 完成 step 0（自动推进 step 1）：1/3
         orch.todo_registry.update_step(session_id, 0, "completed", "")
-        _, history, _ = orch._build_enhanced_context(
+        _, history, _ = await orch._build_enhanced_context(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 1/3", history[0]["content"])
 
         # 完成 step 1（自动推进 step 2）：2/3
         orch.todo_registry.update_step(session_id, 1, "completed", "")
-        _, history, _ = orch._build_enhanced_context(
+        _, history, _ = await orch._build_enhanced_context(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 2/3", history[0]["content"])
 
         # 完成 step 2：3/3
         orch.todo_registry.update_step(session_id, 2, "completed", "")
-        _, history, _ = orch._build_enhanced_context(
+        _, history, _ = await orch._build_enhanced_context(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 3/3", history[0]["content"])

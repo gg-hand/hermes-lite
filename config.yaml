@@ -9,6 +9,9 @@ llm:
   consolidation_base_url: https://api.deepseek.com
   max_context_tokens: 200000
   context_threshold: 0.8
+  # 异步 LLM Backend 超时配置（spec: async-llm-backend）
+  activity_timeout: 60       # per-token 活跃超时秒数，LLM 60s 不返 token 则中断
+  stream_total_timeout: 300  # 流式总超时秒数，兜底（含工具执行时间）
 memory:
   chroma_path: data/chroma
   memory_md_path: data/memory.md
@@ -92,5 +95,19 @@ security:
   workspace_root: .
   approval_timeout_seconds: 300
   rules: []
+guardrails:
+  input_scan:
+    enabled: true
+    action: warn  # block(拦截) / warn(放行+告警,默认) / off(跳过)
+  sanitizer:
+    enabled: true
+    trusted_tools:
+      - memory_search
+      - search_memory
+      - memory_query
+    max_output_length: 20000
+  output_filter:
+    enabled: true
+    enable_bank_card: true
 tasks: {}
 schedules: []

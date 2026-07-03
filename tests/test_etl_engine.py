@@ -156,6 +156,21 @@ class TestETLProcessImage(unittest.TestCase):
         self.engine.process_file(fid, "s1")
         self.logger.insert_file_chunk.assert_not_called()
 
+    def test_image_no_text_still_done(self):
+        """图片无文字时仍标记为 done，img_text 为空字符串。"""
+        fid, _ = self.um.save("meme.png", minimal_png(), "s1")
+        # mock pytesseract 返回空字符串 → parser 抛 ParseError → ETL 捕获并标记 done
+        with patch("src.files.parser.pytesseract.image_to_string", return_value=""):
+            result = self.engine.process_file(fid, "s1")
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["chunk_count"], 0)
+        self.assertIsNone(result["error"])
+        meta = self.um.get_metadata(fid)
+        self.assertEqual(meta["etl_status"], "done")
+        self.assertEqual(meta.get("img_text", None), "")
+        self.chroma.add_memory.assert_not_called()
+        self.logger.insert_file_chunk.assert_not_called()
+
 
 class TestETLFailure(unittest.TestCase):
     """ETL 失败处理测试。"""

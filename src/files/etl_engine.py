@@ -11,6 +11,8 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from .parser import ParseError
+
 if TYPE_CHECKING:
     from ..storage.chroma_store import ChromaMemoryStore
     from ..storage.sqlite_log import SessionLogger
@@ -221,7 +223,11 @@ class ETLEngine:
         return {"status": "done", "chunk_count": chunk_count, "error": None}
 
     def _process_image(self, file_id: str, meta: dict) -> dict:
-        """处理图片类文件（仅 OCR）。"""
+        """处理图片类文件（仅 OCR）。
+
+        图片无文字（OCR 结果为空）被视为正常完成而非错误，
+        img_text 保持空字符串，etl_status 标记为 done。
+        """
         content = self.upload_manager.read_content(file_id)
         if content is None:
             error_msg = "无法读取图片文件"
@@ -230,6 +236,10 @@ class ETLEngine:
 
         try:
             ocr_text = self.parser.parse(content, meta.get("original_name", ""))
+        except ParseError as e:
+            # 图片无文字是正常情况，标记为 done 但保留空 img_text
+            logger.info("图片未识别到文字: file_id=%s, %s", file_id, e)
+            ocr_text = ""
         except Exception as e:
             error_msg = f"OCR 失败: {e}"
             self.upload_manager.update_error(file_id, error_msg)

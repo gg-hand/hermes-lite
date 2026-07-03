@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 
 # 兼容相对导入与直接运行两种方式（与 orchestrator.py 保持一致）
 try:
-    from .config import clear_config_cache, load_config, validate_required_env_vars
+    from .config import clear_config_cache, get_llm_timeouts, load_config, validate_required_env_vars
     from .orchestrator import Orchestrator
     from .storage.sqlite_log import SessionLogger
     from .monitoring.metrics import MetricsCollector
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     _SRC_DIR = str(Path(__file__).resolve().parent)
     if _SRC_DIR not in sys.path:
         sys.path.insert(0, _SRC_DIR)
-    from config import clear_config_cache, load_config, validate_required_env_vars  # type: ignore
+    from config import clear_config_cache, get_llm_timeouts, load_config, validate_required_env_vars  # type: ignore
     from orchestrator import Orchestrator  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
     from monitoring.metrics import MetricsCollector  # type: ignore
@@ -119,6 +119,13 @@ try:
 except ImportError:
     from stream_manager import StreamManager, StreamCancelled  # type: ignore
     from breakpoint_detector import BreakpointDetector  # type: ignore
+
+# 异步 LLM Backend: ActivityTimeout 异常（spec: async-llm-backend）
+# per-token 活跃超时触发，SSE handler 捕获后 yield error + interrupt 终止流
+try:
+    from .llm.client import ActivityTimeout
+except ImportError:
+    from llm.client import ActivityTimeout  # type: ignore
 
 try:
     from .agent.cron_tool_registry import CronToolRegistry
@@ -1269,7 +1276,7 @@ def _save_skill_state(state: dict) -> None:
 # ---------- API 端点 ----------
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+async def chat(req: ChatRequest):
     """对话接口。
 
     流程:
@@ -1299,7 +1306,7 @@ def chat(req: ChatRequest):
             cancel_event = stream_manager.register(session_id)
 
         try:
-            response_text = orchestrator.chat(
+            response_text = await orchestrator.chat(
                 session_id, req.message, cancel_event=cancel_event,
             )
         finally:
@@ -1397,7 +1404,11 @@ def chat_stream(req: ChatRequest):
             })
 
             try:
-                async with asyncio.timeout(300):
+                # 每次请求读取最新配置，支持 llm.activity_timeout /
+                # llm.stream_total_timeout 热更新（无需重启即时生效）
+                _req_cfg = load_config(CONFIG_PATH)
+                _activity_timeout, _stream_total_timeout = get_llm_timeouts(_req_cfg)
+                async with asyncio.timeout(_stream_total_timeout):
                     async for event in orchestrator.chat_stream(
                         session_id,
                         req.message,
@@ -1443,10 +1454,24 @@ def chat_stream(req: ChatRequest):
                             # 事件原样透传
                             yield _sse_event(event)
             except asyncio.TimeoutError:
-                logger.warning("流式对话超时（5min），session=%s", session_id)
+                logger.warning(
+                    "流式对话超时（%ss），session=%s",
+                    _stream_total_timeout, session_id,
+                )
                 yield _sse_event({"type": "error", "message": "请求超时，请重试"})
             except StreamCancelled:
                 logger.info("流被用户中断: session=%s", session_id)
+                yield _sse_event({"type": "interrupt"})
+            except ActivityTimeout:
+                # per-token 活跃超时：LLM 在 activity_timeout 秒内未返任何 token
+                logger.warning(
+                    "LLM 响应超时（%ss 无输出），session=%s",
+                    _activity_timeout, session_id,
+                )
+                yield _sse_event({
+                    "type": "error",
+                    "message": f"LLM 响应超时（{_activity_timeout}s 无输出）",
+                })
                 yield _sse_event({"type": "interrupt"})
             except Exception as e:
                 logger.exception("流式对话失败: %s", e)
@@ -1470,7 +1495,7 @@ def chat_stream(req: ChatRequest):
 
 
 @app.post("/chat/cancel")
-def cancel_stream(req: CancelRequest):
+async def cancel_stream(req: CancelRequest):
     """中断正在进行的流式对话。
 
     模式：
@@ -1511,6 +1536,11 @@ def cancel_stream(req: CancelRequest):
             return {"status": "breakpoint_pending", "session_id": req.session_id}
 
     ok = stream_manager.cancel(req.session_id)
+    # immediate 模式主路径：trigger_cancel 调用注册的 cancel_callback
+    # （``await stream.close()``）主动断开 LLM HTTP 连接，不等下一个 token。
+    # 未注册 callback（流未启动或已结束）时返回 False，降级为仅 cancel_event
+    # 兜底路径（在下一个 chunk 到达时检测 cancel_event.is_set()）。
+    await stream_manager.trigger_cancel(req.session_id)
     status = "cancelling" if ok else "already_ended"
     logger.info("Cancel stream: session=%s -> %s", req.session_id, status)
     return {"status": status, "session_id": req.session_id}
@@ -2933,9 +2963,26 @@ def restart_server():
 # ---------- 配置管理 ----------
 
 # 需要重启才能生效的配置项前缀列表
-# llm.* / 存储路径 / memory 的路径类配置 / server.* 涉及组件重建，无法热更新
+# llm.{provider,model,api_key,base_url} 涉及 SDK 客户端重建，无法热更新；
+# llm.activity_timeout / llm.stream_total_timeout 不涉及客户端重建，由 SSE
+# handler 每次请求通过 get_llm_timeouts() 读取最新值，即时生效（热更新），
+# 故不在此列表。存储路径 / memory 的路径类配置 / server.* 涉及组件重建，无法热更新
 _RESTART_REQUIRED_KEYS = {
-    "llm",
+    # llm 段细化：仅 provider/model/api_key/base_url 等涉及 AsyncAnthropic /
+    # AsyncOpenAI 客户端实例重建的字段需重启；activity_timeout /
+    # stream_total_timeout 由 SSE handler 每请求读取，即时生效
+    "llm.main_provider",
+    "llm.main_model",
+    "llm.main_api_key",
+    "llm.main_base_url",
+    "llm.consolidation_provider",
+    "llm.consolidation_model",
+    "llm.consolidation_api_key",
+    "llm.consolidation_base_url",
+    # max_context_tokens / context_threshold 未纳入 _RUNTIME_HOTUPDATE_MAP，
+    # 保留重启语义以避免变更被静默忽略（与原 "llm" 整段行为一致）
+    "llm.max_context_tokens",
+    "llm.context_threshold",
     "memory.chroma_path",
     "memory.memory_md_path",
     "storage.sqlite_path",
@@ -2947,6 +2994,8 @@ _RESTART_REQUIRED_KEYS = {
     # Phase 5: security.rules / security.enabled 涉及 PolicyEngine 重建，需重启
     "security.rules",
     "security.enabled",
+    # Phase 9: guardrails 涉及 GuardrailEngine 重建，需重启
+    "guardrails",
     # Condenser: strategy 变更涉及 Condenser 实例类型切换（masking ↔ llm_summary），需重启
     "memory.condenser.strategy",
     # Phase 6: plan 模式下 TaskManager 使用内存对象，无文件路径配置；
@@ -3561,8 +3610,23 @@ def serve_index():
     )
 
 
+@app.get("/chat")
+def serve_chat():
+    """提供对话页（与展示首页分离后的交互页面）。"""
+    chat_path = os.path.join(_WEB_DIR, "chat.html")
+    if not os.path.exists(chat_path):
+        raise HTTPException(status_code=404, detail="对话页未找到")
+    return FileResponse(
+        chat_path,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 # 挂载静态文件目录（CSS/JS 等静态资源）
-if os.path.isdir(_WEB_DIR):
+_STATIC_DIR = os.path.join(_WEB_DIR, "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+elif os.path.isdir(_WEB_DIR):
     app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
 
 

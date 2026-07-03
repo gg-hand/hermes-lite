@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -70,10 +70,13 @@ def _make_tool_use_block(
 # SubTask 7.3: 单工具重试检测
 # ---------------------------------------------------------------------------
 
-class TestToolStuckDetection(unittest.TestCase):
-    """验证单工具重试检测逻辑。"""
+class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
+    """验证单工具重试检测逻辑。
 
-    def test_same_tool_same_params_triggers_stuck(self):
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
+
+    async def test_same_tool_same_params_triggers_stuck(self):
         """同工具同参数重复 3 次触发卡死，返回卡死消息，is_complete=False。"""
         # 构造 LLM 响应：每次都返回相同 tool_use（search, {"q": "test"}）
         tool_block = _make_tool_use_block(
@@ -93,7 +96,7 @@ class TestToolStuckDetection(unittest.TestCase):
             )
         ]
         mock_llm = MagicMock()
-        mock_llm.chat_main.side_effect = responses * 10  # 重复返回相同响应
+        mock_llm.chat_main = AsyncMock(side_effect=responses * 10)  # 重复返回相同响应
 
         mock_registry = MagicMock()
         mock_registry.get_tools_schema.return_value = [
@@ -106,7 +109,7 @@ class TestToolStuckDetection(unittest.TestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
 
         # 验证卡死消息
         self.assertIn("卡死", response)
@@ -116,7 +119,7 @@ class TestToolStuckDetection(unittest.TestCase):
         # execute_tool 最多被调用 2 次（第 3 次在执行前被卡死检测拦截）
         self.assertLessEqual(mock_registry.execute_tool.call_count, 2)
 
-    def test_different_params_does_not_trigger_stuck(self):
+    async def test_different_params_does_not_trigger_stuck(self):
         """不同参数不触发卡死，正常完成循环。"""
         # 构造 3 次不同参数的 tool_use，然后 end_turn
         tool_blocks = [
@@ -139,7 +142,7 @@ class TestToolStuckDetection(unittest.TestCase):
         )
 
         mock_llm = MagicMock()
-        mock_llm.chat_main.side_effect = responses
+        mock_llm.chat_main = AsyncMock(side_effect=responses)
 
         mock_registry = MagicMock()
         mock_registry.get_tools_schema.return_value = [
@@ -152,7 +155,7 @@ class TestToolStuckDetection(unittest.TestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
 
         # 正常完成
         self.assertEqual(response, "done")
@@ -160,7 +163,7 @@ class TestToolStuckDetection(unittest.TestCase):
         # execute_tool 被调用 3 次（不同参数，不触发卡死）
         self.assertEqual(mock_registry.execute_tool.call_count, 3)
 
-    def test_different_tools_same_params_does_not_trigger_stuck(self):
+    async def test_different_tools_same_params_does_not_trigger_stuck(self):
         """不同工具名相同参数不触发卡死。"""
         # 交替使用 search 和 fetch 工具，相同参数
         responses = []
@@ -183,7 +186,7 @@ class TestToolStuckDetection(unittest.TestCase):
         )
 
         mock_llm = MagicMock()
-        mock_llm.chat_main.side_effect = responses
+        mock_llm.chat_main = AsyncMock(side_effect=responses)
 
         mock_registry = MagicMock()
         mock_registry.get_tools_schema.return_value = [
@@ -197,7 +200,7 @@ class TestToolStuckDetection(unittest.TestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
 
         # 正常完成（不同工具名不触发卡死）
         self.assertEqual(response, "done")
@@ -243,28 +246,26 @@ class TestToolStuckDetection(unittest.TestCase):
 # SubTask 7.4: run() 返回值签名（is_complete）
 # ---------------------------------------------------------------------------
 
-class TestRunReturnValueSignature(unittest.TestCase):
-    """验证 run() 返回三元组 (response, messages, is_complete)。"""
+class TestRunReturnValueSignature(unittest.IsolatedAsyncioTestCase):
+    """验证 run() 返回三元组 (response, messages, is_complete)。
 
-    def test_end_turn_returns_is_complete_true(self):
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
+
+    async def test_end_turn_returns_is_complete_true(self):
         """end_turn 自然结束时 is_complete=True。"""
         mock_llm = MagicMock()
-        mock_llm.chat_main.return_value = _make_llm_response(
+        mock_llm.chat_main = AsyncMock(return_value=_make_llm_response(
             text="Hello!", stop_reason="end_turn",
-        )
+        ))
         loop = ReactLoop(llm_client=mock_llm, tool_registry=None, max_loops=5)
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
         self.assertEqual(response, "Hello!")
         self.assertTrue(is_complete)
 
-    def test_max_loops_returns_is_complete_false(self):
+    async def test_max_loops_returns_is_complete_false(self):
         """达到 max_loops 时 is_complete=False。"""
         # 构造始终返回 tool_use 的响应，确保耗尽 max_loops
-        tool_block = _make_tool_use_block(
-            name="search",
-            input_data={"q": f"query"},  # 固定参数会触发卡死
-            block_id="tu_1",
-        )
         # 使用不同参数避免卡死，确保是 max_loops 耗尽而非卡死
         responses = []
         for i in range(20):
@@ -282,7 +283,7 @@ class TestRunReturnValueSignature(unittest.TestCase):
             )
 
         mock_llm = MagicMock()
-        mock_llm.chat_main.side_effect = responses
+        mock_llm.chat_main = AsyncMock(side_effect=responses)
 
         mock_registry = MagicMock()
         mock_registry.get_tools_schema.return_value = [
@@ -295,24 +296,24 @@ class TestRunReturnValueSignature(unittest.TestCase):
             tool_registry=mock_registry,
             max_loops=3,
         )
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
 
         # max_loops 耗尽 → is_complete=False
         self.assertFalse(is_complete)
 
-    def test_tool_registry_none_returns_is_complete_false(self):
+    async def test_tool_registry_none_returns_is_complete_false(self):
         """tool_registry 为 None 且模型请求工具时 is_complete=False。"""
         mock_llm = MagicMock()
-        mock_llm.chat_main.return_value = _make_llm_response(
+        mock_llm.chat_main = AsyncMock(return_value=_make_llm_response(
             text="thinking", stop_reason="tool_use",
             tool_use_blocks=[
                 _make_tool_use_block(name="search", input_data={})
             ],
-        )
+        ))
         loop = ReactLoop(
             llm_client=mock_llm, tool_registry=None, max_loops=5,
         )
-        response, messages, is_complete = loop.run("Hi")
+        response, messages, is_complete = await loop.run("Hi")
         self.assertFalse(is_complete)
 
 
@@ -418,8 +419,13 @@ class TestOrchestratorContinuation(unittest.TestCase):
         self.assertIn("无需重复已完成的工作", msg)
 
 
-class TestOrchestratorContinuationIntegration(unittest.TestCase):
-    """验证 orchestrator chat() 自动续接集成逻辑（mock react_loop）。"""
+class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
+    """验证 orchestrator chat() 自动续接集成逻辑（mock react_loop）。
+
+    注：``orchestrator.chat`` / ``react_loop.run`` / ``_build_enhanced_context``
+    / ``_maybe_flush_on_session_switch`` 已 async（spec Task 5），mock 用
+    AsyncMock，测试方法 async def + await。
+    """
 
     def _make_orchestrator_with_mocks(self):
         """构造一个最小化的 Orchestrator 实例（跳过 __init__）。"""
@@ -435,17 +441,22 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
         orch.task_manager = None
         orch.context_manager = None
         orch.memory_retriever = None
+        # Phase 9 Task 6: 新增属性（None 跳过护栏与审计逻辑，向后兼容）
+        orch.guardrail_engine = None
+        orch.audit_logger = None
         orch._current_session_id = None
+        # react_loop.run 已 async（spec Task 4），用 AsyncMock
+        orch.react_loop.run = AsyncMock()
         return orch
 
-    def test_auto_continuation_when_todo_unfinished(self):
+    async def test_auto_continuation_when_todo_unfinished(self):
         """达到 max_loops 且 TodoList 有未完成步骤时，orchestrator 自动续接。"""
         orch = self._make_orchestrator_with_mocks()
 
         # mock react_loop.run：第一次返回 is_complete=False，第二次 True
         call_count = [0]
 
-        def mock_run(**kwargs):
+        async def mock_run(**kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 # 第一次：达到 max_loops，is_complete=False
@@ -465,16 +476,16 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
             "completed": False,
         }
 
-        # mock _build_enhanced_context 返回简单三元组
-        orch._build_enhanced_context = MagicMock(
+        # mock _build_enhanced_context 返回简单三元组（async，spec Task 5.8）
+        orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
         )
-        # mock _persist_new_messages 避免历史缓冲逻辑
+        # mock _persist_new_messages 避免历史缓冲逻辑（sync，保持 MagicMock）
         orch._persist_new_messages = MagicMock()
-        orch._maybe_flush_on_session_switch = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
 
-        # 调用 chat()
-        result = orch.chat("session-1", "Hi")
+        # 调用 chat()（async，spec Task 5.1）
+        result = await orch.chat("session-1", "Hi")
 
         # 验证：调用了 2 次 react_loop.run（续接 1 次）
         self.assertEqual(orch.react_loop.run.call_count, 2)
@@ -485,7 +496,7 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
         self.assertIn("上一轮已达循环上限", second_call_kwargs["user_input"])
         self.assertIn("step1", second_call_kwargs["user_input"])
 
-    def test_no_continuation_when_todo_all_completed(self):
+    async def test_no_continuation_when_todo_all_completed(self):
         """TodoList 全部完成时不续接（is_complete=False 但不续接）。"""
         orch = self._make_orchestrator_with_mocks()
 
@@ -501,50 +512,50 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
             "completed": True,
         }
 
-        orch._build_enhanced_context = MagicMock(
+        orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
-        orch._maybe_flush_on_session_switch = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
 
-        result = orch.chat("session-1", "Hi")
+        result = await orch.chat("session-1", "Hi")
 
         # 验证：只调用了 1 次 react_loop.run（不续接）
         self.assertEqual(orch.react_loop.run.call_count, 1)
         self.assertEqual(result, "partial")
 
-    def test_no_continuation_when_no_todo_registry(self):
+    async def test_no_continuation_when_no_todo_registry(self):
         """todo_registry 为 None 时不续接。"""
         orch = self._make_orchestrator_with_mocks()
         orch.todo_registry = None
 
         orch.react_loop.run.return_value = ("partial", [], False)
 
-        orch._build_enhanced_context = MagicMock(
+        orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
-        orch._maybe_flush_on_session_switch = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
 
-        result = orch.chat("session-1", "Hi")
+        result = await orch.chat("session-1", "Hi")
 
         # 验证：只调用了 1 次 react_loop.run（不续接）
         self.assertEqual(orch.react_loop.run.call_count, 1)
         self.assertEqual(result, "partial")
 
-    def test_no_continuation_when_is_complete_true(self):
+    async def test_no_continuation_when_is_complete_true(self):
         """is_complete=True 时不续接。"""
         orch = self._make_orchestrator_with_mocks()
 
         orch.react_loop.run.return_value = ("done", [], True)
 
-        orch._build_enhanced_context = MagicMock(
+        orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
-        orch._maybe_flush_on_session_switch = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
 
-        result = orch.chat("session-1", "Hi")
+        result = await orch.chat("session-1", "Hi")
 
         # 验证：只调用了 1 次 react_loop.run
         self.assertEqual(orch.react_loop.run.call_count, 1)
@@ -552,7 +563,7 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
         # todo_registry 不应被查询
         orch.todo_registry.get_todo_dict.assert_not_called()
 
-    def test_total_circuit_breaker_200_rounds(self):
+    async def test_total_circuit_breaker_200_rounds(self):
         """总熔断 200 轮强制结束。"""
         orch = self._make_orchestrator_with_mocks()
         # 设置 max_loops=50，则 200/50=4 次调用后触发熔断
@@ -570,13 +581,13 @@ class TestOrchestratorContinuationIntegration(unittest.TestCase):
             "completed": False,
         }
 
-        orch._build_enhanced_context = MagicMock(
+        orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
-        orch._maybe_flush_on_session_switch = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
 
-        result = orch.chat("session-1", "Hi")
+        result = await orch.chat("session-1", "Hi")
 
         # 验证：调用了 4 次 react_loop.run（4*50=200 触发熔断）
         self.assertEqual(orch.react_loop.run.call_count, 4)

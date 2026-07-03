@@ -11,6 +11,7 @@ try/except import 占位，允许其在缺失或依赖未安装时降级运行�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -115,11 +116,13 @@ if TYPE_CHECKING:
         from .agent.audit import AuditLogger
         from .agent.policy import PolicyEngine
         from .agent.approval import ApprovalManager
+        from .guardrails import GuardrailEngine
     except ImportError:
         from monitoring.metrics import MetricsCollector  # type: ignore
         from agent.audit import AuditLogger  # type: ignore
         from agent.policy import PolicyEngine  # type: ignore
         from agent.approval import ApprovalManager  # type: ignore
+        from guardrails import GuardrailEngine  # type: ignore
 
 # Phase 5: 安全策略与审批模块（运行时导入，与 monitoring 模块同样降级为 None）
 try:
@@ -149,6 +152,15 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     except ImportError:  # pragma: no cover
         TaskManager = None  # type: ignore
         TodoListRegistry = None  # type: ignore
+
+# Phase 9 Task 6: AI 护栏统一编排器（fail-open 软护栏，与 PolicyEngine 并存）
+try:
+    from .guardrails import GuardrailEngine
+except ImportError:  # pragma: no cover - 直接运行模块时回退
+    try:
+        from guardrails import GuardrailEngine  # type: ignore
+    except ImportError:  # pragma: no cover
+        GuardrailEngine = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +353,32 @@ class Orchestrator:
         else:
             self.approval_manager = None
 
+        # Phase 9 Task 6: 装配 GuardrailEngine（fail-open 软护栏）
+        # 从 config["guardrails"] 构造，失败时降级为 noop（所有方法空操作），
+        # 保证 react_loop 不抛空指针且主流程不被护栏故障阻塞。
+        self.guardrail_engine: Optional["GuardrailEngine"] = None
+        if GuardrailEngine is not None:
+            try:
+                self.guardrail_engine = GuardrailEngine.from_config(self.config)
+                logger.info(
+                    "GuardrailEngine 装配成功（input_scan=%s, sanitizer=%s, "
+                    "output_filter=%s）",
+                    self.guardrail_engine.input_scan_enabled,
+                    self.guardrail_engine.sanitizer_enabled,
+                    self.guardrail_engine.output_filter_enabled,
+                )
+            except Exception as e:
+                logger.warning(
+                    "GuardrailEngine.from_config 失败，降级为 noop: %s", e
+                )
+                self.guardrail_engine = GuardrailEngine.create_noop()
+        else:
+            # 模块不可用时也降级为 noop（避免 None 检查）
+            logger.warning(
+                "GuardrailEngine 模块不可用，护栏功能完全禁用"
+            )
+            self.guardrail_engine = None
+
         max_loops = int(tools_config.get("max_react_loops", 50))
         self.react_loop = ReactLoop(
             llm_client=self.llm_client,
@@ -350,6 +388,7 @@ class Orchestrator:
             metrics=self.metrics,
             policy_engine=self.policy_engine,
             approval_manager=self.approval_manager,
+            guardrail_engine=self.guardrail_engine,
         )
 
         # Phase 8 Task 5.7: cron 调度路径所需的依赖（lifespan 装配后注入，
@@ -650,7 +689,7 @@ class Orchestrator:
 
         return _archive_evicted_message
 
-    def chat(self, session_id: str, user_input: str,
+    async def chat(self, session_id: str, user_input: str,
              cancel_event: Optional[threading.Event] = None) -> str:
         """主对话入口。
 
@@ -673,7 +712,7 @@ class Orchestrator:
         self._current_session_id = session_id
 
         # 0. 会话切换检测：若 session_id 变化且 pending 非空，先 flush 旧会话沉淀
-        self._maybe_flush_on_session_switch(session_id)
+        await self._maybe_flush_on_session_switch(session_id)
 
         # 1. 获取 session 历史
         history: List[Dict[str, Any]] = []
@@ -688,10 +727,47 @@ class Orchestrator:
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
         # tools_override（用户会话固定 None；cron 会话为请求级过滤后的列表）
-        system_text, enhanced_history, tools_override = self._build_enhanced_context(
+        system_text, enhanced_history, tools_override = await self._build_enhanced_context(
             session_id, user_input, history
         )
         enhanced_history_len = len(enhanced_history)
+
+        # Phase 9 Task 6 接入点 A: 输入扫描（fail-open 软护栏）
+        # deny 时直接返回拦截消息（不进入 react_loop）；
+        # suspicious 时放行并记录审计；allow 时正常处理。
+        # GuardrailEngine 内部已 try/except fail-open，此处不重复捕获。
+        if self.guardrail_engine is not None:
+            guardrail_result = self.guardrail_engine.scan_input(user_input)
+            if guardrail_result.action == "deny":
+                # 审计记录（deny 为高风险）
+                if self.audit_logger is not None:
+                    self.audit_logger.log_guardrail_decision(
+                        layer="input_scan",
+                        action="deny",
+                        reason=guardrail_result.reason,
+                        session_id=session_id,
+                        matched_patterns=guardrail_result.matched_patterns,
+                        risk_level="high",
+                    )
+                logger.warning(
+                    "输入扫描 deny，拦截会话 %s: %s",
+                    session_id,
+                    guardrail_result.reason,
+                )
+                return "检测到潜在的安全风险，请重新表述您的请求。"
+            # suspicious 或 allow 时放行；suspicious 记录审计（中等风险）
+            if (
+                guardrail_result.action == "suspicious"
+                and self.audit_logger is not None
+            ):
+                self.audit_logger.log_guardrail_decision(
+                    layer="input_scan",
+                    action="allow",
+                    reason=guardrail_result.reason,
+                    session_id=session_id,
+                    matched_patterns=guardrail_result.matched_patterns,
+                    risk_level="medium",
+                )
 
         # Phase 9 Task 7.6-7.7: 自动续接包装层 + 总熔断 200 轮
         # react_loop.run 返回 is_complete=False 时（达到 max_loops 或卡死），
@@ -706,7 +782,7 @@ class Orchestrator:
         messages_used: List[Dict[str, Any]] = []
 
         while total_rounds < MAX_TOTAL_ROUNDS:
-            response_text, messages_used, is_complete = self.react_loop.run(
+            response_text, messages_used, is_complete = await self.react_loop.run(
                 user_input=current_user_input,
                 history=current_history,
                 system=system_text,
@@ -750,7 +826,29 @@ class Orchestrator:
                 "达到总轮次上限 %d，强制终止", MAX_TOTAL_ROUNDS
             )
 
-        # 3. 记录消息到 session_logger
+        # Phase 9 Task 6 接入点 B: 输出过滤（PII 脱敏）
+        # 在 react_loop 循环结束后、session_logger / history_buffer 之前
+        # 过滤 LLM 响应中的 PII。filtered_response 用于 ConsolidationEngine
+        # 与最终返回值；session_logger / history_buffer 仍持久化原始
+        # response_text（保留 LLM 上下文完整，便于追溯与调试）。
+        # GuardrailEngine 内部已 try/except fail-open，异常时返回原值。
+        filtered_response: str = response_text
+        if self.guardrail_engine is not None:
+            try:
+                filtered_response, pii_count = (
+                    self.guardrail_engine.filter_output(response_text)
+                )
+                if pii_count > 0:
+                    logger.info(
+                        "输出过滤脱敏 %d 处 PII（会话 %s）",
+                        pii_count,
+                        session_id,
+                    )
+            except Exception as e:
+                logger.warning("filter_output 异常，fail-open 使用原值: %s", e)
+                filtered_response = response_text
+
+        # 3. 记录消息到 session_logger（持久化原始 response_text，保留完整上下文）
         if self.session_logger is not None:
             try:
                 self._ensure_session(session_id)
@@ -770,6 +868,8 @@ class Orchestrator:
         # 4. 更新历史缓冲（持久化循环内完整 messages，含 tool_use + tool_result）
         # messages_used = enhanced_history + [user_input, ...loop messages...]，
         # 切掉 enhanced_history 部分即为本次新增的消息。
+        # Phase 9 Task 6 接入点 C: history_buffer 持久化原始 new_messages
+        # （LLM 上下文完整，不受 PII 脱敏影响）。
         if self.history_buffer is not None:
             try:
                 new_messages = messages_used[enhanced_history_len:]
@@ -778,6 +878,8 @@ class Orchestrator:
                 logger.warning("更新 HistoryBuffer 失败: %s", e)
 
         # 5. 累加信息到 ConsolidationEngine，达到阈值时触发沉淀
+        # Phase 9 Task 6 接入点 C: ConsolidationEngine 累加 filtered_response
+        # （防 PII 泄漏到长期记忆向量库）。user_input 不脱敏（保留语义）。
         if self.consolidation_engine is not None:
             try:
                 # 将本轮 user 输入与 assistant 回复累加到沉淀引擎的缓冲区
@@ -785,15 +887,16 @@ class Orchestrator:
                     {"role": "user", "content": user_input}
                 )
                 self.consolidation_engine.add_info(
-                    {"role": "assistant", "content": response_text}
+                    {"role": "assistant", "content": filtered_response}
                 )
                 # 达到阈值则触发沉淀（consolidate 内部会重置计数器与消息缓冲）
                 if self.consolidation_engine.should_consolidate():
-                    self._trigger_consolidation(session_id)
+                    await self._trigger_consolidation(session_id)
             except Exception as e:
                 logger.warning("consolidation 信息累加或触发失败: %s", e)
 
-        return response_text
+        # Phase 9 Task 6 接入点 C: 返回 filtered_response（用户可见脱敏文本）
+        return filtered_response
 
     async def chat_stream(
         self,
@@ -850,7 +953,7 @@ class Orchestrator:
         """
         # 0. 会话切换检测：若 session_id 变化且 pending 非空，先 flush 旧会话沉淀
         yield {"type": "status", "status": "loading_context", "message": "正在加载上下文..."}
-        self._maybe_flush_on_session_switch(session_id)
+        await self._maybe_flush_on_session_switch(session_id)
 
         # 记录当前 session_id，供 plan 工具通过 get_session_id 回调获取
         self._current_session_id = session_id
@@ -868,10 +971,59 @@ class Orchestrator:
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
         # tools_override（用户会话固定 None；cron 会话为请求级过滤后的列表）
-        system_text, enhanced_history, tools_override = self._build_enhanced_context(
+        system_text, enhanced_history, tools_override = await self._build_enhanced_context(
             session_id, user_input, history
         )
         enhanced_history_len = len(enhanced_history)
+
+        # Phase 9 Task 6 接入点 D: 输入扫描（流式路径）
+        # deny 时 yield 一个 error 事件并 return（不进入 run_stream）；
+        # suspicious 时放行并记录审计；allow 时正常处理。
+        if self.guardrail_engine is not None:
+            guardrail_result = self.guardrail_engine.scan_input(user_input)
+            if guardrail_result.action == "deny":
+                # 审计记录（deny 为高风险）
+                if self.audit_logger is not None:
+                    self.audit_logger.log_guardrail_decision(
+                        layer="input_scan",
+                        action="deny",
+                        reason=guardrail_result.reason,
+                        session_id=session_id,
+                        matched_patterns=guardrail_result.matched_patterns,
+                        risk_level="high",
+                    )
+                logger.warning(
+                    "输入扫描 deny（流式），拦截会话 %s: %s",
+                    session_id,
+                    guardrail_result.reason,
+                )
+                yield {
+                    "type": "error",
+                    "message": "检测到潜在的安全风险，请重新表述您的请求。",
+                    "reason": guardrail_result.reason,
+                }
+                # 直接 yield done 事件，保证前端流正常结束
+                yield {
+                    "type": "done",
+                    "response": "检测到潜在的安全风险，请重新表述您的请求。",
+                    "messages": [],
+                    "is_complete": True,
+                }
+                return
+            # suspicious 或 allow 时放行；suspicious 记录审计（中等风险）
+            if (
+                guardrail_result.action == "suspicious"
+                and self.audit_logger is not None
+            ):
+                self.audit_logger.log_guardrail_decision(
+                    layer="input_scan",
+                    action="allow",
+                    reason=guardrail_result.reason,
+                    session_id=session_id,
+                    matched_patterns=guardrail_result.matched_patterns,
+                    risk_level="medium",
+                )
+
         response_text: str = ""
         # done 事件携带的完整 messages（含 history + 本轮新增），
         # 在 finally 块中切出本轮新增部分持久化到 history_buffer。
@@ -1012,6 +1164,31 @@ class Orchestrator:
 
                 yield event  # 透传给 server.py
 
+                # Phase 9 Task 6 接入点 E: done 事件后过滤 PII
+                # 在 done 事件透传后，对最终 response 做 PII 脱敏。
+                # 若发生替换，额外 yield 一个 output_filtered 事件，
+                # 供前端将已显示的响应替换为脱敏版本。
+                # 注意：仅在 try 块内（done 事件）yield output_filtered，
+                # finally 块中不能可靠 yield（async generator 限制）。
+                if etype == "done" and self.guardrail_engine is not None:
+                    try:
+                        _done_response = event.get("response", "") or ""
+                        (
+                            _filtered_done,
+                            _done_pii_count,
+                        ) = self.guardrail_engine.filter_output(_done_response)
+                        if _filtered_done != _done_response:
+                            yield {
+                                "type": "output_filtered",
+                                "filtered_response": _filtered_done,
+                                "replacements_count": _done_pii_count,
+                            }
+                    except Exception as e:
+                        logger.warning(
+                            "done 事件 output_filtered 异常，fail-open 跳过: %s",
+                            e,
+                        )
+
                 # T13: plan_task / update_todo 工具事件透传后，发射 todo 事件。
                 # 事件顺序：tool → todo_init / (todo_update → todo_complete)，
                 # 在下一轮 text 之前发射，确保前端实时渲染 todo 卡片。
@@ -1093,9 +1270,24 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning("更新 HistoryBuffer 失败: %s", e)
 
-            # 5. 累加信息到 ConsolidationEngine（保持原样）
+            # 5. 累加信息到 ConsolidationEngine，达到阈值时触发沉淀
+            # Phase 9 Task 6 接入点 F: ConsolidationEngine 累加 filtered_response
+            # （防 PII 泄漏到长期记忆向量库）。collected_messages 与
+            # session_logger / history_buffer 持久化原始文本（保留上下文完整）。
             # Note: 中断时 response_text 可能为空，兜底用 current_round_text
-            _consolidation_response = response_text or current_round_text or "[用户中断了回复]"
+            _consolidation_response = (
+                response_text or current_round_text or "[用户中断了回复]"
+            )
+            # 对 _consolidation_response 做 PII 脱敏后再累加到沉淀引擎
+            if self.guardrail_engine is not None:
+                try:
+                    _consolidation_response, _ = (
+                        self.guardrail_engine.filter_output(_consolidation_response)
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "finally 块 filter_output 异常，fail-open 使用原值: %s", e
+                    )
             if self.consolidation_engine is not None:
                 try:
                     self.consolidation_engine.add_info(
@@ -1105,7 +1297,7 @@ class Orchestrator:
                         {"role": "assistant", "content": _consolidation_response}
                     )
                     if self.consolidation_engine.should_consolidate():
-                        self._trigger_consolidation(session_id)
+                        await self._trigger_consolidation(session_id)
                 except Exception as e:
                     logger.warning("consolidation 信息累加或触发失败: %s", e)
 
@@ -1292,7 +1484,7 @@ class Orchestrator:
             "请继续完成剩余步骤，无需重复已完成的工作。"
         )
 
-    def _build_enhanced_context(
+    async def _build_enhanced_context(
         self,
         session_id: str,
         user_input: str,
@@ -1333,7 +1525,7 @@ class Orchestrator:
         # Phase 8 Task 1.4: cron 会话走隔离路径
         cron_isolation = self._build_cron_isolation(session_id)
         if cron_isolation is not None:
-            return self._build_cron_enhanced_context(
+            return await self._build_cron_enhanced_context(
                 session_id, user_input, history, cron_isolation
             )
 
@@ -1352,7 +1544,9 @@ class Orchestrator:
         # 2. 检索长期记忆并作为 history 前置 user 消息注入
         if self.memory_retriever is not None:
             try:
-                memory_text = self.memory_retriever.get_injection_text(user_input)
+                memory_text = await asyncio.to_thread(
+                    self.memory_retriever.get_injection_text, user_input
+                )
                 # 上报记忆检索命中/未命中指标
                 if self.metrics is not None:
                     self.metrics.observe_memory_retrieval(hit=bool(memory_text))
@@ -1408,7 +1602,7 @@ class Orchestrator:
         # 统一前置 injection_text 到 history（若存在）
         # history 先经 condenser 压缩（masking 旧 tool_result / LLM 摘要），
         # 压缩在送入 ReactLoop 前完成，不影响 history_buffer 存储。
-        condensed_history = self._apply_condenser(history)
+        condensed_history = await self._apply_condenser(history)
         if injection_text:
             enhanced_history = [
                 {"role": "user", "content": injection_text}
@@ -1443,7 +1637,7 @@ class Orchestrator:
             return None
         return CronIsolation.from_session_id(session_id)
 
-    def _build_cron_enhanced_context(
+    async def _build_cron_enhanced_context(
         self,
         session_id: str,
         user_input: str,
@@ -1502,7 +1696,8 @@ class Orchestrator:
         # 1. 检索 cron namespace 长期记忆（按 cron_id 过滤）
         if self.memory_retriever is not None:
             try:
-                memory_text = self.memory_retriever.get_injection_text(
+                memory_text = await asyncio.to_thread(
+                    self.memory_retriever.get_injection_text,
                     user_input,
                     namespace=cron_isolation.namespace,
                     cron_id=cron_isolation.cron_id,
@@ -1522,7 +1717,7 @@ class Orchestrator:
         #    避免动态变量破坏缓存稳定性
 
         # 3. 统一前置 injection_text 到 history（若存在）
-        condensed_history = self._apply_condenser(history)
+        condensed_history = await self._apply_condenser(history)
         if injection_text:
             enhanced_history = [
                 {"role": "user", "content": injection_text}
@@ -1672,7 +1867,7 @@ class Orchestrator:
             if getattr(self, "react_loop", None) is not None:
                 self.react_loop.cron_tool_registry = cron_tool_registry
 
-    def _apply_condenser(
+    async def _apply_condenser(
         self, history: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """对 history 应用 condenser 压缩，返回压缩后的新列表。
@@ -1693,7 +1888,7 @@ class Orchestrator:
         if condenser is None:
             return clean
         try:
-            return condenser.condense(clean)
+            return await asyncio.to_thread(condenser.condense, clean)
         except Exception as e:
             logger.warning("condenser 压缩历史失败，使用原始历史: %s", e)
             return clean
@@ -1815,7 +2010,7 @@ class Orchestrator:
             self.context_manager.condenser = new_condenser
         return new_condenser
 
-    def _maybe_flush_on_session_switch(self, session_id: str) -> None:
+    async def _maybe_flush_on_session_switch(self, session_id: str) -> None:
         """会话切换时自动 flush 旧会话的沉淀。
 
         若 ``_last_session_id`` 与当前 ``session_id`` 不同，且
@@ -1845,7 +2040,11 @@ class Orchestrator:
                 self.consolidation_engine.info_counter,
             )
             # flush 旧会话：按旧 session_id 路由 namespace
-            self.flush_consolidation(session_id=self._last_session_id)
+            # flush_consolidation 内部调用 consolidation_engine.force_consolidate
+            # （同步 LLM 调用），通过 to_thread 在线程中执行避免阻塞事件循环
+            await asyncio.to_thread(
+                self.flush_consolidation, session_id=self._last_session_id
+            )
 
         self._last_session_id = session_id
 
@@ -1874,7 +2073,7 @@ class Orchestrator:
             logger.warning("flush consolidation 失败: %s", e)
             return {}
 
-    def _trigger_consolidation(self, session_id: Optional[str] = None) -> None:
+    async def _trigger_consolidation(self, session_id: Optional[str] = None) -> None:
         """触发记忆沉淀流程。
 
         ConsolidationEngine.consolidate() 使用内部 pending_messages 缓冲；
@@ -1890,7 +2089,9 @@ class Orchestrator:
             logger.debug("ConsolidationEngine 未启用，跳过 consolidation")
             return
         try:
-            self.consolidation_engine.consolidate(session_id=session_id)
+            await asyncio.to_thread(
+                self.consolidation_engine.consolidate, session_id=session_id
+            )
         except Exception as e:
             logger.warning("consolidation 执行失败: %s", e)
 

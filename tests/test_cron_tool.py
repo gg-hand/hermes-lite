@@ -754,13 +754,18 @@ class _MockReactLoopForCache:
         yield "mock chunk"
 
 
-class TestCacheConstraintEndToEnd(unittest.TestCase):
+class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
     """缓存约束端到端验证（SubTask 5.10 核心）。
 
     验证：
     - 用户会话 tools_override 始终为 None（字节级稳定）
     - cron 会话按 active_tools_snapshot 请求级过滤
     - cron_tool 激活/更新不改变全局 ToolRegistry schema
+
+    注：``_build_enhanced_context`` 已 async（Phase 10 异步化改造），
+    本类用 IsolatedAsyncioTestCase；仅调用 _build_enhanced_context 的用例
+    改为 async def + await，其余同步用例（仅调用 _build_cron_tools 等
+    同步方法）保持原样。
     """
 
     def setUp(self):
@@ -793,18 +798,18 @@ class TestCacheConstraintEndToEnd(unittest.TestCase):
     def tearDown(self):
         self.sandbox.cleanup()
 
-    def test_user_session_returns_none_tools_override(self):
+    async def test_user_session_returns_none_tools_override(self):
         """用户会话 _build_enhanced_context 返回 tools_override=None。"""
-        system_text, history, tools_override = self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch._build_enhanced_context(
             session_id="user_session_123",
             user_input="hello",
             history=[],
         )
         self.assertIsNone(tools_override)
 
-    def test_cron_session_without_deps_returns_none(self):
+    async def test_cron_session_without_deps_returns_none(self):
         """cron 会话但 cron_scheduler 未注入时返回 None（降级）。"""
-        system_text, history, tools_override = self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch._build_enhanced_context(
             session_id="cron:sched1",
             user_input="hello",
             history=[],
@@ -911,7 +916,7 @@ class TestCacheConstraintEndToEnd(unittest.TestCase):
         after = self.global_registry.get_tools_schema()
         self.assertEqual(before, after)
 
-    def test_react_loop_receives_tools_override(self):
+    async def test_react_loop_receives_tools_override(self):
         """ReactLoop.run 收到 tools_override 参数（非 None）。"""
         sched = {"active_tools_snapshot": ["builtin_a"]}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched4": sched})
@@ -922,7 +927,9 @@ class TestCacheConstraintEndToEnd(unittest.TestCase):
         self.cron_tool_registry.register("cron_echo")
 
         # 模拟 chat() 路径：构建 context + 调用 react_loop.run
-        system_text, history, tools_override = self.orch._build_enhanced_context(
+        # 注：_build_enhanced_context 已 async（Phase 10），需 await。
+        # _MockReactLoopForCache.run 保持同步（测试直接调用，不经生产代码）。
+        system_text, history, tools_override = await self.orch._build_enhanced_context(
             session_id="cron:sched4", user_input="hi", history=[]
         )
         self.assertIsNotNone(tools_override)
@@ -937,9 +944,9 @@ class TestCacheConstraintEndToEnd(unittest.TestCase):
         self.assertIsNotNone(self.react_loop.last_tools_override)
         self.assertIsInstance(self.react_loop.last_tools_override, list)
 
-    def test_react_loop_user_session_receives_none(self):
+    async def test_react_loop_user_session_receives_none(self):
         """用户会话 ReactLoop.run 收到 tools_override=None。"""
-        system_text, history, tools_override = self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch._build_enhanced_context(
             session_id="user_xxx", user_input="hi", history=[]
         )
         self.orch.react_loop.run(

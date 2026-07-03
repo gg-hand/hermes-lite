@@ -62,10 +62,11 @@ def _make_mock_orchestrator(**overrides) -> object:
     if attrs.get("chroma_store") is not None:
         obj.chroma_store.collection.count.return_value = 42
 
-    # llm_client 子客户端
+    # llm_client 子后端（Phase 10 异步化改造：_main_client/_consolidation_client
+    # 已重命名为 _main_backend/_consolidation_backend，参见 health._check_llm_client）
     if attrs.get("llm_client") is not None:
-        obj.llm_client._main_client = MagicMock()
-        obj.llm_client._consolidation_client = MagicMock()
+        obj.llm_client._main_backend = MagicMock()
+        obj.llm_client._consolidation_backend = MagicMock()
 
     # cron_scheduler.list_schedules 默认返回空列表
     if attrs.get("cron_scheduler") is not None:
@@ -223,8 +224,9 @@ class TestHealthCheckerCritical(unittest.TestCase):
 
     def test_llm_main_client_none(self):
         mock_o = _make_mock_orchestrator()
-        mock_o.llm_client._main_client = None
-        mock_o.llm_client._consolidation_client = unittest.mock.MagicMock()
+        # Phase 10 异步化改造：属性名 _main_client → _main_backend
+        mock_o.llm_client._main_backend = None
+        mock_o.llm_client._consolidation_backend = unittest.mock.MagicMock()
         checker = HealthChecker(orchestrator=mock_o)
         result = checker.run_all()
         self.assertEqual(result["status"], "unhealthy")

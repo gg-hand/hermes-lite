@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+from dotenv import load_dotenv
+
+# 自动加载 .env 文件（如存在），使 ${ENV_VAR} 占位符能解析其中的变量
+# 在 shell 脚本（start.sh/restart.sh）中已通过 source .env 加载，
+# 此处作为 Python 层兜底，确保直接通过 python -m uvicorn 启动时也能读取 .env
+load_dotenv()
 
 # 匹配 ${ENV_VAR} 形式的占位符
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -129,6 +135,43 @@ def clear_config_cache() -> None:
     _config_cache = None
     _config_cache_mtime = 0.0
     _config_cache_path = None
+
+
+# ---------------------------------------------------------------------------
+# LLM 超时配置默认值（spec: async-llm-backend）
+# ---------------------------------------------------------------------------
+# per-token 活跃超时：LLM 在此秒数内未返回任何 token 则视为卡死并中断
+_LLM_ACTIVITY_TIMEOUT_DEFAULT: float = 60.0
+# 流式总超时：兜底整个流式调用（含工具执行时间）的最大时长
+_LLM_STREAM_TOTAL_TIMEOUT_DEFAULT: float = 300.0
+
+
+def get_llm_timeouts(config: dict) -> tuple[float, float]:
+    """从配置字典读取 LLM 超时配置，缺失时返回默认值（向后兼容旧 config）。
+
+    读取 ``llm.activity_timeout`` 与 ``llm.stream_total_timeout`` 两个数值字段
+    （单位秒，int 或 float 均可）。字段缺失或 ``llm`` 段不存在时使用默认值
+    (60.0, 300.0)，保证旧配置文件无需修改即可加载。
+
+    本函数只做读取与类型归一化（统一转 float），不做范围校验；非法类型
+    （如字符串）会抛出 ``ValueError``/``TypeError``，交由调用方处理。
+
+    参数:
+        config: 已由 :func:`load_config` 解析的配置字典。
+
+    返回:
+        ``(activity_timeout, stream_total_timeout)`` 元组，单位秒。
+    """
+    llm_cfg = config.get("llm") or {}
+    if not isinstance(llm_cfg, dict):
+        llm_cfg = {}
+    activity_timeout = float(
+        llm_cfg.get("activity_timeout", _LLM_ACTIVITY_TIMEOUT_DEFAULT)
+    )
+    stream_total_timeout = float(
+        llm_cfg.get("stream_total_timeout", _LLM_STREAM_TOTAL_TIMEOUT_DEFAULT)
+    )
+    return activity_timeout, stream_total_timeout
 
 
 def load_config(config_path: str = "config.yaml") -> dict:

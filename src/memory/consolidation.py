@@ -297,7 +297,7 @@ class ConsolidationEngine:
         ]
 
         try:
-            response = self.llm_client.chat_consolidation(
+            response = self.llm_client.chat_consolidation_sync(
                 messages, system=system_prompt
             )
         except Exception as e:

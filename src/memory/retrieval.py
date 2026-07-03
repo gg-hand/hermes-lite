@@ -365,7 +365,7 @@ class MemoryRetriever:
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = self.llm_client.chat_main(messages)
+            response = self.llm_client.chat_main_sync(messages)
         except RuntimeError as e:
             logger.error("调用 LLM 重排失败，回退到原始排序: %s", e)
             return memories

@@ -135,8 +135,12 @@ class TestCronIsolationParsing(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestOrchestratorCronRouting(unittest.TestCase):
-    """验证 Orchestrator 检测 cron: 前缀并走隔离路径。"""
+class TestOrchestratorCronRouting(unittest.IsolatedAsyncioTestCase):
+    """验证 Orchestrator 检测 cron: 前缀并走隔离路径。
+
+    注：``_build_enhanced_context`` 已 async（Phase 10 异步化改造），
+    本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def _make_orchestrator(self, with_task_manager=True):
         """通过 __new__ 构造 Orchestrator，仅设置测试需要的属性。"""
@@ -156,10 +160,10 @@ class TestOrchestratorCronRouting(unittest.TestCase):
         orch.todo_registry = None
         return orch
 
-    def test_cron_session_uses_cron_namespace_for_retrieval(self):
+    async def test_cron_session_uses_cron_namespace_for_retrieval(self):
         """cron session 检索记忆时传 namespace=cron + cron_id。"""
         orch = self._make_orchestrator()
-        system_text, enhanced_history, _ = orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch._build_enhanced_context(
             "cron:sched_X", "python question", []
         )
         # 检查 retriever 被调用时传了 cron namespace
@@ -168,10 +172,10 @@ class TestOrchestratorCronRouting(unittest.TestCase):
         self.assertEqual(calls[0]["namespace"], "cron")
         self.assertEqual(calls[0]["cron_id"], "sched_X")
 
-    def test_cron_session_system_text_equals_prompt(self):
+    async def test_cron_session_system_text_equals_prompt(self):
         """cron session 的 system_text 等于 SYSTEM_PROMPT（含工具选择指南）。"""
         orch = self._make_orchestrator()
-        system_text, _, _ = orch._build_enhanced_context(
+        system_text, _, _ = await orch._build_enhanced_context(
             "cron:sched_X", "question", []
         )
         self.assertEqual(system_text, SYSTEM_PROMPT)
@@ -179,10 +183,10 @@ class TestOrchestratorCronRouting(unittest.TestCase):
         self.assertIn("用户画像", system_text)
         self.assertNotIn("测试用户画像内容", system_text)
 
-    def test_cron_session_does_not_inject_todo(self):
+    async def test_cron_session_does_not_inject_todo(self):
         """cron session 不注入 TaskManager 进度。"""
         orch = self._make_orchestrator(with_task_manager=True)
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             "cron:sched_X", "question", []
         )
         # 找到注入的 user 消息（history 前置的 injection_text）
@@ -191,46 +195,46 @@ class TestOrchestratorCronRouting(unittest.TestCase):
         self.assertNotIn("任务进度", content)
         self.assertNotIn("当前任务状态", content)
 
-    def test_cron_session_injects_cron_memory(self):
+    async def test_cron_session_injects_cron_memory(self):
         """cron session 注入自己命名空间的记忆。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             "cron:sched_X", "question", []
         )
         injection_msg = enhanced_history[0]
         self.assertIn("cron memory for sched_X", injection_msg["content"])
 
-    def test_user_session_uses_user_namespace(self):
+    async def test_user_session_uses_user_namespace(self):
         """user session 检索记忆时传 namespace=user（默认）。"""
         orch = self._make_orchestrator()
-        orch._build_enhanced_context("user_session", "question", [])
+        await orch._build_enhanced_context("user_session", "question", [])
         calls = orch.memory_retriever.calls
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["namespace"], "user")
         self.assertIsNone(calls[0]["cron_id"])
 
-    def test_user_session_includes_profile(self):
+    async def test_user_session_includes_profile(self):
         """user session 的 system_text 含 memory.md 用户画像。"""
         orch = self._make_orchestrator()
-        system_text, _, _ = orch._build_enhanced_context(
+        system_text, _, _ = await orch._build_enhanced_context(
             "user_session", "question", []
         )
         self.assertIn("测试用户画像内容", system_text)
 
-    def test_user_session_includes_todo(self):
+    async def test_user_session_includes_todo(self):
         """user session 注入 TaskManager 进度。"""
         orch = self._make_orchestrator(with_task_manager=True)
-        _, enhanced_history, _ = orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch._build_enhanced_context(
             "user_session", "question", []
         )
         injection_msg = enhanced_history[0]
         self.assertIn("任务进度", injection_msg["content"])
 
-    def test_user_session_behavior_unchanged(self):
+    async def test_user_session_behavior_unchanged(self):
         """user session 行为完全不变（向后兼容关键场景）。"""
         orch = self._make_orchestrator(with_task_manager=False)
         # 无 task_manager 时 user session 也不注入 todo（原有行为）
-        system_text, enhanced_history, _ = orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch._build_enhanced_context(
             "user_session", "question", []
         )
         self.assertIn("测试用户画像内容", system_text)

@@ -1,4 +1,4 @@
-"""LLM 客户端封装（多 Provider 支持）。
+"""LLM 客户端封装（多 Provider 支持，异步实现）。
 
 封装主对话 LLM 与 consolidation LLM 两个客户端，支持多种 Provider：
 
@@ -7,8 +7,20 @@
 - ``deepseek``：DeepSeek（OpenAI 兼容 API）
 - ``qwen``：阿里通义千问（DashScope OpenAI 兼容模式）
 
-DeepSeek / Qwen 均提供 OpenAI 兼容 API，复用同一 ``OpenAICompatBackend``
+DeepSeek / Qwen 均提供 OpenAI 兼容 API，复用同一 ``AsyncOpenAICompatBackend``
 实现，仅 ``base_url`` 与默认环境变量不同。
+
+异步化要点（spec: async-llm-backend）：
+
+- 所有 Backend 改用 ``anthropic.AsyncAnthropic`` / ``openai.AsyncOpenAI``，
+  ``chat`` 为 ``async def``，``chat_stream`` 为 async generator。
+- 新增 :class:`ActivityTimeout` 与 :func:`_with_activity_timeout` 实现
+  per-token 活跃超时，LLM 卡死时立即中断。
+- 新增 :func:`async_retry_on_failure` 用 ``asyncio.sleep`` 退避，不阻塞
+  事件循环；对 async generator 仅在未 yield 任何 item 时重试。
+- :class:`LLMClient` 的 ``chat_main`` / ``chat_consolidation`` / ``chat_main_stream``
+  改 async；新增 ``chat_main_sync`` / ``chat_consolidation_sync`` 供
+  workflow / memory 线程池路径调用（内部 ``asyncio.run``）。
 
 为保持 ``react_loop`` 不变，所有 Backend 对外统一返回 ``LLMResponse``
 对象，其接口兼容 ``anthropic.types.Message``：
@@ -24,6 +36,7 @@ React 循环外部接口保持 Anthropic 风格不变。
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import json
@@ -31,7 +44,7 @@ import logging
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 import anthropic
 import tiktoken
@@ -49,12 +62,14 @@ except ImportError:
 if TYPE_CHECKING:
     try:
         from ..monitoring.metrics import MetricsCollector
+        from ..stream_manager import StreamManager
     except ImportError:
         from monitoring.metrics import MetricsCollector  # type: ignore
+        from stream_manager import StreamManager  # type: ignore
 
 # 兼容相对导入与直接运行两种方式
 try:
-    from ..config import load_config
+    from ..config import get_llm_timeouts, load_config
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
     from pathlib import Path
@@ -62,7 +77,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     _SRC_DIR = str(Path(__file__).resolve().parent.parent)
     if _SRC_DIR not in sys.path:
         sys.path.insert(0, _SRC_DIR)
-    from config import load_config  # type: ignore
+    from config import get_llm_timeouts, load_config  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -108,21 +123,31 @@ def _get_encoding() -> tiktoken.Encoding:
     return _ENCODING
 
 
+class ActivityTimeout(Exception):
+    """per-token 活跃超时：LLM 在 ``activity_timeout`` 秒内未返回任何 token。
+
+    被 :func:`async_retry_on_failure` 装饰器捕获时不重试（``_is_retryable``
+    中检查），区别于网络错误/限流等可重试异常。冒泡至 server.py SSE handler
+    后 yield ``{"type":"error","message":"LLM 响应超时（Ns 无输出）"}``。
+    """
+    pass
+
+
 def _is_retryable(exc: Exception) -> bool:
     """判断异常是否可重试。
 
     429 限流、5xx 服务端错误、网络连接错误（无 ``status_code``）可重试；
     4xx 客户端错误（非 429）不重试，立即抛出。
 
-    对 ``StreamCancelled`` 直接返回 False（用户取消不重试），避免
-    @retry_on_failure 装饰器在取消后仍重试 LLM 调用浪费 token。
+    对 ``StreamCancelled``（用户取消）与 ``ActivityTimeout``（卡死超时）
+    直接返回 False，避免重试浪费 token 或重复显示已输出内容。
 
     对 Anthropic SDK 异常（``RateLimitError`` / ``APIStatusError`` /
     ``APIConnectionError``）与 OpenAI 兼容 SDK 异常统一处理：
     优先检查 ``status_code`` 属性，无 ``status_code`` 视为连接错误可重试。
     """
-    # 用户主动取消 → 绝对不重试
-    if isinstance(exc, StreamCancelled):
+    # 用户主动取消 / 卡死超时 → 绝对不重试
+    if isinstance(exc, (StreamCancelled, ActivityTimeout)):
         return False
     status = getattr(exc, "status_code", None)
     if status is not None:
@@ -132,14 +157,73 @@ def _is_retryable(exc: Exception) -> bool:
     return True
 
 
-def retry_on_failure(max_retries: int = 3, base_delay: float = 1.0):
-    """LLM 调用指数退避重试装饰器。
+async def _with_activity_timeout(
+    aiter: AsyncIterator[Any],
+    timeout_sec: float,
+    on_timeout: Optional[Callable[[], Awaitable[None]]] = None,
+) -> AsyncIterator[Any]:
+    """通用 per-item 活跃超时 wrapper（async generator）。
+
+    对输入 async iterable 逐项用 ``asyncio.wait_for`` 等待，每个 item 之间
+    最多等 ``timeout_sec`` 秒。超时则调用 ``on_timeout``（用 try/except
+    保护，``on_timeout`` 失败记录 warning 但不掩盖 :class:`ActivityTimeout`，
+    例如连接已断开时 ``stream.close()`` 抛异常），然后 raise
+    :class:`ActivityTimeout`。
+
+    参数:
+        aiter: 被包装的 async iterable（如 ``stream`` 或 ``async for chunk in stream``）。
+        timeout_sec: per-item 超时秒数。每次 ``__anext__`` 重新计时，
+                     即"相邻 token 间隔"超时（非总时长）。
+        on_timeout: 超时回调（async callable，一般是 ``stream.close``），
+                    None 表示不调用清理逻辑。
+
+    Yields:
+        输入 iterable 的每个 item（原样透传）。
+
+    Raises:
+        ActivityTimeout: 任一 item 等待超过 ``timeout_sec`` 秒。
+    """
+    ait = aiter.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(ait.__anext__(), timeout=timeout_sec)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError:
+            # per-token 活跃超时：先尝试清理（关闭流释放 HTTP 连接），
+            # close 失败也不掩盖 ActivityTimeout（spec SubTask 3.14）。
+            if on_timeout is not None:
+                try:
+                    await on_timeout()
+                except Exception as close_exc:
+                    logger.warning(
+                        "on_timeout 回调失败（已忽略，不掩盖 ActivityTimeout）: %r",
+                        close_exc,
+                    )
+            raise ActivityTimeout(
+                f"LLM 在 {timeout_sec}s 内未返回任何 token"
+            )
+        yield item
+
+
+def async_retry_on_failure(max_retries: int = 3, base_delay: float = 1.0):
+    """异步 LLM 调用指数退避重试装饰器。
 
     对 429 限流、5xx 服务端错误、网络连接错误进行指数退避重试，
-    4xx 客户端错误（非 429）立即抛出不重试。
+    4xx 客户端错误（非 429）立即抛出不重试。退避用 ``asyncio.sleep``，
+    不阻塞事件循环。
 
-    自动兼容生成器函数（如 :meth:`BaseBackend.chat_stream`）：对生成器
-    函数返回包装生成器，在迭代时触发重试逻辑。
+    自动兼容：
+    - ``async def`` 协程：包装为重试协程。
+    - async generator（如 :meth:`AsyncBaseBackend.chat_stream`）：包装为
+      重试 async generator。
+
+    **已知限制（spec SubTask 3.15）**：对 async generator，仅在**未 yield
+    任何 item** 时重试（首次连接失败可重试）；已 yield 后的失败直接抛出
+    （避免重试生成新流导致前端重复显示已输出内容）。
+
+    ``StreamCancelled`` / ``ActivityTimeout`` 不重试（``_is_retryable``
+    中检查），用户取消与卡死超时立即冒泡。
 
     参数:
         max_retries: 最大尝试次数（含首次调用）。
@@ -147,14 +231,45 @@ def retry_on_failure(max_retries: int = 3, base_delay: float = 1.0):
     """
 
     def decorator(func):
-        if inspect.isgeneratorfunction(func):
+        if inspect.isasyncgenfunction(func):
             @functools.wraps(func)
-            def wrapper(*args, **kwargs):
+            async def wrapper(*args, **kwargs):
+                last_exc: Optional[Exception] = None
+                for attempt in range(max_retries):
+                    has_yielded = False
+                    try:
+                        async for item in func(*args, **kwargs):
+                            has_yielded = True
+                            yield item
+                        return
+                    except Exception as e:
+                        # 已 yield 后失败：不重试，直接抛出（spec SubTask 3.15）
+                        if has_yielded:
+                            raise
+                        if not _is_retryable(e):
+                            raise
+                        last_exc = e
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(
+                                "触发限流/错误，%.1fs 后重试 (attempt %d/%d)",
+                                delay,
+                                attempt + 1,
+                                max_retries,
+                            )
+                            await asyncio.sleep(delay)
+                raise RuntimeError(
+                    f"API 调用在 {max_retries} 次重试后仍失败"
+                ) from last_exc
+
+            return wrapper
+        elif inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
                 last_exc: Optional[Exception] = None
                 for attempt in range(max_retries):
                     try:
-                        yield from func(*args, **kwargs)
-                        return
+                        return await func(*args, **kwargs)
                     except Exception as e:
                         if not _is_retryable(e):
                             raise
@@ -167,37 +282,17 @@ def retry_on_failure(max_retries: int = 3, base_delay: float = 1.0):
                                 attempt + 1,
                                 max_retries,
                             )
-                            time.sleep(delay)
+                            await asyncio.sleep(delay)
                 raise RuntimeError(
                     f"API 调用在 {max_retries} 次重试后仍失败"
                 ) from last_exc
 
             return wrapper
         else:
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                last_exc: Optional[Exception] = None
-                for attempt in range(max_retries):
-                    try:
-                        return func(*args, **kwargs)
-                    except Exception as e:
-                        if not _is_retryable(e):
-                            raise
-                        last_exc = e
-                        if attempt < max_retries - 1:
-                            delay = base_delay * (2 ** attempt)
-                            logger.warning(
-                                "触发限流/错误，%.1fs 后重试 (attempt %d/%d)",
-                                delay,
-                                attempt + 1,
-                                max_retries,
-                            )
-                            time.sleep(delay)
-                raise RuntimeError(
-                    f"API 调用在 {max_retries} 次重试后仍失败"
-                ) from last_exc
-
-            return wrapper
+            raise TypeError(
+                f"async_retry_on_failure 仅支持 async def / async generator，"
+                f"实际装饰的函数 {func!r} 不是协程或异步生成器"
+            )
 
     return decorator
 
@@ -233,10 +328,12 @@ class LLMResponse:
         )
 
 
-class BaseBackend:
-    """LLM 后端抽象基类。
+class AsyncBaseBackend:
+    """异步 LLM 后端抽象基类。
 
-    子类需实现 :meth:`chat`，返回 :class:`LLMResponse`。
+    子类需实现 :meth:`chat`（async def，返回 :class:`LLMResponse`）与
+    :meth:`chat_stream`（async generator，yield 事件 dict）。
+
     对外接口使用 Anthropic 风格的消息与工具 schema，由子类内部完成
     必要的格式转换。
     """
@@ -246,7 +343,7 @@ class BaseBackend:
         self.api_key: str = api_key
         self.base_url: Optional[str] = base_url
 
-    def chat(
+    async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -256,14 +353,18 @@ class BaseBackend:
         """调用 LLM 并返回统一响应。子类必须实现。"""
         raise NotImplementedError
 
-    def chat_stream(
+    async def chat_stream(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
-    ):
-        """流式调用 LLM，生成器逐个 yield 事件 dict。
+        cancel_event: Optional[threading.Event] = None,
+        activity_timeout: float = 60.0,
+        stream_manager: Optional["StreamManager"] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """流式调用 LLM，async generator 逐个 yield 事件 dict。
 
         事件类型（统一格式）：
             - ``{"type": "text", "text": "<增量文本>"}``：
@@ -273,15 +374,38 @@ class BaseBackend:
               列表（含 text 与 tool_use 块，Anthropic 风格），
               供调用方（如 ReactLoop）判断是否需要继续工具调用循环。
 
+        参数:
+            messages: Anthropic 风格消息列表。
+            tools: 可选工具定义列表（Anthropic 风格）。
+            system: 可选系统提示词。
+            max_tokens: 输出 token 上限。
+            cancel_event: 可选 ``threading.Event``，用于同步工具 handler 中断
+                          （``_cancel_context`` ContextVar 机制不变）。流迭代中
+                          检测 ``is_set()`` 时 raise :class:`StreamCancelled`。
+            activity_timeout: per-token 活跃超时秒数。相邻 token 间隔超过此值
+                              则 raise :class:`ActivityTimeout`。
+            stream_manager: 可选 :class:`StreamManager`，用于注册 ``cancel_callback``
+                            （Task 9 主路径：``/chat/cancel`` immediate 调
+                            ``trigger_cancel`` 主动断流）。
+            session_id: 可选会话 ID，与 ``stream_manager`` 配对使用。
+
         子类必须实现。
         """
         raise NotImplementedError
+        # 仅为 mypy 把本方法标记为 async generator（实际由子类实现）
+        yield {}  # pragma: no cover
 
 
-class AnthropicBackend(BaseBackend):
-    """Anthropic 原生后端，使用 anthropic SDK。
+class AsyncAnthropicBackend(AsyncBaseBackend):
+    """异步 Anthropic 后端，使用 ``anthropic.AsyncAnthropic`` SDK。
 
     消息 / 工具 schema 直接使用 Anthropic 格式，无需转换。
+
+    流式调用使用 ``async with client.messages.stream(...) as stream:``，
+    外层用 :func:`_with_activity_timeout` 包装实现 per-token 活跃超时。
+    ``cancel_event.is_set()`` 检查保留作为兜底路径；``stream.close`` 引发的
+    异常（``asyncio.CancelledError`` / SDK 连接关闭异常）转换为
+    :class:`StreamCancelled` 冒泡（spec SubTask 3.13）。
     """
 
     def __init__(self, model: str, api_key: str, base_url: Optional[str] = None) -> None:
@@ -290,12 +414,12 @@ class AnthropicBackend(BaseBackend):
         if base_url:
             client_kwargs["base_url"] = base_url
         try:
-            self._client = anthropic.Anthropic(**client_kwargs)
+            self._client = anthropic.AsyncAnthropic(**client_kwargs)
         except anthropic.AnthropicError as e:
             raise RuntimeError(f"初始化 anthropic 客户端失败: {e}") from e
 
-    @retry_on_failure()
-    def chat(
+    @async_retry_on_failure()
+    async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -312,7 +436,7 @@ class AnthropicBackend(BaseBackend):
         if tools:
             request_kwargs["tools"] = tools
 
-        response = self._client.messages.create(**request_kwargs)
+        response = await self._client.messages.create(**request_kwargs)
 
         # 将 anthropic content block 对象统一转为 dict
         content_blocks: List[Dict[str, Any]] = []
@@ -354,20 +478,29 @@ class AnthropicBackend(BaseBackend):
             raw=response,
         )
 
-    @retry_on_failure()
-    def chat_stream(
+    @async_retry_on_failure()
+    async def chat_stream(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        cancel_event: Optional["threading.Event"] = None,
-    ):
-        """Anthropic 流式调用，使用 ``client.messages.stream``。
+        cancel_event: Optional[threading.Event] = None,
+        activity_timeout: float = 60.0,
+        stream_manager: Optional["StreamManager"] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Anthropic 异步流式调用，使用 ``client.messages.stream``。
 
         通过 ``stream.get_final_message()`` 在流结束后获取完整 message，
         其中包含 content blocks（含 tool_use）与 stop_reason。
-        ``cancel_event`` 用于在流迭代中检测用户中断。
+
+        取消双路径设计（spec SubTask 3.13）：
+        - 主路径：``/chat/cancel`` → ``stream_manager.trigger_cancel`` →
+          ``await stream.close()`` 主动断开 HTTP 连接，``async for`` 立即
+          抛异常 → 本方法 try/except 捕获并转 :class:`StreamCancelled`。
+        - 兜底路径：``cancel_event.is_set()`` 在收到 chunk 后检查（防止
+          trigger_cancel 失败或 stream.close 未注册的边界情况）。
         """
         request_kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -379,66 +512,117 @@ class AnthropicBackend(BaseBackend):
         if tools:
             request_kwargs["tools"] = tools
 
-        with self._client.messages.stream(**request_kwargs) as stream:
-            for event in stream:
-                # 🔴 中断检测：用户点击停止或客户端断连
+        async with self._client.messages.stream(**request_kwargs) as stream:
+            # 注册 cancel_callback（Task 9 主路径），用 hasattr 守护兼容
+            # StreamManager 未实现 set_cancel_callback 的旧版本。
+            async def _close_stream() -> None:
+                try:
+                    await stream.close()
+                except Exception as e:
+                    logger.warning("stream.close 失败: %r", e)
+
+            cancel_cb_registered = False
+            if stream_manager is not None and session_id is not None:
+                set_cb = getattr(stream_manager, "set_cancel_callback", None)
+                if set_cb is not None:
+                    try:
+                        await set_cb(session_id, _close_stream)
+                        cancel_cb_registered = True
+                    except Exception as e:
+                        logger.warning("set_cancel_callback 失败: %r", e)
+
+            final_message: Any = None
+            try:
+                async for event in _with_activity_timeout(
+                    stream, activity_timeout, _close_stream
+                ):
+                    # 兜底路径：cancel_event.is_set() 检查（trigger_cancel
+                    # 未注册或 stream.close 失败时的兜底）
+                    if cancel_event and cancel_event.is_set():
+                        raise StreamCancelled("User cancelled the stream")
+                    # 文本增量事件
+                    if getattr(event, "type", None) == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta is not None and getattr(delta, "type", None) == "text_delta":
+                            text = getattr(delta, "text", "")
+                            if text:
+                                yield {"type": "text", "text": text}
+                final_message = await stream.get_final_message()
+            except StreamCancelled:
+                raise
+            except ActivityTimeout:
+                raise
+            except asyncio.CancelledError:
+                # trigger_cancel 路径：stream.close 后 async for 引发 CancelledError
                 if cancel_event and cancel_event.is_set():
-                    raise StreamCancelled("User cancelled the stream")
-                # 文本增量事件
-                if getattr(event, "type", None) == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta is not None and getattr(delta, "type", None) == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text:
-                            yield {"type": "text", "text": text}
-            final_message = stream.get_final_message()
+                    raise StreamCancelled("User cancelled via trigger_cancel")
+                raise
+            except Exception as e:
+                # 其他 SDK 异常：检查是否因用户取消（stream.close 引发的连接异常）
+                if cancel_event and cancel_event.is_set():
+                    raise StreamCancelled(
+                        f"User cancelled, stream closed: {e!r}"
+                    ) from e
+                raise
+            finally:
+                if cancel_cb_registered:
+                    try:
+                        await stream_manager.set_cancel_callback(session_id, None)  # type: ignore[union-attr]
+                    except Exception:
+                        pass
 
-        # 将 final_message 的 content blocks 统一转为 dict
-        content_blocks: List[Dict[str, Any]] = []
-        for block in getattr(final_message, "content", []) or []:
-            if isinstance(block, dict):
-                content_blocks.append(block)
-                continue
-            block_type = getattr(block, "type", None)
-            if block_type == "text":
-                content_blocks.append(
-                    {"type": "text", "text": getattr(block, "text", "")}
-                )
-            elif block_type == "tool_use":
-                content_blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": getattr(block, "id", ""),
-                        "name": getattr(block, "name", ""),
-                        "input": getattr(block, "input", {}) or {},
-                    }
-                )
-            else:
-                content_blocks.append({"type": block_type or "unknown"})
+            # 将 final_message 的 content blocks 统一转为 dict
+            content_blocks: List[Dict[str, Any]] = []
+            for block in getattr(final_message, "content", []) or []:
+                if isinstance(block, dict):
+                    content_blocks.append(block)
+                    continue
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    content_blocks.append(
+                        {"type": "text", "text": getattr(block, "text", "")}
+                    )
+                elif block_type == "tool_use":
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": getattr(block, "id", ""),
+                            "name": getattr(block, "name", ""),
+                            "input": getattr(block, "input", {}) or {},
+                        }
+                    )
+                else:
+                    content_blocks.append({"type": block_type or "unknown"})
 
-        usage_dict: Optional[Dict[str, Any]] = None
-        usage_obj = getattr(final_message, "usage", None)
-        if usage_obj is not None:
-            usage_dict = {
-                "input_tokens": getattr(usage_obj, "input_tokens", 0),
-                "output_tokens": getattr(usage_obj, "output_tokens", 0),
-                "cache_creation_input_tokens": getattr(usage_obj, "cache_creation_input_tokens", 0),
-                "cache_read_input_tokens": getattr(usage_obj, "cache_read_input_tokens", 0),
+            usage_dict: Optional[Dict[str, Any]] = None
+            usage_obj = getattr(final_message, "usage", None)
+            if usage_obj is not None:
+                usage_dict = {
+                    "input_tokens": getattr(usage_obj, "input_tokens", 0),
+                    "output_tokens": getattr(usage_obj, "output_tokens", 0),
+                    "cache_creation_input_tokens": getattr(usage_obj, "cache_creation_input_tokens", 0),
+                    "cache_read_input_tokens": getattr(usage_obj, "cache_read_input_tokens", 0),
+                }
+
+            yield {
+                "type": "done",
+                "stop_reason": getattr(final_message, "stop_reason", "end_turn") or "end_turn",
+                "content_blocks": content_blocks,
+                "usage": usage_dict,
             }
 
-        yield {
-            "type": "done",
-            "stop_reason": getattr(final_message, "stop_reason", "end_turn") or "end_turn",
-            "content_blocks": content_blocks,
-            "usage": usage_dict,
-        }
 
+class AsyncOpenAICompatBackend(AsyncBaseBackend):
+    """异步 OpenAI 兼容后端，使用 ``openai.AsyncOpenAI`` SDK。
 
-class OpenAICompatBackend(BaseBackend):
-    """OpenAI 兼容后端，支持 openai / deepseek / qwen。
+    支持 openai / deepseek / qwen，仅 ``base_url`` 与默认环境变量不同。
 
     内部完成 Anthropic 风格消息 / 工具 schema → OpenAI 格式的转换，
     并将 OpenAI 响应包装回 :class:`LLMResponse`（Anthropic 风格）。
+
+    流式调用 ``stream = await client.chat.completions.create(stream=True, ...)``
+    + ``async for chunk in stream``，外层用 :func:`_with_activity_timeout`
+    包装。取消双路径设计同 :class:`AsyncAnthropicBackend`。
     """
 
     def __init__(
@@ -451,7 +635,7 @@ class OpenAICompatBackend(BaseBackend):
         super().__init__(model, api_key, base_url)
         self.provider_name: str = provider_name
         try:
-            from openai import OpenAI  # type: ignore
+            from openai import AsyncOpenAI  # type: ignore
         except ImportError as e:
             raise RuntimeError(
                 "未安装 openai SDK（>=1.50.0），请运行: pip install 'openai>=1.50.0'"
@@ -460,10 +644,10 @@ class OpenAICompatBackend(BaseBackend):
         client_kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             client_kwargs["base_url"] = base_url
-        self._client = OpenAI(**client_kwargs)
+        self._client = AsyncOpenAI(**client_kwargs)
 
-    @retry_on_failure()
-    def chat(
+    @async_retry_on_failure()
+    async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -481,23 +665,28 @@ class OpenAICompatBackend(BaseBackend):
         if openai_tools:
             request_kwargs["tools"] = openai_tools
 
-        response = self._client.chat.completions.create(**request_kwargs)
+        response = await self._client.chat.completions.create(**request_kwargs)
 
         return self._convert_response(response)
 
-    @retry_on_failure()
-    def chat_stream(
+    @async_retry_on_failure()
+    async def chat_stream(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         cancel_event: Optional[threading.Event] = None,
-    ):
-        """OpenAI 兼容流式调用（``stream=True``）。
+        activity_timeout: float = 60.0,
+        stream_manager: Optional["StreamManager"] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """OpenAI 兼容异步流式调用（``stream=True``）。
 
         增量文本通过 ``delta.content`` 累积并 yield；工具调用通过
         ``delta.tool_calls`` 累积，流结束后组装为完整 content_blocks。
+
+        取消双路径设计同 :class:`AsyncAnthropicBackend`。
         """
         openai_messages = self._convert_messages(messages, system)
         openai_tools = self._convert_tools(tools) if tools else None
@@ -513,7 +702,24 @@ class OpenAICompatBackend(BaseBackend):
         if openai_tools:
             request_kwargs["tools"] = openai_tools
 
-        stream = self._client.chat.completions.create(**request_kwargs)
+        stream = await self._client.chat.completions.create(**request_kwargs)
+
+        # 注册 cancel_callback（Task 9 主路径）
+        async def _close_stream() -> None:
+            try:
+                await stream.close()
+            except Exception as e:
+                logger.warning("stream.close 失败: %r", e)
+
+        cancel_cb_registered = False
+        if stream_manager is not None and session_id is not None:
+            set_cb = getattr(stream_manager, "set_cancel_callback", None)
+            if set_cb is not None:
+                try:
+                    await set_cb(session_id, _close_stream)
+                    cancel_cb_registered = True
+                except Exception as e:
+                    logger.warning("set_cancel_callback 失败: %r", e)
 
         # 累积文本与工具调用
         full_text_parts: List[str] = []
@@ -523,56 +729,79 @@ class OpenAICompatBackend(BaseBackend):
         # 流式 usage（末个 chunk 携带，include_usage=True 时返回）
         stream_usage: Optional[Any] = None
 
-        for chunk in stream:
-            # 🔴 中断检测：用户点击停止或客户端断连
+        try:
+            async for chunk in _with_activity_timeout(
+                stream, activity_timeout, _close_stream
+            ):
+                # 兜底路径：cancel_event.is_set() 检查
+                if cancel_event and cancel_event.is_set():
+                    raise StreamCancelled("User cancelled the stream")
+                # 末个 chunk 可能含 usage 但 choices 为空
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    stream_usage = chunk_usage
+                if not getattr(chunk, "choices", None):
+                    continue
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+
+                # 文本增量
+                delta_content = getattr(delta, "content", None)
+                if delta_content:
+                    full_text_parts.append(delta_content)
+                    yield {"type": "text", "text": delta_content}
+
+                # 工具调用增量
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for tc in delta_tool_calls:
+                        idx = getattr(tc, "index", 0) or 0
+                        slot = tool_calls_acc.setdefault(
+                            idx, {"id": "", "name": "", "arguments_str": ""}
+                        )
+                        tc_id = getattr(tc, "id", None)
+                        if tc_id:
+                            slot["id"] = tc_id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            fn_name = getattr(fn, "name", None)
+                            if fn_name:
+                                slot["name"] = fn_name
+                            args_delta = getattr(fn, "arguments", None)
+                            if args_delta:
+                                slot["arguments_str"] += args_delta
+
+                # 记录 finish_reason（最后一个 chunk 才有）
+                chunk_finish = getattr(choice, "finish_reason", None)
+                if chunk_finish:
+                    finish_reason = chunk_finish
+        except StreamCancelled:
+            raise
+        except ActivityTimeout:
+            raise
+        except asyncio.CancelledError:
             if cancel_event and cancel_event.is_set():
-                # 关闭底层 HTTP 连接，避免资源泄漏
-                if hasattr(stream, 'close'):
-                    stream.close()
-                elif hasattr(stream, 'response') and hasattr(stream.response, 'close'):
-                    stream.response.close()
-                raise StreamCancelled("User cancelled the stream")
-            # 末个 chunk 可能含 usage 但 choices 为空
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage is not None:
-                stream_usage = chunk_usage
-            if not getattr(chunk, "choices", None):
-                continue
-            choice = chunk.choices[0]
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
-
-            # 文本增量
-            delta_content = getattr(delta, "content", None)
-            if delta_content:
-                full_text_parts.append(delta_content)
-                yield {"type": "text", "text": delta_content}
-
-            # 工具调用增量
-            delta_tool_calls = getattr(delta, "tool_calls", None)
-            if delta_tool_calls:
-                for tc in delta_tool_calls:
-                    idx = getattr(tc, "index", 0) or 0
-                    slot = tool_calls_acc.setdefault(
-                        idx, {"id": "", "name": "", "arguments_str": ""}
-                    )
-                    tc_id = getattr(tc, "id", None)
-                    if tc_id:
-                        slot["id"] = tc_id
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        fn_name = getattr(fn, "name", None)
-                        if fn_name:
-                            slot["name"] = fn_name
-                        args_delta = getattr(fn, "arguments", None)
-                        if args_delta:
-                            slot["arguments_str"] += args_delta
-
-            # 记录 finish_reason（最后一个 chunk 才有）
-            chunk_finish = getattr(choice, "finish_reason", None)
-            if chunk_finish:
-                finish_reason = chunk_finish
+                raise StreamCancelled("User cancelled via trigger_cancel")
+            raise
+        except Exception as e:
+            if cancel_event and cancel_event.is_set():
+                raise StreamCancelled(
+                    f"User cancelled, stream closed: {e!r}"
+                ) from e
+            raise
+        finally:
+            if cancel_cb_registered:
+                try:
+                    await stream_manager.set_cancel_callback(session_id, None)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            # 主动关闭 stream 释放底层 HTTP 连接（幂等，已关闭则无副作用）
+            try:
+                await stream.close()
+            except Exception:
+                pass
 
         # 组装 content_blocks（Anthropic 风格）
         content_blocks: List[Dict[str, Any]] = []
@@ -612,7 +841,7 @@ class OpenAICompatBackend(BaseBackend):
             usage_dict = {
                 "input_tokens": getattr(stream_usage, "prompt_tokens", 0),
                 "output_tokens": getattr(stream_usage, "completion_tokens", 0),
-                **OpenAICompatBackend._extract_cache_usage(stream_usage),
+                **AsyncOpenAICompatBackend._extract_cache_usage(stream_usage),
             }
 
         yield {
@@ -1046,7 +1275,7 @@ class OpenAICompatBackend(BaseBackend):
             usage_dict = {
                 "input_tokens": getattr(usage_obj, "prompt_tokens", 0),
                 "output_tokens": getattr(usage_obj, "completion_tokens", 0),
-                **OpenAICompatBackend._extract_cache_usage(usage_obj),
+                **AsyncOpenAICompatBackend._extract_cache_usage(usage_obj),
             }
 
         return LLMResponse(
@@ -1062,8 +1291,8 @@ def _create_backend(
     model: str,
     api_key: str,
     base_url: Optional[str] = None,
-) -> BaseBackend:
-    """根据 provider 创建对应 Backend 实例。
+) -> AsyncBaseBackend:
+    """根据 provider 创建对应异步 Backend 实例。
 
     参数:
         provider: ``anthropic`` / ``openai`` / ``deepseek`` / ``qwen``。
@@ -1072,19 +1301,19 @@ def _create_backend(
         base_url: 可选自定义 base_url，仅对 OpenAI 兼容类生效。
 
     返回:
-        :class:`BaseBackend` 子类实例。
+        :class:`AsyncBaseBackend` 子类实例。
     """
     provider_lower = (provider or "").lower().strip()
     if not provider_lower:
         raise ValueError("provider 未设置，请在 config.yaml 中配置 llm.main_provider")
 
     if provider_lower == "anthropic":
-        return AnthropicBackend(model=model, api_key=api_key, base_url=base_url)
+        return AsyncAnthropicBackend(model=model, api_key=api_key, base_url=base_url)
 
     if provider_lower in ("openai", "deepseek", "qwen"):
         # base_url 优先级：config 显式配置 > provider 默认值
         effective_base_url = base_url or _PROVIDER_DEFAULT_BASE_URL.get(provider_lower)
-        return OpenAICompatBackend(
+        return AsyncOpenAICompatBackend(
             model=model,
             api_key=api_key,
             base_url=effective_base_url,
@@ -1097,8 +1326,17 @@ def _create_backend(
     )
 
 
+# ---------------------------------------------------------------------------
+# 向后兼容别名（spec: 删除 sync 版本，async 类别名指向 async 类）
+# ---------------------------------------------------------------------------
+
+BaseBackend = AsyncBaseBackend
+AnthropicBackend = AsyncAnthropicBackend
+OpenAICompatBackend = AsyncOpenAICompatBackend
+
+
 class LLMClient:
-    """LLM 客户端，封装主对话与 consolidation 两个 Backend。
+    """LLM 客户端，封装主对话与 consolidation 两个异步 Backend。
 
     根据 ``config.yaml`` 的 ``llm`` 段配置创建两个独立 Backend：
 
@@ -1107,9 +1345,14 @@ class LLMClient:
     - consolidation Backend：使用 ``consolidation_provider`` /
       ``consolidation_model`` / ``consolidation_api_key`` / ``consolidation_base_url``
 
-    对外接口（``chat_main`` / ``chat_consolidation``）保持 Anthropic 风格，
-    返回 :class:`LLMResponse`（兼容 ``anthropic.types.Message`` 接口），
-    ``react_loop`` 无需任何改动。
+    对外接口（``chat_main`` / ``chat_consolidation`` / ``chat_main_stream``）
+    均为 async，返回 :class:`LLMResponse`（兼容 ``anthropic.types.Message``
+    接口）。
+
+    供 workflow / memory 等线程池路径调用，提供 sync wrapper
+    ``chat_main_sync`` / ``chat_consolidation_sync``，内部
+    ``asyncio.run`` 在调用线程内创建临时事件循环。**不可**在主事件循环
+    运行中的协程内直接调用 sync wrapper（会抛 RuntimeError）。
     """
 
     def __init__(
@@ -1126,9 +1369,11 @@ class LLMClient:
             metrics_collector: 可选的指标采集器，用于上报 LLM 调用用量与延迟。
         """
         self._metrics_collector: Optional["MetricsCollector"] = metrics_collector
+        self._config_path: str = config_path
 
         if config is None:
             config = load_config(config_path)
+        self._config: Dict[str, Any] = config
 
         llm_config: Dict[str, Any] = config.get("llm", {})
         if not llm_config:
@@ -1164,6 +1409,11 @@ class LLMClient:
             llm_config.get("context_threshold", 0.8)
         )
 
+        # LLM 超时配置（spec async-llm-backend Task 1）
+        # activity_timeout: per-token 活跃超时（相邻 token 间隔超时）
+        # stream_total_timeout: 流式总超时（兜底整个流式调用）
+        self._activity_timeout, self._stream_total_timeout = get_llm_timeouts(config)
+
         # 校验必要配置
         if not self.main_model:
             raise ValueError("配置 llm.main_model 未设置")
@@ -1182,13 +1432,13 @@ class LLMClient:
             )
 
         # 创建 Backend 实例
-        self._main_backend: BaseBackend = _create_backend(
+        self._main_backend: AsyncBaseBackend = _create_backend(
             provider=self.main_provider,
             model=self.main_model,
             api_key=self.main_api_key,
             base_url=self.main_base_url,
         )
-        self._consolidation_backend: BaseBackend = _create_backend(
+        self._consolidation_backend: AsyncBaseBackend = _create_backend(
             provider=self.consolidation_provider,
             model=self.consolidation_model,
             api_key=self.consolidation_api_key,
@@ -1196,11 +1446,14 @@ class LLMClient:
         )
 
         logger.info(
-            "LLMClient 初始化完成: main=%s/%s, consolidation=%s/%s",
+            "LLMClient 初始化完成: main=%s/%s, consolidation=%s/%s, "
+            "activity_timeout=%.1fs, stream_total_timeout=%.1fs",
             self.main_provider,
             self.main_model,
             self.consolidation_provider,
             self.consolidation_model,
+            self._activity_timeout,
+            self._stream_total_timeout,
         )
 
     @staticmethod
@@ -1211,14 +1464,14 @@ class LLMClient:
         env_name = _PROVIDER_DEFAULT_ENV_KEY.get(provider, "")
         return os.environ.get(env_name, "") if env_name else ""
 
-    def chat_main(
+    async def chat_main(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """主对话 LLM 调用。
+        """主对话 LLM 调用（async）。
 
         参数:
             messages: 对话消息列表，Anthropic 风格
@@ -1233,7 +1486,7 @@ class LLMClient:
             :class:`LLMResponse` 对象，包含 content / stop_reason / usage 字段。
         """
         t0 = time.perf_counter()
-        response = self._main_backend.chat(
+        response = await self._main_backend.chat(
             messages=messages,
             tools=tools,
             system=system,
@@ -1244,27 +1497,45 @@ class LLMClient:
             self._metrics_collector.observe_llm_usage(response.usage, latency_ms)
         return response
 
-    def chat_main_stream(
+    async def chat_main_stream(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         cancel_event: Optional[threading.Event] = None,
-    ):
-        """主对话 LLM 流式调用，生成器 yield 事件 dict。
+        activity_timeout: Optional[float] = None,
+        stream_manager: Optional["StreamManager"] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """主对话 LLM 异步流式调用，async generator yield 事件 dict。
 
-        事件格式与 :meth:`BaseBackend.chat_stream` 一致：
+        事件格式与 :meth:`AsyncBaseBackend.chat_stream` 一致：
             - ``{"type": "text", "text": str}``
             - ``{"type": "done", "stop_reason": str, "content_blocks": list, "usage": dict|None}``
+
+        参数:
+            activity_timeout: per-token 活跃超时秒数。None 表示使用
+                              :meth:`__init__` 时从 config 读取的默认值。
+                              支持热更新（调用方重新读取 config 后透传新值）。
+            stream_manager: 可选 :class:`StreamManager`，用于注册 ``cancel_callback``
+                            （Task 9 主路径）。
+            session_id: 可选会话 ID，与 ``stream_manager`` 配对。
         """
+        # activity_timeout 默认值：调用方透传 > config 默认值
+        if activity_timeout is None:
+            activity_timeout = self._activity_timeout
+
         t0 = time.perf_counter()
-        for event in self._main_backend.chat_stream(
+        async for event in self._main_backend.chat_stream(
             messages=messages,
             tools=tools,
             system=system,
             max_tokens=max_tokens,
             cancel_event=cancel_event,
+            activity_timeout=activity_timeout,
+            stream_manager=stream_manager,
+            session_id=session_id,
         ):
             if event.get("type") == "done" and self._metrics_collector is not None:
                 usage = event.get("usage")
@@ -1273,13 +1544,13 @@ class LLMClient:
                     self._metrics_collector.observe_llm_usage(usage, latency_ms)
             yield event
 
-    def chat_consolidation(
+    async def chat_consolidation(
         self,
         messages: List[Dict[str, Any]],
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> LLMResponse:
-        """consolidation LLM 调用，用于记忆沉淀提取。
+        """consolidation LLM 调用（async），用于记忆沉淀提取。
 
         参数:
             messages: 对话消息列表。
@@ -1289,11 +1560,60 @@ class LLMClient:
         返回:
             :class:`LLMResponse` 对象。
         """
-        return self._consolidation_backend.chat(
+        return await self._consolidation_backend.chat(
             messages=messages,
             tools=None,
             system=system,
             max_tokens=max_tokens or _DEFAULT_MAX_TOKENS_CONSOLIDATION,
+        )
+
+    # ── sync wrapper（供 workflow / memory 线程池路径调用）──
+
+    def chat_main_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResponse:
+        """sync wrapper for :meth:`chat_main`，供线程池路径调用。
+
+        内部 ``asyncio.run(self.chat_main(...))`` 在调用线程内创建临时
+        事件循环。**不可**在主事件循环运行中的协程内直接调用（会抛
+        ``RuntimeError: asyncio.run() cannot be called from a running
+        event loop``）。仅可在以下上下文使用：
+
+        - ``asyncio.to_thread`` 包裹的线程池线程内
+        - workflow 的 ``_execute_workflow``（已由 scheduler 用
+          ``asyncio.to_thread`` 调度）
+        - 独立同步脚本 / 测试代码
+        """
+        return asyncio.run(
+            self.chat_main(
+                messages=messages,
+                tools=tools,
+                system=system,
+                max_tokens=max_tokens,
+            )
+        )
+
+    def chat_consolidation_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMResponse:
+        """sync wrapper for :meth:`chat_consolidation`，供线程池路径调用。
+
+        内部 ``asyncio.run(self.chat_consolidation(...))``，约束同
+        :meth:`chat_main_sync`。
+        """
+        return asyncio.run(
+            self.chat_consolidation(
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+            )
         )
 
     def count_tokens(self, text: str) -> int:

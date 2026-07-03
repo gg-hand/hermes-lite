@@ -20,6 +20,7 @@ LLM 自主研究模板，无确定性步骤。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -93,11 +94,13 @@ class ResearchTemplate(WorkflowTemplate):
                 # Phase 9 Task 7.4: react_loop.run 返回值由二元组改为三元组，
                 # 第三项 is_complete 在 workflow 路径不参与自动续接（workflow
                 # 由调度器驱动，单次执行即结束），仅解包忽略。
-                response_text, messages_used, _is_complete = react_loop.run(
-                    user_input=user_input,
-                    history=[],
-                    system=system_prompt,
-                    session_id=context.session_id,
+                response_text, messages_used, _is_complete = asyncio.run(
+                    react_loop.run(
+                        user_input=user_input,
+                        history=[],
+                        system=system_prompt,
+                        session_id=context.session_id,
+                    )
                 )
                 result.assistant_response = response_text
                 # 从 messages_used 提取工具调用列表

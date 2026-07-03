@@ -21,7 +21,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any, List
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 # ---------------------------------------------------------------------------
 # 路径与 mock 依赖初始化（必须在导入任何 src 模块之前完成）
@@ -209,12 +209,43 @@ class TestConvertResponseCacheUsage(unittest.TestCase):
         self.assertIsNone(llm_resp.usage)
 
 
-class TestChatStreamCacheUsage(unittest.TestCase):
+class _AsyncChunkStream:
+    """Mock OpenAI/Anthropic async stream：async iterable + ``close()``。
+
+    模拟 ``await client.chat.completions.create(stream=True, ...)`` 返回的
+    stream 对象：支持 ``async for chunk in stream`` 与 ``await stream.close()``。
+    ``chat_stream`` 改为 async generator（spec Task 3）后，本类替代旧的
+    ``iter(chunks)`` 同步迭代器。
+    """
+
+    def __init__(self, chunks: List[Any]) -> None:
+        self._chunks: List[Any] = list(chunks)
+        self._index: int = 0
+        self.close_call_count: int = 0
+
+    def __aiter__(self) -> "_AsyncChunkStream":
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._index >= len(self._chunks):
+            raise StopAsyncIteration
+        chunk = self._chunks[self._index]
+        self._index += 1
+        return chunk
+
+    async def close(self) -> None:
+        self.close_call_count += 1
+
+
+class TestChatStreamCacheUsage(unittest.IsolatedAsyncioTestCase):
     """端到端验证 ``chat_stream`` 末个 chunk 的缓存字段采集。
 
     通过 mock ``self._client.chat.completions.create`` 返回一个固定 chunk 列表，
     其中末个 chunk 携带 usage（含 DeepSeek 缓存字段），验证最终 done 事件中
     usage 字段正确映射。
+
+    注：``chat_stream`` 已改为 async generator（spec Task 3），本类用
+    :class:`unittest.IsolatedAsyncioTestCase` + ``async for`` 收集事件。
     """
 
     def _build_backend(self) -> OpenAICompatBackend:
@@ -245,7 +276,16 @@ class TestChatStreamCacheUsage(unittest.TestCase):
         chunk.usage = usage
         return chunk
 
-    def test_stream_with_deepseek_cache_fields(self):
+    async def _collect_stream(self, backend: OpenAICompatBackend) -> List[Any]:
+        """收集 ``backend.chat_stream`` 的全部事件（async generator → list）。"""
+        events: List[Any] = []
+        async for event in backend.chat_stream(
+            messages=[{"role": "user", "content": "hi"}]
+        ):
+            events.append(event)
+        return events
+
+    async def test_stream_with_deepseek_cache_fields(self):
         """流式响应：末个 chunk 含 DeepSeek 缓存字段时正确映射。"""
         backend = self._build_backend()
 
@@ -265,9 +305,11 @@ class TestChatStreamCacheUsage(unittest.TestCase):
         # 末个 chunk choices 为空（OpenAI include_usage 行为）
         chunks[-1].choices = []
 
-        backend._client.chat.completions.create = MagicMock(return_value=iter(chunks))
+        backend._client.chat.completions.create = AsyncMock(
+            return_value=_AsyncChunkStream(chunks)
+        )
 
-        events = list(backend.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+        events = await self._collect_stream(backend)
         done_event = events[-1]
         self.assertEqual(done_event["type"], "done")
         usage = done_event["usage"]
@@ -277,7 +319,7 @@ class TestChatStreamCacheUsage(unittest.TestCase):
         self.assertEqual(usage["cache_read_input_tokens"], 5000)
         self.assertEqual(usage["cache_creation_input_tokens"], 500)
 
-    def test_stream_without_cache_fields(self):
+    async def test_stream_without_cache_fields(self):
         """流式响应：标准 OpenAI usage 无缓存字段时降级为 0。"""
         backend = self._build_backend()
 
@@ -292,9 +334,11 @@ class TestChatStreamCacheUsage(unittest.TestCase):
         ]
         chunks[-1].choices = []
 
-        backend._client.chat.completions.create = MagicMock(return_value=iter(chunks))
+        backend._client.chat.completions.create = AsyncMock(
+            return_value=_AsyncChunkStream(chunks)
+        )
 
-        events = list(backend.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+        events = await self._collect_stream(backend)
         done_event = events[-1]
         usage = done_event["usage"]
         self.assertIsNotNone(usage)
@@ -303,16 +347,18 @@ class TestChatStreamCacheUsage(unittest.TestCase):
         self.assertEqual(usage["cache_read_input_tokens"], 0)
         self.assertEqual(usage["cache_creation_input_tokens"], 0)
 
-    def test_stream_no_usage_chunk(self):
+    async def test_stream_no_usage_chunk(self):
         """流式响应：无 usage chunk 时 done 事件 usage 为 None。"""
         backend = self._build_backend()
 
         chunks: List[MagicMock] = [
             self._make_chunk(content="hi", finish_reason="stop"),
         ]
-        backend._client.chat.completions.create = MagicMock(return_value=iter(chunks))
+        backend._client.chat.completions.create = AsyncMock(
+            return_value=_AsyncChunkStream(chunks)
+        )
 
-        events = list(backend.chat_stream(messages=[{"role": "user", "content": "hi"}]))
+        events = await self._collect_stream(backend)
         done_event = events[-1]
         self.assertIsNone(done_event["usage"])
 

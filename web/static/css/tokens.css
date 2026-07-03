@@ -1,0 +1,219 @@
+/* ============================================================
+   tokens.css — 经纬台 Loom 设计令牌
+   双层变量：[data-theme] 明暗 + [data-accent] 强调色预设
+   ============================================================ */
+
+/* ---------- 默认：深色模式（暖色深底，经纬台原色） ---------- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* 背景层级 */
+  --bg-primary: #1a1614;
+  --bg-secondary: #221d1a;
+  --bg-tertiary: #2d2622;
+  --bg-hover: #382f2a;
+  --bg-overlay: rgba(26, 22, 20, 0.72);
+  --bg-elevated: #251f1c;
+
+  /* 文字层级 */
+  --text-primary: #e8e0d5;
+  --text-secondary: #a89989;
+  --text-muted: #6b5d52;
+  --text-inverse: #1a1614;
+
+  /* 边框 */
+  --border: #2d2622;
+  --border-strong: #3d342d;
+  --border-subtle: #251f1c;
+
+  /* 气泡 */
+  --user-bubble: #2d2622;
+  --assistant-bubble: #221d1a;
+  --bubble-border: #3d342d;
+
+  /* 语义色 */
+  --danger: #e06c75;
+  --danger-dim: #8a3a42;
+  --success: #98c379;
+  --success-dim: #4a6b3a;
+  --warning: #e5c07b;
+  --warning-dim: #8a6b2f;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-glow: 0 0 24px var(--accent-glow);
+
+  /* 代码块 */
+  --code-bg: #14110f;
+  --code-border: #2d2622;
+}
+
+/* ---------- 浅色模式（暖白纸底） ---------- */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-primary: #f5f1ea;
+  --bg-secondary: #ebe5db;
+  --bg-tertiary: #ddd4c6;
+  --bg-hover: #d0c6b5;
+  --bg-overlay: rgba(245, 241, 234, 0.78);
+  --bg-elevated: #ffffff;
+
+  --text-primary: #2a2218;
+  --text-secondary: #5a4d3f;
+  --text-muted: #8a7d6f;
+  --text-inverse: #f5f1ea;
+
+  --border: #ddd4c6;
+  --border-strong: #c4b8a6;
+  --border-subtle: #ebe5db;
+
+  --user-bubble: #ebe5db;
+  --assistant-bubble: #ffffff;
+  --bubble-border: #c4b8a6;
+
+  --danger: #c44d56;
+  --danger-dim: #e8b0b4;
+  --success: #5a8a3a;
+  --success-dim: #c4dab0;
+  --warning: #b8941f;
+  --warning-dim: #ecd9a0;
+
+  --shadow-sm: 0 1px 2px rgba(42, 34, 24, 0.08);
+  --shadow-md: 0 4px 12px rgba(42, 34, 24, 0.1);
+  --shadow-lg: 0 12px 32px rgba(42, 34, 24, 0.14);
+  --shadow-glow: 0 0 24px var(--accent-glow);
+
+  --code-bg: #ebe5db;
+  --code-border: #ddd4c6;
+}
+
+/* ---------- 强调色预设：琥珀（默认，经纬台原色） ---------- */
+[data-accent="amber"],
+:root:not([data-accent]) {
+  --accent: #e0a96d;
+  --accent-hover: #ebb87f;
+  --accent-dim: #a87f4d;
+  --accent-glow: rgba(224, 169, 109, 0.16);
+  --accent-contrast: #1a1614;
+}
+
+[data-theme="light"][data-accent="amber"],
+[data-theme="light"]:not([data-accent]) {
+  --accent: #b87333;
+  --accent-hover: #a0642a;
+  --accent-dim: #8a561f;
+  --accent-glow: rgba(184, 115, 51, 0.14);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 强调色预设：深青（冷峻） ---------- */
+[data-accent="teal"] {
+  --accent: #5b8c8a;
+  --accent-hover: #6fa09e;
+  --accent-dim: #3f6a68;
+  --accent-glow: rgba(91, 140, 138, 0.16);
+  --accent-contrast: #1a1614;
+}
+
+[data-theme="light"][data-accent="teal"] {
+  --accent: #2d5a58;
+  --accent-hover: #244a48;
+  --accent-dim: #1f3f3d;
+  --accent-glow: rgba(45, 90, 88, 0.14);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 强调色预设：紫罗兰（神秘） ---------- */
+[data-accent="violet"] {
+  --accent: #9d7cd8;
+  --accent-hover: #ad90e0;
+  --accent-dim: #6b4f8a;
+  --accent-glow: rgba(157, 124, 216, 0.16);
+  --accent-contrast: #1a1614;
+}
+
+[data-theme="light"][data-accent="violet"] {
+  --accent: #6b4f8a;
+  --accent-hover: #5a4078;
+  --accent-dim: #4a3666;
+  --accent-glow: rgba(107, 79, 138, 0.14);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 字体（所有主题共享） ---------- */
+:root {
+  --font-serif: 'Fraunces', 'Cormorant Garamond', 'Georgia', 'Songti SC', serif;
+  --font-sans: 'Sora', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+}
+
+/* ---------- 尺度（所有主题共享） ---------- */
+:root {
+  /* 圆角：比原 6px 更锐利克制 */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 9999px;
+
+  /* 间距：8px 网格 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* 过渡 */
+  --transition-fast: 0.1s ease;
+  --transition: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 字号 */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --text-3xl: 34px;
+  --text-4xl: 48px;
+  --text-5xl: 72px;
+
+  /* 行高 */
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;
+
+  /* 字重 */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* 层级 */
+  --z-base: 1;
+  --z-sticky: 100;
+  --z-dropdown: 500;
+  --z-modal: 1000;
+  --z-toast: 2000;
+
+  /* 布局 */
+  --sidebar-w: 280px;
+  --sidebar-w-collapsed: 0px;
+  --topbar-h: 52px;
+  --content-max: 820px;
+}
+
+/* ---------- 主题切换过渡 ---------- */
+[data-theme] {
+  transition: background-color var(--transition), color var(--transition), border-color var(--transition);
+}

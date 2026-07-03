@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -83,12 +83,19 @@ def _make_tool_use_block(
     }
 
 
-class TestReactLoopRun(unittest.TestCase):
-    """验证 run() 方法的三分支逻辑（end_turn / tool_use / 异常）。"""
+class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
+    """验证 run() 方法的三分支逻辑（end_turn / tool_use / 异常）。
+
+    注：``run`` 与 ``chat_main`` 已改为 async（spec Task 4 / Task 3），
+    本类用 :class:`unittest.IsolatedAsyncioTestCase` + ``await`` 调用，
+    ``chat_main`` mock 用 :class:`AsyncMock` 以支持 ``await``。
+    """
 
     def setUp(self):
         """构造 ReactLoop 实例，注入 mock LLM 与 mock ToolRegistry。"""
         self.mock_llm = MagicMock()
+        # chat_main 现为 async def，用 AsyncMock 使 `await mock_llm.chat_main(...)` 可工作
+        self.mock_llm.chat_main = AsyncMock()
         self.mock_tool_registry = MagicMock()
         # get_tools_schema 默认返回一个非空 schema 列表
         self.mock_tool_registry.get_tools_schema.return_value = [
@@ -104,14 +111,14 @@ class TestReactLoopRun(unittest.TestCase):
     # end_turn 分支
     # ------------------------------------------------------------------
 
-    def test_run_end_turn_branch(self):
+    async def test_run_end_turn_branch(self):
         """LLM 直接返回 end_turn 时，run() 返回最终答案不调用工具。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="Hello!",
             stop_reason="end_turn",
         )
 
-        final_response, messages, _ = self.loop.run("Hi")
+        final_response, messages, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "Hello!")
         self.mock_llm.chat_main.assert_called_once()
@@ -121,14 +128,14 @@ class TestReactLoopRun(unittest.TestCase):
         self.assertEqual(messages[0]["content"], "Hi")
         self.assertEqual(messages[1]["role"], "assistant")
 
-    def test_run_end_turn_with_empty_text(self):
+    async def test_run_end_turn_with_empty_text(self):
         """LLM 返回 end_turn 但无文本 block 时，final_response 为空串。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="",
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = self.loop.run("Hi")
+        final_response, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "")
 
@@ -136,7 +143,7 @@ class TestReactLoopRun(unittest.TestCase):
     # tool_use 分支
     # ------------------------------------------------------------------
 
-    def test_run_tool_use_branch(self):
+    async def test_run_tool_use_branch(self):
         """LLM 请求 tool_use 时，执行工具并继续循环到 end_turn。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -157,7 +164,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "search result"
 
-        final_response, messages, _ = self.loop.run("Search for test")
+        final_response, messages, _ = await self.loop.run("Search for test")
 
         self.assertEqual(final_response, "Final answer")
         self.assertEqual(self.mock_llm.chat_main.call_count, 2)
@@ -173,7 +180,7 @@ class TestReactLoopRun(unittest.TestCase):
         self.assertEqual(tool_result["tool_use_id"], "tu_1")
         self.assertEqual(tool_result["content"], "search result")
 
-    def test_run_multiple_tool_use_in_one_response(self):
+    async def test_run_multiple_tool_use_in_one_response(self):
         """单次响应包含多个 tool_use block 时，全部执行后继续循环。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -188,7 +195,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.side_effect = ["r1", "r2"]
 
-        final_response, messages, _ = self.loop.run("Hi")
+        final_response, messages, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "done")
         self.assertEqual(self.mock_tool_registry.execute_tool.call_count, 2)
@@ -200,7 +207,7 @@ class TestReactLoopRun(unittest.TestCase):
         tool_result_msg = messages[2]
         self.assertEqual(len(tool_result_msg["content"]), 2)
 
-    def test_run_tool_exception_handled(self):
+    async def test_run_tool_exception_handled(self):
         """工具执行抛异常时，错误结果回传并继续循环到 end_turn。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -212,7 +219,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.side_effect = RuntimeError("tool broken")
 
-        final_response, messages, _ = self.loop.run("Hi")
+        final_response, messages, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "after tool error")
         self.mock_tool_registry.execute_tool.assert_called_once()
@@ -226,17 +233,17 @@ class TestReactLoopRun(unittest.TestCase):
     # 异常分支
     # ------------------------------------------------------------------
 
-    def test_run_exception_branch_no_text(self):
+    async def test_run_exception_branch_no_text(self):
         """LLM 首次调用即抛异常且无先前文本时，异常向上传播。"""
         self.mock_llm.chat_main.side_effect = RuntimeError("LLM down")
 
         with self.assertRaises(RuntimeError) as ctx:
-            self.loop.run("Hi")
+            await self.loop.run("Hi")
         self.assertIn("LLM down", str(ctx.exception))
         # 工具未被调用
         self.mock_tool_registry.execute_tool.assert_not_called()
 
-    def test_run_exception_branch_with_text_degrades(self):
+    async def test_run_exception_branch_with_text_degrades(self):
         """LLM 第二次调用抛异常时，已有 last_text 则降级返回。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -248,7 +255,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "ok"
 
-        final_response, messages, _ = self.loop.run("Hi")
+        final_response, messages, _ = await self.loop.run("Hi")
 
         # 降级返回先前已得到的文本
         self.assertEqual(final_response, "partial answer")
@@ -258,7 +265,7 @@ class TestReactLoopRun(unittest.TestCase):
     # max_iterations 分支
     # ------------------------------------------------------------------
 
-    def test_run_max_iterations(self):
+    async def test_run_max_iterations(self):
         """LLM 始终返回 tool_use 时，达到 max_loops 后触发总结调用。
 
         注意：Phase 9 Task 7.3 引入卡死检测后，需使用不同参数避免触发卡死，
@@ -287,7 +294,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "result"
 
-        final_response, messages, _ = self.loop.run("Hi")
+        final_response, messages, _ = await self.loop.run("Hi")
 
         # 达到 max_loops 后触发 T8 总结调用（3 次循环 + 1 次总结 = 4 次）
         self.assertEqual(self.mock_llm.chat_main.call_count, 4)
@@ -302,7 +309,7 @@ class TestReactLoopRun(unittest.TestCase):
     # 纯对话模式（tool_registry=None）
     # ------------------------------------------------------------------
 
-    def test_run_pure_chat_mode(self):
+    async def test_run_pure_chat_mode(self):
         """tool_registry=None 时纯对话模式，tools=None 传给 LLM。"""
         loop = ReactLoop(llm_client=self.mock_llm, tool_registry=None)
         self.mock_llm.chat_main.return_value = _make_llm_response(
@@ -310,13 +317,13 @@ class TestReactLoopRun(unittest.TestCase):
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = loop.run("Hi")
+        final_response, _, _ = await loop.run("Hi")
 
         self.assertEqual(final_response, "hi")
         _, kwargs = self.mock_llm.chat_main.call_args
         self.assertIsNone(kwargs["tools"])
 
-    def test_run_tool_use_without_registry(self):
+    async def test_run_tool_use_without_registry(self):
         """tool_registry=None 时 LLM 返回 tool_use，直接返回当前文本不执行工具。"""
         loop = ReactLoop(llm_client=self.mock_llm, tool_registry=None)
         self.mock_llm.chat_main.return_value = _make_llm_response(
@@ -325,7 +332,7 @@ class TestReactLoopRun(unittest.TestCase):
             tool_use_blocks=[_make_tool_use_block()],
         )
 
-        final_response, _, _ = loop.run("Hi")
+        final_response, _, _ = await loop.run("Hi")
 
         self.assertEqual(final_response, "need tool but no registry")
         self.mock_llm.chat_main.assert_called_once()
@@ -334,7 +341,7 @@ class TestReactLoopRun(unittest.TestCase):
     # history / system 透传
     # ------------------------------------------------------------------
 
-    def test_run_history_passed_through(self):
+    async def test_run_history_passed_through(self):
         """history 被正确拼接到 messages 前部（浅拷贝，不影响原 list）。"""
         history = [
             {"role": "user", "content": "previous question"},
@@ -345,7 +352,7 @@ class TestReactLoopRun(unittest.TestCase):
             stop_reason="end_turn",
         )
 
-        final_response, messages, _ = self.loop.run("new question", history=history)
+        final_response, messages, _ = await self.loop.run("new question", history=history)
 
         self.assertEqual(final_response, "ok")
         # messages[0:2] 是 history 浅拷贝
@@ -359,26 +366,26 @@ class TestReactLoopRun(unittest.TestCase):
         # 原 history 不被修改
         self.assertEqual(len(history), 2)
 
-    def test_run_system_passed_through(self):
+    async def test_run_system_passed_through(self):
         """system 提示词被透传给 chat_main。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
 
-        self.loop.run("Hi", system="You are helpful")
+        await self.loop.run("Hi", system="You are helpful")
 
         _, kwargs = self.mock_llm.chat_main.call_args
         self.assertEqual(kwargs["system"], "You are helpful")
 
-    def test_run_system_none_by_default(self):
+    async def test_run_system_none_by_default(self):
         """未传 system 时，system 参数为 None。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
 
-        self.loop.run("Hi")
+        await self.loop.run("Hi")
 
         _, kwargs = self.mock_llm.chat_main.call_args
         self.assertIsNone(kwargs["system"])
@@ -387,7 +394,7 @@ class TestReactLoopRun(unittest.TestCase):
     # get_tools_schema 异常降级
     # ------------------------------------------------------------------
 
-    def test_get_tools_schema_failure_degrades(self):
+    async def test_get_tools_schema_failure_degrades(self):
         """get_tools_schema 抛异常时降级为纯对话模式（tools=None）。"""
         self.mock_tool_registry.get_tools_schema.side_effect = RuntimeError(
             "schema error"
@@ -397,21 +404,21 @@ class TestReactLoopRun(unittest.TestCase):
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = self.loop.run("Hi")
+        final_response, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "ok")
         _, kwargs = self.mock_llm.chat_main.call_args
         self.assertIsNone(kwargs["tools"])
 
-    def test_get_tools_schema_called_each_run(self):
+    async def test_get_tools_schema_called_each_run(self):
         """每次 run() 都调用 get_tools_schema 获取最新工具列表。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
 
-        self.loop.run("Hi")
-        self.loop.run("Hi again")
+        await self.loop.run("Hi")
+        await self.loop.run("Hi again")
 
         self.assertEqual(self.mock_tool_registry.get_tools_schema.call_count, 2)
 
@@ -419,7 +426,7 @@ class TestReactLoopRun(unittest.TestCase):
     # messages 完整性
     # ------------------------------------------------------------------
 
-    def test_run_returns_messages_with_history_and_new(self):
+    async def test_run_returns_messages_with_history_and_new(self):
         """返回的 messages_used 包含 history 与循环中新增的所有消息。"""
         history = [{"role": "user", "content": "old"}]
         self.mock_llm.chat_main.side_effect = [
@@ -432,7 +439,7 @@ class TestReactLoopRun(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "r"
 
-        _, messages, _ = self.loop.run("new", history=history)
+        _, messages, _ = await self.loop.run("new", history=history)
 
         # 期望: history(1) + user_input(1) + assistant(1) + tool_result(1) + assistant(1) = 5
         self.assertEqual(len(messages), 5)
@@ -443,11 +450,15 @@ class TestReactLoopRun(unittest.TestCase):
         self.assertEqual(messages[4]["role"], "assistant")
 
 
-class TestReactLoopInfoCounter(unittest.TestCase):
-    """验证信息计数器（_info_count）的累加与重置逻辑。"""
+class TestReactLoopInfoCounter(unittest.IsolatedAsyncioTestCase):
+    """验证信息计数器（_info_count）的累加与重置逻辑。
+
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def setUp(self):
         self.mock_llm = MagicMock()
+        self.mock_llm.chat_main = AsyncMock()
         self.mock_tool_registry = MagicMock()
         self.mock_tool_registry.get_tools_schema.return_value = []
         self.loop = ReactLoop(
@@ -460,19 +471,19 @@ class TestReactLoopInfoCounter(unittest.TestCase):
         """初始计数器为 0。"""
         self.assertEqual(self.loop.get_info_count(), 0)
 
-    def test_info_counter_increments_on_end_turn(self):
+    async def test_info_counter_increments_on_end_turn(self):
         """end_turn 分支: user + assistant = 2 次计数。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
 
-        self.loop.run("Hi")
+        await self.loop.run("Hi")
 
         # 1 (user) + 1 (assistant) = 2
         self.assertEqual(self.loop.get_info_count(), 2)
 
-    def test_info_counter_increments_on_tool_use(self):
+    async def test_info_counter_increments_on_tool_use(self):
         """tool_use 分支: user + assistant + tool_result + assistant = 4 次计数。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -484,12 +495,12 @@ class TestReactLoopInfoCounter(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "result"
 
-        self.loop.run("Hi")
+        await self.loop.run("Hi")
 
         # 1 (user) + 1 (assistant) + 1 (tool_result) + 1 (assistant) = 4
         self.assertEqual(self.loop.get_info_count(), 4)
 
-    def test_info_counter_multiple_tools(self):
+    async def test_info_counter_multiple_tools(self):
         """单次响应多个 tool_use: 每条 tool_result 各计 1 次。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -504,12 +515,12 @@ class TestReactLoopInfoCounter(unittest.TestCase):
         ]
         self.mock_tool_registry.execute_tool.side_effect = ["r1", "r2"]
 
-        self.loop.run("Hi")
+        await self.loop.run("Hi")
 
         # 1 (user) + 1 (assistant) + 2 (tool_results) + 1 (assistant) = 5
         self.assertEqual(self.loop.get_info_count(), 5)
 
-    def test_history_not_counted_in_info_counter(self):
+    async def test_history_not_counted_in_info_counter(self):
         """history 中的消息不计入信息计数器。"""
         history = [
             {"role": "user", "content": "old"},
@@ -520,31 +531,31 @@ class TestReactLoopInfoCounter(unittest.TestCase):
             stop_reason="end_turn",
         )
 
-        self.loop.run("new", history=history)
+        await self.loop.run("new", history=history)
 
         # 1 (new user) + 1 (assistant) = 2，history 2 条不计入
         self.assertEqual(self.loop.get_info_count(), 2)
 
-    def test_reset_info_count(self):
+    async def test_reset_info_count(self):
         """reset_info_count 将计数器归零。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
-        self.loop.run("Hi")
+        await self.loop.run("Hi")
         self.assertEqual(self.loop.get_info_count(), 2)
 
         self.loop.reset_info_count()
         self.assertEqual(self.loop.get_info_count(), 0)
 
-    def test_info_counter_accumulates_across_runs(self):
+    async def test_info_counter_accumulates_across_runs(self):
         """多次 run() 调用之间计数器累加（需手动 reset）。"""
         self.mock_llm.chat_main.return_value = _make_llm_response(
             text="ok",
             stop_reason="end_turn",
         )
-        self.loop.run("Hi")
-        self.loop.run("Hi again")
+        await self.loop.run("Hi")
+        await self.loop.run("Hi again")
 
         # (1+1) + (1+1) = 4
         self.assertEqual(self.loop.get_info_count(), 4)
@@ -740,11 +751,15 @@ class TestStuckMessageBuiltin(unittest.TestCase):
 # run() 含 anti_crawler 提示注入（集成测试）
 # ---------------------------------------------------------------------------
 
-class TestAntiCrawlerHintInjection(unittest.TestCase):
-    """验证 run() 中工具返回 ANTI_CRAWLER 后的策略提示注入。"""
+class TestAntiCrawlerHintInjection(unittest.IsolatedAsyncioTestCase):
+    """验证 run() 中工具返回 ANTI_CRAWLER 后的策略提示注入。
+
+    注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
+    """
 
     def setUp(self):
         self.mock_llm = MagicMock()
+        self.mock_llm.chat_main = AsyncMock()
         self.mock_tool_registry = MagicMock()
         self.mock_tool_registry.get_tools_schema.return_value = [
             {"name": "web_fetch", "description": "fetch", "input_schema": {}},
@@ -755,7 +770,7 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
             max_loops=5,
         )
 
-    def test_anti_crawler_hint_injected(self):
+    async def test_anti_crawler_hint_injected(self):
         """web_fetch 返回 [HTTP 403] 时结果尾部应含 [系统提示]。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -775,7 +790,7 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
             "[HTTP 403]\n\nAccess Denied by WAF"
         )
 
-        _, messages, _ = self.loop.run("fetch bilibili")
+        _, messages, _ = await self.loop.run("fetch bilibili")
 
         # 检查 tool_result 内容是否含 [系统提示]
         tool_result_msg = messages[2]
@@ -783,7 +798,7 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
         self.assertIn("[系统提示", tool_result["content"])
         self.assertIn("反爬虫", tool_result["content"])
 
-    def test_permanent_hint_injected(self):
+    async def test_permanent_hint_injected(self):
         """web_fetch 返回 [HTTP 404] 时结果尾部应含永久错误提示。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -803,13 +818,13 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
             "[HTTP 404]\n\nNot Found"
         )
 
-        _, messages, _ = self.loop.run("fetch")
+        _, messages, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertIn("[系统提示", tool_result["content"])
         self.assertIn("永久", tool_result["content"])
 
-    def test_success_no_hint(self):
+    async def test_success_no_hint(self):
         """正常返回不含 [系统提示]。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -829,12 +844,12 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
             "[HTTP 200]\n\n<html>...</html>"
         )
 
-        _, messages, _ = self.loop.run("fetch")
+        _, messages, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertNotIn("[系统提示", tool_result["content"])
 
-    def test_transient_hint_injected(self):
+    async def test_transient_hint_injected(self):
         """临时错误返回含提示。"""
         self.mock_llm.chat_main.side_effect = [
             _make_llm_response(
@@ -854,7 +869,7 @@ class TestAntiCrawlerHintInjection(unittest.TestCase):
             "[HTTP 503]\n\nService Unavailable"
         )
 
-        _, messages, _ = self.loop.run("fetch")
+        _, messages, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertIn("[系统提示", tool_result["content"])

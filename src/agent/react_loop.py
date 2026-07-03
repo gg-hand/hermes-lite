@@ -60,6 +60,16 @@ except ImportError:
         ErrorClassifier = None  # type: ignore
         ErrorClass = None  # type: ignore
 
+# Phase 9 Task 6: GuardrailEngine（fail-open 软护栏，工具返回值脱敏）
+# 与 monitoring / agent 模块同样降级为 None，由 __init__ 内部降级为 noop。
+try:
+    from ..guardrails import GuardrailEngine
+except ImportError:
+    try:
+        from guardrails import GuardrailEngine  # type: ignore
+    except ImportError:
+        GuardrailEngine = None  # type: ignore
+
 # Phase 5: 策略与审批模块（运行时需要 Decision 实例化）
 # react_loop.py 本身位于 agent 目录下，相对导入用 from .policy
 try:
@@ -97,6 +107,47 @@ class ToolRegistry(Protocol):
         ...
 
 
+class _NoopGuardrail:
+    """GuardrailEngine 模块不可用时的 noop 占位（Phase 9 Task 6）。
+
+    提供 ``sanitize_tool_result`` / ``scan_input`` / ``filter_output`` 三个
+    方法，全部直返原值，保证 react_loop 调用方不抛异常。仅在 GuardrailEngine
+    模块导入失败（``GuardrailEngine is None``）时使用，正常路径下
+    ``__init__`` 会用 ``GuardrailEngine.create_noop()`` 替代。
+    """
+
+    def sanitize_tool_result(self, result: Any, tool_name: str) -> Any:
+        """直返原结果（noop）。"""
+        return result
+
+    def scan_input(self, text: str):  # type: ignore[no-untyped-def]
+        """返回 allow（noop）。
+
+        与 GuardrailEngine.ScanResult 兼容的最简占位，避免引入对 ScanResult
+        的硬依赖（GuardrailEngine 模块可能不可用）。
+        """
+        # 局部 import：仅在调用时尝试导入 ScanResult，失败时返回简单 namedtuple
+        try:
+            from ..guardrails import ScanResult  # type: ignore
+            return ScanResult(action="allow", matched_patterns=[], reason="noop")
+        except Exception:
+            # 兜底：返回一个轻量 dataclass 实例
+            from dataclasses import dataclass, field
+            from typing import List as _List
+
+            @dataclass
+            class _ScanResultFallback:
+                action: str = "allow"
+                matched_patterns: _List[str] = field(default_factory=list)
+                reason: str = "noop"
+
+            return _ScanResultFallback()
+
+    def filter_output(self, text: str):  # type: ignore[no-untyped-def]
+        """直返 (text, 0)（noop）。"""
+        return text, 0
+
+
 class ReactLoop:
     """React（Reasoning + Acting）循环引擎。
 
@@ -127,6 +178,7 @@ class ReactLoop:
         policy_engine: Optional["PolicyEngine"] = None,
         approval_manager: Optional["ApprovalManager"] = None,
         cron_tool_registry: Optional[Any] = None,
+        guardrail_engine: Optional["GuardrailEngine"] = None,
     ) -> None:
         """初始化 React 循环引擎。
 
@@ -144,6 +196,10 @@ class ReactLoop:
                 cron_tool_registry 中已注册时，走 ``cron_tool_registry.execute_tool``
                 路径；否则回退到 ``tool_registry.execute_tool``。为 ``None`` 时
                 （用户会话路径）所有工具调用走 tool_registry，向后兼容。
+            guardrail_engine: Phase 9 Task 6。可选的 GuardrailEngine 实例，
+                用于对外部工具返回值做脱敏（fail-open 软护栏）。为 ``None`` 时
+                降级为 ``GuardrailEngine.create_noop()``（所有方法空操作），
+                避免 react_loop 空指针。
         """
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -154,6 +210,17 @@ class ReactLoop:
         self.approval_manager = approval_manager
         # Phase 8 Task 5.7: cron_tool 派发 registry（仅 cron 会话路径注入）
         self.cron_tool_registry = cron_tool_registry
+        # Phase 9 Task 6: GuardrailEngine 引用（工具返回值脱敏）
+        # None 时降级为 noop，避免每次调用前 None 判断。
+        if guardrail_engine is not None:
+            self.guardrail_engine = guardrail_engine
+        elif GuardrailEngine is not None:
+            self.guardrail_engine = GuardrailEngine.create_noop()
+        else:
+            # GuardrailEngine 模块不可用时构造一个最简 noop 占位对象，
+            # 提供 sanitize_tool_result / scan_input / filter_output 三个方法
+            # 全部直返原值，保证调用方不抛异常。
+            self.guardrail_engine = _NoopGuardrail()
         # 信息计数器：user / assistant / tool 各算 1 条，用于触发 consolidation
         self._info_count: int = 0
 
@@ -460,7 +527,7 @@ class ReactLoop:
                 except ImportError:
                     pass
 
-    def run(
+    async def run(
         self,
         user_input: str,
         history: Optional[List[Dict[str, Any]]] = None,
@@ -533,7 +600,7 @@ class ReactLoop:
 
             # 3. 调用主对话 LLM
             try:
-                response = self.llm_client.chat_main(
+                response = await self.llm_client.chat_main(
                     messages=messages,
                     tools=tools,
                     system=system,
@@ -736,6 +803,13 @@ class ReactLoop:
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
 
+                # Phase 9 Task 6: 工具返回值脱敏（fail-open 软护栏）
+                # 对外部工具返回值做注入模式替换 + 边界标记，
+                # 可信工具直返原值。GuardrailEngine 内部已 try/except fail-open。
+                result = self.guardrail_engine.sanitize_tool_result(
+                    result, tool_name=tool_name
+                )
+
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -770,7 +844,7 @@ class ReactLoop:
         logger.warning(
             "React 循环达到最大次数 %d，触发总结调用", self.max_loops
         )
-        summary_text = self._generate_max_loops_summary(
+        summary_text = await self._generate_max_loops_summary(
             messages, last_text, session_id
         )
         # max_loops 耗尽 → is_complete=False（orchestrator 检查 TodoList 决定续接）
@@ -869,7 +943,7 @@ class ReactLoop:
             stop_reason: str = "end_turn"
             current_round_text: str = ""  # ← 追踪本轮累积文本
             try:
-                for event in self.llm_client.chat_main_stream(
+                async for event in self.llm_client.chat_main_stream(
                     messages=messages,
                     tools=tools,
                     system=system,
@@ -1146,6 +1220,10 @@ class ReactLoop:
                             logger.error("工具执行失败 %s: %s", tool_name, e)
                             result = f"工具执行出错: {e}"
                             is_error = True
+                        # Phase 9 Task 6: 工具返回值脱敏（与 allow 分支一致）
+                        result = self.guardrail_engine.sanitize_tool_result(
+                            result, tool_name=tool_name
+                        )
                         duration_ms = (time.perf_counter() - t0) * 1000
                         tool_results.append(
                             {
@@ -1268,6 +1346,14 @@ class ReactLoop:
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
 
+                # Phase 9 Task 6: 工具返回值脱敏（fail-open 软护栏）
+                # 对外部工具返回值做注入模式替换 + 边界标记，
+                # 可信工具直返原值。GuardrailEngine 内部已 try/except fail-open。
+                # 脱敏后的 result 同时用于 tool_results、审计日志与 yield 给前端。
+                result = self.guardrail_engine.sanitize_tool_result(
+                    result, tool_name=tool_name
+                )
+
                 duration_ms = (time.perf_counter() - t0) * 1000
                 tool_results.append(
                     {
@@ -1319,7 +1405,7 @@ class ReactLoop:
         logger.warning(
             "React 循环达到最大次数 %d，触发总结调用", self.max_loops
         )
-        summary_text = self._generate_max_loops_summary(
+        summary_text = await self._generate_max_loops_summary(
             messages, last_text, session_id
         )
         # max_loops 耗尽 → is_complete=False
@@ -1330,7 +1416,7 @@ class ReactLoop:
             "is_complete": False,
         }
 
-    def _generate_max_loops_summary(
+    async def _generate_max_loops_summary(
         self,
         messages: List[Dict[str, Any]],
         last_text: str,
@@ -1357,7 +1443,7 @@ class ReactLoop:
             summary_messages = messages + [
                 {"role": "user", "content": summary_prompt}
             ]
-            response = self.llm_client.chat_main(
+            response = await self.llm_client.chat_main(
                 messages=summary_messages,
                 system=None,
                 tools=None,

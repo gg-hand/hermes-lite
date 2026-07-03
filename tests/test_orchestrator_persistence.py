@@ -142,6 +142,9 @@ def _make_orchestrator(react_loop, session_logger, todo_registry=None):
     - context_manager / memory_retriever / task_manager：设为 None，
       使 _build_enhanced_context 降级返回 (SYSTEM_PROMPT, history)
     - todo_registry：T13 新增，注入 TodoListRegistry（默认 None 跳过 todo 事件）
+    - guardrail_engine：Phase 9 Task 6 新增，设为 None 跳过护栏逻辑
+      （chat_stream 中所有 self.guardrail_engine 检查都先判 None）
+    - audit_logger：Phase 9 Task 6 新增审计路径需要，设为 None 跳过审计记录
     - _last_session_id / _current_session_id：会话状态初值
     """
     orch = Orchestrator.__new__(Orchestrator)
@@ -153,6 +156,9 @@ def _make_orchestrator(react_loop, session_logger, todo_registry=None):
     orch.memory_retriever = None
     orch.task_manager = None
     orch.todo_registry = todo_registry
+    # Phase 9 Task 6: 新增属性（None 跳过护栏与审计逻辑，向后兼容）
+    orch.guardrail_engine = None
+    orch.audit_logger = None
     orch._last_session_id = None
     orch._current_session_id = None
     return orch
@@ -240,8 +246,8 @@ class TestChatStreamPersistsUserAndFinalAssistant(unittest.TestCase):
 
         consumed = _consume(orch, "sess-1", "user input")
 
-        # 事件应被透传
-        self.assertEqual(len(consumed), 3)
+        # 事件应被透传：status（chat_stream 自身）+ round_start + text + done = 4
+        self.assertEqual(len(consumed), 4)
 
         # 应记录 2 条消息：user + assistant
         logged = logger.logged

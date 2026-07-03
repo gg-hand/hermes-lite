@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
@@ -91,6 +91,12 @@ class TestParserOCR(unittest.TestCase):
     def test_08_image_ocr_mock(self):
         result = self.parser.parse(minimal_png(), "photo.png")
         self.assertIn("mock ocr", result.lower())
+
+    def test_09_image_no_text_raises_parse_error(self):
+        """图片无文字时 parser 层仍应抛 ParseError（由 ETL 层处理）。"""
+        with patch("src.files.parser.pytesseract.image_to_string", return_value=""):
+            with self.assertRaises(ParseError):
+                self.parser.parse(minimal_png(), "photo.png")
 
 
 class TestParserL3Fallback(unittest.TestCase):

@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="amber">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>hermes-lite · 对话</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
+
+  <!-- CSS: tokens → base → components → chat layout -->
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/chat.css">
+
+  <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
+  <script src="/static/js/theme.js"></script>
+</head>
+<body>
+
+<div class="app">
+  <!-- 侧边栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h1>hermes<span>-lite</span></h1>
+      <div class="sidebar-actions">
+        <button class="icon-btn" id="btnNewSession" title="新建会话">+</button>
+        <button class="icon-btn" id="btnSettings" title="Agent 设置">&#9881;</button>
+      </div>
+    </div>
+    <!-- Tab 切换：会话 / 记忆 / 文件 -->
+    <div class="sidebar-tabs">
+      <button class="sidebar-tab active" data-tab="sessions">会话</button>
+      <button class="sidebar-tab" data-tab="memories">记忆</button>
+      <button class="sidebar-tab" data-tab="files">文件</button>
+    </div>
+    <!-- 会话列表 -->
+    <div class="session-list tab-pane active" id="sessionList">
+      <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">暂无会话<br>点击上方 + 新建</div></div>
+    </div>
+    <!-- 记忆面板 -->
+    <div class="memory-panel tab-pane" id="memoryPanel">
+      <div class="memory-toolbar">
+        <div class="memory-search-row">
+          <input type="text" id="memorySearchInput" placeholder="搜索记忆关键词...">
+          <button class="memory-search-btn" id="memorySearchBtn">搜索</button>
+        </div>
+        <div class="memory-filter-row">
+          <select id="memoryTypeFilter" title="按类型过滤">
+            <option value="all">全部类型</option>
+            <option value="fact">fact</option>
+            <option value="conversation_turn">conversation_turn</option>
+            <option value="relation">relation</option>
+            <option value="user_profile">user_profile</option>
+          </select>
+          <button class="memory-profile-btn" id="btnUserProfile">用户画像</button>
+        </div>
+      </div>
+      <div class="memory-list" id="memoryList">
+        <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">切换到「记忆」Tab 后<br>点击搜索或选择类型浏览</div></div>
+      </div>
+    </div>
+    <!-- 文件面板 -->
+    <div class="file-panel tab-pane" id="filePanel">
+      <div class="file-list" id="fileList">
+        <div class="file-empty">无已上传文件</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主对话区 -->
+  <main class="main">
+    <div class="main-header">
+      <button class="menu-toggle" id="menuToggle" title="切换侧边栏">&#9776;</button>
+      <span class="session-title" id="sessionTitle">未选择会话</span>
+      <span class="status-dot" id="statusDot"></span>
+
+      <!-- 主题切换器 -->
+      <div class="topbar-actions">
+        <button class="theme-toggle icon-btn" id="themeToggleBtn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
+        <div class="accent-picker" id="accentPicker">
+          <span class="accent-dot accent-amber" data-accent="amber" title="琥珀"></span>
+          <span class="accent-dot accent-teal" data-accent="teal" title="深青"></span>
+          <span class="accent-dot accent-violet" data-accent="violet" title="紫罗兰"></span>
+        </div>
+      </div>
+
+      <!-- 调度按钮 -->
+      <button class="schedule-header-btn" id="scheduleDropdownBtn" title="调度面板">
+        <span class="schedule-header-icon">&#9201;</span>
+        <span class="schedule-header-label">调度</span>
+        <span class="schedule-header-arrow">&#9660;</span>
+        <span class="schedule-badge" id="scheduleBadge" style="display:none">0</span>
+      </button>
+    </div>
+
+    <!-- 调度下拉面板 -->
+    <div class="schedule-panel" id="schedulePanel">
+      <!-- 调度会话（执行历史时间轴） -->
+      <div class="schedule-section" id="scheduleRunsSection">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">调度会话</span>
+          <button class="btn btn-primary btn-mini" id="btnRefreshScheduleRuns">刷新</button>
+        </div>
+        <div class="schedule-runs-list has-scroll-mask" id="scheduleRunsList">
+          <div class="schedule-empty">打开调度面板后加载执行记录</div>
+        </div>
+      </div>
+      <!-- 提议确认 -->
+      <div class="schedule-section collapsible" id="proposalSection">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">提议确认</span>
+          <span class="schedule-section-count" id="proposalCount">0</span>
+          <span class="schedule-section-toggle">▼</span>
+          <button class="btn btn-primary btn-mini" id="btnRefreshProposals">刷新</button>
+        </div>
+        <div id="proposalList" class="has-scroll-mask">
+          <div class="proposal-empty">打开调度面板后加载提议</div>
+        </div>
+      </div>
+      <!-- 调度项管理 -->
+      <div class="schedule-section collapsible collapsed" id="scheduleManageSection">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">调度项</span>
+          <span class="schedule-section-count" id="scheduleCount">0</span>
+          <span class="schedule-section-toggle">▼</span>
+          <button class="btn btn-primary btn-mini" id="btnNewScheduleTab">+ 新建</button>
+        </div>
+        <div class="schedule-list has-scroll-mask" id="scheduleList">
+          <div class="schedule-empty">打开调度面板后加载</div>
+        </div>
+      </div>
+      <!-- 调度记忆 -->
+      <div class="schedule-section" id="scheduleMemoriesSection" style="display:none;">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">调度记忆</span>
+        </div>
+        <div class="schedule-memories-list has-scroll-mask" id="scheduleMemoriesList">
+          <div class="schedule-empty">选择上方调度项查看其隔离记忆</div>
+        </div>
+      </div>
+      <!-- 工具调用审计 -->
+      <div class="schedule-section" id="scheduleAuditSection" style="display:none;">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">工具调用审计</span>
+          <button class="btn btn-mini" id="btnRefreshScheduleAudit">刷新</button>
+        </div>
+        <div class="schedule-audit-list has-scroll-mask" id="scheduleAuditList">
+          <div class="schedule-empty">选择上方调度项查看工具调用审计</div>
+        </div>
+      </div>
+      <!-- cron_tool 待审查 -->
+      <div class="schedule-section collapsible" id="cronToolPendingSection">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">cron_tool 待审查</span>
+          <span class="schedule-section-count" id="cronToolPendingCount">0</span>
+          <span class="schedule-section-toggle">▼</span>
+          <button class="btn btn-primary btn-mini" id="btnRefreshCronToolsPending">刷新</button>
+        </div>
+        <div id="cronToolPendingList" class="has-scroll-mask">
+          <div class="schedule-empty">打开调度面板后加载待审查 cron_tool</div>
+        </div>
+      </div>
+      <!-- cron_tool 管理 -->
+      <div class="schedule-section collapsible collapsed" id="cronToolManageSection">
+        <div class="schedule-section-header">
+          <span class="schedule-section-title">cron_tool 已激活</span>
+          <span class="schedule-section-count" id="cronToolCount">0</span>
+          <span class="schedule-section-toggle">▼</span>
+          <button class="btn btn-primary btn-mini" id="btnRefreshCronTools">刷新</button>
+        </div>
+        <div id="cronToolList" class="has-scroll-mask">
+          <div class="schedule-empty">打开调度面板后加载已激活 cron_tool</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="messages" id="messages">
+      <div class="welcome-screen" id="welcomeScreen">
+        <div class="logo">~$</div>
+        <div class="subtitle">Hermes Lite 个人 AI Agent</div>
+        <div class="hints">输入消息开始对话 / 侧栏 + 新建会话</div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="upload-queue" id="uploadQueue"></div>
+      <div class="input-area-row">
+        <button class="attach-btn" id="attachBtn" title="上传文件">+</button>
+        <div class="input-wrapper">
+          <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1"></textarea>
+          <button class="send-btn" id="sendBtn">发送</button>
+        </div>
+      </div>
+      <input type="file" id="fileInput" multiple style="display:none"
+             accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif">
+    </div>
+  </main>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Agent 设置</h2>
+      <button class="modal-close" onclick="closeModal('settingsModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="settingsBody">
+      <div class="empty-state"><div class="empty-state-text">加载配置中...</div></div>
+    </div>
+    <div class="modal-footer" style="display:flex;justify-content:space-between">
+      <button class="btn btn-danger" id="restartServerBtn">重启服务</button>
+      <div>
+        <button class="btn btn-secondary" onclick="closeModal('settingsModal')">取消</button>
+        <button class="btn btn-primary" id="saveConfigBtn">保存配置</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建调度弹窗 -->
+<div class="modal-overlay" id="scheduleModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>新建调度</h2>
+      <button class="modal-close" onclick="closeModal('scheduleModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>名称 *</label>
+        <input class="form-input" id="schedName" placeholder="调度名称">
+      </div>
+      <div class="form-group">
+        <label>Cron 表达式 *</label>
+        <input class="form-input" id="schedCron" placeholder="*/30 * * * *">
+        <div class="hint">标准 5 字段 cron（分 时 日 月 周）</div>
+      </div>
+      <div class="form-group">
+        <label>任务描述 *</label>
+        <textarea class="form-input" id="schedTask" rows="4" placeholder="要执行的任务描述"></textarea>
+      </div>
+      <div class="form-group">
+        <label>启用</label>
+        <select class="form-select" id="schedEnabled">
+          <option value="true" selected>启用</option>
+          <option value="false">禁用</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('scheduleModal')">取消</button>
+      <button class="btn btn-primary" id="createScheduleBtn" disabled>创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- cron_tool 审查详情弹窗 -->
+<div class="modal-overlay" id="cronToolDetailModal">
+  <div class="modal cron-tool-detail-modal">
+    <div class="modal-header">
+      <h2 id="cronToolDetailTitle">cron_tool 审查</h2>
+      <button class="modal-close" onclick="closeModal('cronToolDetailModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="cronToolDetailBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('cronToolDetailModal')">关闭</button>
+      <button class="btn btn-mini btn-danger" id="cronToolDetailRejectBtn">✗ 拒绝</button>
+      <button class="btn btn-primary" id="cronToolDetailApproveBtn">✓ 通过审查（激活）</button>
+    </div>
+  </div>
+</div>
+
+<!-- 提议确认详情弹窗 -->
+<div class="modal-overlay" id="proposalDetailModal">
+  <div class="modal proposal-detail-modal">
+    <div class="modal-header">
+      <h2 id="proposalDetailTitle">提议详情</h2>
+      <button class="modal-close" onclick="closeModal('proposalDetailModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="proposalDetailBody"></div>
+    <div class="modal-footer" id="proposalDetailFooter">
+      <button class="btn btn-secondary" onclick="closeModal('proposalDetailModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 调度项详情弹窗 -->
+<div class="modal-overlay" id="scheduleDetailModal">
+  <div class="modal proposal-detail-modal">
+    <div class="modal-header">
+      <h2 id="scheduleDetailTitle">调度项详情</h2>
+      <button class="modal-close" onclick="closeModal('scheduleDetailModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="scheduleDetailBody"></div>
+    <div class="modal-footer" id="scheduleDetailFooter">
+      <button class="btn btn-secondary" onclick="closeModal('scheduleDetailModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- cron_tool 已激活详情弹窗 -->
+<div class="modal-overlay" id="cronToolActiveDetailModal">
+  <div class="modal proposal-detail-modal">
+    <div class="modal-header">
+      <h2 id="cronToolActiveDetailTitle">cron_tool 详情</h2>
+      <button class="modal-close" onclick="closeModal('cronToolActiveDetailModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="cronToolActiveDetailBody"></div>
+    <div class="modal-footer" id="cronToolActiveDetailFooter">
+      <button class="btn btn-secondary" onclick="closeModal('cronToolActiveDetailModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 用户画像弹窗 -->
+<div class="modal-overlay" id="profileModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>用户画像 (memory.md)</h2>
+      <button class="modal-close" onclick="closeModal('profileModal')">&times;</button>
+    </div>
+    <div class="modal-body" id="profileBody">
+      <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('profileModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- CDN: Markdown + DOMPurify -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+
+<!-- JS 模块（顺序敏感） -->
+<script src="/static/js/utils.js"></script>
+<script src="/static/js/chat-core.js"></script>
+<script src="/static/js/chat-session.js"></script>
+<script src="/static/js/chat-memory.js"></script>
+<script src="/static/js/chat-schedule.js"></script>
+<script src="/static/js/chat-files.js"></script>
+<script src="/static/js/chat-settings.js"></script>
+<script src="/static/js/chat-main.js"></script>
+
+<script>
+// 强调色选择器绑定
+document.querySelectorAll('.accent-dot').forEach(dot => {
+  dot.addEventListener('click', () => HermesTheme.setAccent(dot.dataset.accent));
+});
+</script>
+
+</body>
+</html>

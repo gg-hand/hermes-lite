@@ -75,19 +75,27 @@ def _tool_use_block(name: str, tool_input: dict, block_id: str = "t1") -> dict:
 class MockLLMClient:
     """模拟 LLM 客户端，记录调用并返回预设响应。
 
-    不使用 MagicMock，保证 ``chat_main`` 为真实可调用对象。
+    不使用 MagicMock，保证 ``chat_main`` / ``chat_main_sync`` 为真实可调用对象。
+
+    注：Phase 10 异步化改造后，workflow ``base._call_llm_single_turn`` 调用
+    ``chat_main_sync``（sync wrapper），而非 ``chat_main``（async def）。
+    两个方法在此 mock 中均实现，便于测试覆盖。
     """
 
     def __init__(self, response_text: str = "LLM 分析结果", tool_calls=None):
         self._response_text = response_text
         self._tool_calls = tool_calls or []
-        self.calls = []  # 记录所有 chat_main 调用
+        self.calls = []  # 记录所有 chat_main / chat_main_sync 调用
 
     def chat_main(self, messages=None, tools=None, system=None):
         self.calls.append({"messages": messages, "tools": tools, "system": system})
         blocks = [_text_block(self._response_text)]
         blocks.extend(self._tool_calls)
         return MockLLMResponse(blocks)
+
+    def chat_main_sync(self, messages=None, tools=None, system=None):
+        """sync wrapper，与 chat_main 行为一致（供 workflow base.py 调用）。"""
+        return self.chat_main(messages=messages, tools=tools, system=system)
 
 
 class MockChromaStore:
@@ -149,7 +157,7 @@ class MockReactLoop:
         self._tool_messages = tool_messages or []
         self.calls = []
 
-    def run(self, user_input=None, history=None, system=None, session_id=None, **kwargs):
+    async def run(self, user_input=None, history=None, system=None, session_id=None, **kwargs):
         self.calls.append(
             {
                 "user_input": user_input,
@@ -159,6 +167,7 @@ class MockReactLoop:
             }
         )
         # Phase 9 Task 7.4: ReactLoop.run 返回三元组 (response, messages, is_complete)
+        # 注：async 化后（spec Task 4），research.py 用 asyncio.run(react_loop.run(...)) 包裹
         return self._response_text, self._tool_messages, True
 
 
@@ -1042,7 +1051,7 @@ class TestResearchTemplate(unittest.TestCase):
     def test_research_react_loop_exception_falls_back(self):
         """ReactLoop 抛异常时降级为单轮调用，错误被记录但仍有 LLM 回复。"""
         class FailingReactLoop:
-            def run(self, **kwargs):
+            async def run(self, **kwargs):
                 raise RuntimeError("react 失败")
 
         llm = MockLLMClient(response_text="降级结果")

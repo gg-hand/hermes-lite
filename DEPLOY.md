@@ -407,9 +407,102 @@ tools:
 
 ---
 
-## 7. 故障排查
+## 7. AI 护栏（AI Guardrails）
 
-### 7.1 服务无法启动
+Hermes Lite 在 Phase 9 引入 AI 护栏工程，构建多层防御以应对 Prompt 注入、工具滥用与 PII 泄漏。护栏与既有 L5 PolicyEngine（白名单/审批/路径门控）**并存**：PolicyEngine 守护「工具能否被调用」，护栏守护「输入是否可信、输出是否安全」。
+
+### 7.1 护栏架构概述
+
+护栏由 `GuardrailEngine`（`src/guardrails/engine.py`）统一编排，按 LLM 调用生命周期分层：
+
+| 层级 | 组件 | 时机 | 职责 |
+|------|------|------|------|
+| **L1 输入扫描** | `InjectionGuard` | 接收用户输入后 | 检测 prompt 注入模式（越狱模板、角色扮演劫持、指令覆盖），按策略 `block / warn / off` 处置 |
+| **L3 工具脱敏** | `ToolOutputSanitizer` | 工具返回结果回填 LLM 前 | 对非白名单工具输出执行 PII 脱敏 + 长度截断，阻止 PII 通过工具结果回流 |
+| **L4 输出过滤** | `OutputFilter` | LLM 流式输出后 | 检测并脱敏手机号、邮箱、身份证、银行卡、IP 等 PII，向前端补发 `output_filtered` 事件 |
+| **L5 PolicyEngine** | `PolicyEngine`（已有） | 工具调用前 | 路径白名单、危险操作审批（与护栏职责互补，不重叠） |
+
+> L1 / L3 / L4 由 `GuardrailEngine.from_config(config)` 装配；L5 由 `SecurityManager` 装配，独立运行。
+
+### 7.2 配置项说明
+
+`config.yaml` 中的 `guardrails` 段：
+
+```yaml
+guardrails:
+  input_scan:
+    enabled: true
+    action: warn  # block(拦截) / warn(放行+告警,默认) / off(跳过)
+  sanitizer:
+    enabled: true
+    trusted_tools:
+      - memory_search
+      - search_memory
+      - memory_query
+    max_output_length: 20000
+  output_filter:
+    enabled: true
+    enable_bank_card: true
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `input_scan.enabled` | bool | `true` | 是否启用 L1 输入扫描 |
+| `input_scan.action` | enum | `warn` | 检测到注入时的处置：`block`（拒绝并返回安全提示）/ `warn`（放行但记录告警）/ `off`（仅跳过扫描） |
+| `sanitizer.enabled` | bool | `true` | 是否启用 L3 工具脱敏 |
+| `sanitizer.trusted_tools` | list | 见示例 | 信任工具列表，输出不脱敏（仅做长度截断）；其余工具输出经 PII 脱敏 |
+| `sanitizer.max_output_length` | int | `20000` | 工具输出最大字符数，超出截断 |
+| `output_filter.enabled` | bool | `true` | 是否启用 L4 输出过滤 |
+| `output_filter.enable_bank_card` | bool | `true` | 是否启用银行卡 PII 检测（与 13~19 位长数字易混淆，按需关闭） |
+
+### 7.3 PII 误报权衡
+
+PII 检测器基于正则 + 校验位算法，遵循「**脱敏优于漏报**」原则：
+
+- **11 位数字**：可能被误匹配为手机号（如订单号、流水号）。误报代价是脱敏为 `[PHONE]`，用户可见；漏报代价是真实手机号泄漏，不可逆。
+- **18 位身份证**：含校验位，误报率低；但若与 18 位订单号冲突，可关闭对应检测器。
+- **13~19 位银行卡**：依赖 Luhn 校验，误报率较低；如业务无卡号场景，可设 `enable_bank_card: false`。
+- **邮箱 / IP**：纯正则匹配，存在少量边界误报，影响小。
+
+> 误报是已知权衡，前端会通过 `output_filtered` 事件提示用户「输出已被脱敏」，便于人工复核。
+
+### 7.4 流式中断限制
+
+L4 输出过滤依赖「先缓冲完整段、再脱敏、再下发」的流式策略：
+
+- **正常流**：分段下发，每段经过 PII 检测后补发 `output_filtered` 事件，前端可替换展示。
+- **流式中断**（用户主动停止 / 异常断连）：未刷出的段不会触发 `output_filtered` 事件，前端可能展示原始片段。但 `ConsolidationEngine` 写入长期记忆的文本仍以**脱敏后版本**为准（护栏作用于 `react_loop` 与 `orchestrator` 写入路径），不会因前端展示差异导致 PII 落库。
+- **建议**：前端收到中断事件后，主动向后端请求该消息的最终（脱敏）版本，避免展示残留原文。
+
+### 7.5 注入 patterns 维护建议
+
+L1 注入检测基于模式列表（关键词 + 结构模板），随攻击手法演化需定期更新：
+
+- **更新频率**：建议每季度 review 一次，或重大模型升级（如 Claude / DeepSeek 版本切换）后立即评估。
+- **来源**：参考 OWASP LLM Top 10、各厂商红队披露的越狱模板、社区公开 jailbreak 集合。
+- **回滚机制**：模式变更只影响检测灵敏度，`action=warn` 模式下不会阻断业务，可灰度上线。
+- **最终防线**：**工具调用门（L5 PolicyEngine + SYSTEM_PROMPT 工具策略）**是最终防线 —— 即使 L1 漏检注入，PolicyEngine 仍会拦截未授权工具调用，SYSTEM_PROMPT 仍会拒绝危险指令。护栏各层不互相依赖，单层失效不致整体失守。
+
+### 7.6 热更新说明
+
+`guardrails.*` 配置变更**需要重启服务**才能生效，原因：
+
+- `GuardrailEngine.from_config(config)` 在启动时构建一次，运行时不重新装配（避免每次请求重建检测器的开销）。
+- 与 `security.rules` / `security.enabled` 行为一致：均涉及检测器实例重建，统一走重启路径。
+
+修改 `config.yaml` 中的 `guardrails` 段后：
+
+```bash
+sudo systemctl restart hermes-lite
+```
+
+或通过 `/config/reload` 接口提交配置时，`_RESTART_REQUIRED_KEYS` 会判定 `guardrails` 变更需重启，返回 `needs_restart: true`，前端可提示用户重启。
+
+---
+
+## 8. 故障排查
+
+### 8.1 服务无法启动
 
 **现象**：`systemctl start hermes-lite` 失败或进程立即退出。
 
@@ -430,7 +523,7 @@ python -m uvicorn src.server:app --host 0.0.0.0 --port 8000
 - 依赖未安装：重新执行 `pip install -r requirements.txt`
 - 配置文件不存在：确认 `config.yaml` 在 `WorkingDirectory` 下
 
-### 7.2 API Key 未配置
+### 8.2 API Key 未配置
 
 **现象**：日志中出现 `主对话 LLM API Key 未设置`。
 
@@ -465,7 +558,7 @@ export HTTPS_PROXY=http://your-proxy:port
 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 ```
 
-### 7.4 ChromaDB 权限错误
+### 8.4 ChromaDB 权限错误
 
 **现象**：`写入 data/chroma 失败: Permission denied`。
 
@@ -536,7 +629,7 @@ python tests/test_integration.py
 
 ---
 
-## 8. 目录结构
+## 9. 目录结构
 
 ```
 hermes-lite/
