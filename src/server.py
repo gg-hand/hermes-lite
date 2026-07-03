@@ -32,6 +32,7 @@ try:
     from .config import clear_config_cache, get_llm_timeouts, load_config, validate_required_env_vars
     from .orchestrator import Orchestrator
     from .storage.sqlite_log import SessionLogger
+    from .storage.chroma_store import _get_onnx_embedder
     from .monitoring.metrics import MetricsCollector
     from .monitoring.health import HealthChecker
     from .agent.audit import AuditLogger
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from config import clear_config_cache, get_llm_timeouts, load_config, validate_required_env_vars  # type: ignore
     from orchestrator import Orchestrator  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
+    from storage.chroma_store import _get_onnx_embedder  # type: ignore
     from monitoring.metrics import MetricsCollector  # type: ignore
     from monitoring.health import HealthChecker  # type: ignore
     from agent.audit import AuditLogger  # type: ignore
@@ -705,6 +707,16 @@ async def lifespan(app: FastAPI):
     except ValueError as e:
         logger.critical("配置校验失败: %s", e)
         raise RuntimeError(str(e)) from e
+
+    # 预加载 ONNX 嵌入模型（all-MiniLM-L6-v2），避免首次对话时
+    # 临时下载模型权重导致 20+ 秒等待。模型约 80MB，首次启动时
+    # 自动下载到 ~/.cache/chroma/onnx_models/，后续启动直接加载。
+    try:
+        logger.info("正在预加载 ONNX 嵌入模型...")
+        _get_onnx_embedder()
+        logger.info("ONNX 嵌入模型已就绪")
+    except Exception as e:
+        logger.warning("ONNX 嵌入模型预加载失败（首次使用时将按需加载）: %s", e)
 
     server_cfg = config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")
