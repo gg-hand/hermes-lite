@@ -2126,3 +2126,22 @@ class Orchestrator:
                     closer()
                 except Exception as e:
                     logger.warning("关闭 %s 失败: %s", attr, e)
+
+    def shutdown(self) -> None:
+        """优雅关闭：先冲刷积压记忆，再释放资源。
+
+        供软重启流程调用。与 :meth:`close` 的区别在于：
+        - 先调用 ``consolidation_engine.consolidate()`` 将待处理记忆落盘，
+          避免重启导致最近对话的记忆丢失。
+        - 然后调用 :meth:`close` 关闭各组件。
+        """
+        # 1. 冲刷 consolidation 待处理队列（避免沉淀丢失）
+        if self.consolidation_engine is not None:
+            try:
+                logger.info("shutdown: 正在冲刷 pending consolidation...")
+                stats = self.consolidation_engine.consolidate()
+                logger.info("shutdown: consolidation 完成: %s", stats)
+            except Exception as e:
+                logger.warning("shutdown: consolidation 冲刷失败: %s", e)
+        # 2. 关闭各组件资源
+        self.close()

@@ -2968,35 +2968,100 @@ def recall_messages(
 # ---------- 服务重启 ----------
 
 
+_SOFT_RESTART_IN_PROGRESS = False
+
+
 @app.post("/restart")
-def restart_server():
-    """重启服务：异步触发重启脚本，先返回响应再退出当前进程。
+async def restart_server():
+    """软重启：重载配置 + 重建 Orchestrator，不杀进程。
 
-    用于配置修改后一键重启使需重启的配置项生效。
-    启动辅助进程执行重启脚本，然后当前进程退出。
-    restart.ps1 会杀死当前进程并启动新进程。
+    与硬重启（``systemctl restart``）不同，本端点：
+    - 不重启 uvicorn 进程，ONNX 模型与 ChromaDB 索引保留在内存中
+    - 先冲刷 consolidation 待处理队列，确保记忆不丢
+    - 若新 Orchestrator 构建失败，保留旧的继续服务
+
+    不支持热更新的配置项（如 ``server.host`` / ``server.port``）变更
+    仍需硬重启。
     """
-    import subprocess
-    import threading
-    import sys
+    global orchestrator, _SOFT_RESTART_IN_PROGRESS
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
 
-    def _do_restart():
-        time.sleep(1.5)
+    if _SOFT_RESTART_IN_PROGRESS:
+        raise HTTPException(status_code=409, detail="软重启已在进行中")
+
+    _SOFT_RESTART_IN_PROGRESS = True
+    try:
+        # 1. 读取最新配置
+        new_config = load_config(CONFIG_PATH)
+
+        # 2. 校验环境变量
         try:
-            subprocess.Popen(
-                [sys.executable, "-c",
-                 "import time,subprocess,os;"
-                 f"time.sleep(2);os.chdir({script_dir!r});"
-                 "subprocess.run(['powershell','-ExecutionPolicy','Bypass','-File','restart.ps1'])"],
-                cwd=script_dir,
-            )
-        except Exception:
-            pass
+            validate_required_env_vars(new_config)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"配置校验失败: {e}")
 
-    threading.Thread(target=_do_restart, daemon=True).start()
-    return {"status": "restarting", "message": "服务正在重启..."}
+        # 3. 如果存在进行中的流，等待最多 30s
+        if stream_manager is not None:
+            active = stream_manager.active_count()
+            if active > 0:
+                logger.info(
+                    "软重启: 等待 %d 个进行中的流完成（最多 30s）...", active
+                )
+                for _ in range(30):
+                    if stream_manager.active_count() == 0:
+                        break
+                    await asyncio.sleep(1)
+                remaining = stream_manager.active_count()
+                if remaining > 0:
+                    logger.warning(
+                        "软重启: %d 个流未在等待时间内完成，继续重启", remaining
+                    )
+
+        # 4. 构建新 Orchestrator（失败时保留旧的）
+        try:
+            new_orchestrator = await asyncio.to_thread(
+                Orchestrator,
+                config_path=CONFIG_PATH,
+                metrics=metrics_collector,
+                audit_logger=audit_logger,
+                approval_manager=approval_manager,
+                task_manager=task_manager,
+            )
+        except Exception as e:
+            logger.exception("软重启: 新 Orchestrator 构建失败")
+            raise HTTPException(
+                status_code=500,
+                detail=f"新 Orchestrator 构建失败，已保留当前服务: {e}",
+            )
+
+        # 5. 预热 ChromaDB 索引（哑查询，快速）
+        if new_orchestrator.chroma_store is not None:
+            try:
+                new_orchestrator.chroma_store.query_memory(
+                    "warmup", top_k=1, reinforce=False
+                )
+            except Exception as e:
+                logger.warning("软重启: ChromaDB 预热失败: %s", e)
+
+        # 6. 冲刷旧 Orchestrator 的待处理记忆 + 关闭资源
+        try:
+            old_orchestrator = orchestrator
+            # 在后台线程执行 shutdown（内含 consolidate + close）
+            await asyncio.to_thread(old_orchestrator.shutdown)
+        except Exception as e:
+            logger.warning("软重启: 旧 Orchestrator 关闭异常（已忽略）: %s", e)
+
+        # 7. 原子替换
+        orchestrator = new_orchestrator
+        logger.info("软重启: Orchestrator 已替换为新实例")
+
+        # 8. 预热新实例的 ChromaDB（后台）
+        return {"status": "ok", "message": "软重启完成"}
+
+    finally:
+        _SOFT_RESTART_IN_PROGRESS = False
 
 
 # ---------- 配置管理 ----------

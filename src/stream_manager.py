@@ -256,3 +256,11 @@ class StreamManager:
             "StreamManager trigger_cancel: %s (callback 已调用)", session_id
         )
         return True
+
+    def active_count(self) -> int:
+        """返回当前活跃的 SSE 流数量。
+
+        供软重启流程判断是否有正在进行的对话。
+        """
+        with self._lock:
+            return len(self._events)
