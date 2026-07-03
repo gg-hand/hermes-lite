@@ -1542,11 +1542,21 @@ class Orchestrator:
                 system_text = SYSTEM_PROMPT
 
         # 2. 检索长期记忆并作为 history 前置 user 消息注入
+        # Phase X 优化：后续轮次（已有对话历史）走轻量检索路径，
+        # 跳过 _filter_by_relevance 与 reinforce 写入，省掉 ~2.6s。
         if self.memory_retriever is not None:
             try:
-                memory_text = await asyncio.to_thread(
-                    self.memory_retriever.get_injection_text, user_input
-                )
+                # 判断是否为首轮：history 尚无完整 user↔assistant 交换
+                is_first_round = len(history) < 2
+                if is_first_round:
+                    memory_text = await asyncio.to_thread(
+                        self.memory_retriever.get_injection_text, user_input
+                    )
+                else:
+                    memory_text = await asyncio.to_thread(
+                        self.memory_retriever.get_injection_text_lightweight,
+                        user_input,
+                    )
                 # 上报记忆检索命中/未命中指标
                 if self.metrics is not None:
                     self.metrics.observe_memory_retrieval(hit=bool(memory_text))

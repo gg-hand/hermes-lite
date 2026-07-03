@@ -465,6 +465,53 @@ class MemoryRetriever:
         )
         return self.format_for_prompt(retrieval_result)
 
+    def get_injection_text_lightweight(
+        self,
+        user_input: str,
+        namespace: str = "user",
+        cron_id: Optional[str] = None,
+    ) -> str:
+        """轻量级记忆检索——跳过 _filter_by_relevance 与 reinforce 写入。
+
+        用于**后续对话轮次**（已有历史上下文），首轮仍需完整
+        :meth:`get_injection_text` 确保记忆过滤的准确性。
+
+        差异：
+        - 调用 ``chroma_store.query_memory(reinforce=False)``，不更新访问时间
+        - 跳过 ``_filter_by_relevance``，省掉 6 次 ONNX 嵌入
+        - 仍然执行 ChromaDB 向量检索，确保新话题也能召回相关记忆
+
+        参数:
+            同 :meth:`get_injection_text`。
+
+        返回:
+            可注入 prompt 的文本，无相关记忆时返回空字符串。
+        """
+        if self.chroma_store is None:
+            return ""
+        try:
+            raw = self.chroma_store.query_memory(
+                user_input,
+                top_k=self.top_k,
+                reinforce=False,
+                namespace=namespace,
+                cron_id=cron_id,
+            )
+            # 过滤 user_profile 类型（与 retrieve 保持一致）
+            memories = [
+                m for m in raw
+                if str(m.get("metadata", {}).get("type", "")).lower() != "user_profile"
+            ]
+            retrieval_result = {
+                "long_term_memories": memories,
+                "user_profile_summary": "",
+                "total_tokens": self._estimate_total_tokens(memories),
+            }
+            return self.format_for_prompt(retrieval_result)
+        except Exception as e:
+            logger.warning("轻量级记忆检索失败，降级为空注入: %s", e)
+            return ""
+
     # ------------------------------------------------------------------
     # 内部工具方法
     # ------------------------------------------------------------------
