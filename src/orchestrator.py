@@ -2128,12 +2128,14 @@ class Orchestrator:
                     logger.warning("关闭 %s 失败: %s", attr, e)
 
     def shutdown(self) -> None:
-        """优雅关闭：先冲刷积压记忆，再释放资源。
+        """优雅关闭：冲刷积压记忆，保留 ChromaDB/SQLite 连接供新实例复用。
 
         供软重启流程调用。与 :meth:`close` 的区别在于：
         - 先调用 ``consolidation_engine.consolidate()`` 将待处理记忆落盘，
           避免重启导致最近对话的记忆丢失。
-        - 然后调用 :meth:`close` 关闭各组件。
+        - **不关闭 chroma_store / session_logger**（软重启时新 Orchestrator
+          会建新实例，但 ChromaDB/SQLite 文件级别并发连接由服务端处理，
+          旧实例释放即可，无需主动 close）。
         """
         # 1. 冲刷 consolidation 待处理队列（避免沉淀丢失）
         if self.consolidation_engine is not None:
@@ -2143,5 +2145,14 @@ class Orchestrator:
                 logger.info("shutdown: consolidation 完成: %s", stats)
             except Exception as e:
                 logger.warning("shutdown: consolidation 冲刷失败: %s", e)
-        # 2. 关闭各组件资源
-        self.close()
+        # 2. 关闭非数据库组件（history_buffer 无持久化连接，可安全关闭）
+        for attr in ("history_buffer",):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            closer = getattr(obj, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception as e:
+                    logger.warning("shutdown: 关闭 %s 失败: %s", attr, e)
