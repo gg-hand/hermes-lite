@@ -775,6 +775,18 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Orchestrator 已初始化")
 
+    # 预热 ChromaDB 向量索引：做一次哑查询加载 HNSW 索引到内存，
+    # 避免重启后首次对话因索引加载耗时 20s+。
+    if orchestrator is not None and orchestrator.chroma_store is not None:
+        try:
+            logger.info("正在预热 ChromaDB 向量索引...")
+            orchestrator.chroma_store.query_memory(
+                "warmup", top_k=1, reinforce=False
+            )
+            logger.info("ChromaDB 向量索引已就绪")
+        except Exception as e:
+            logger.warning("ChromaDB 预热失败（首次对话时将按需加载）: %s", e)
+
     # 初始化流中断管理器
     global stream_manager
     global health_checker
