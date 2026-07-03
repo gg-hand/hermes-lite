@@ -5,7 +5,7 @@ import os, tarfile, sys
 src_dir = r"E:\Java\webser\web_app\webme\hermes-lite"
 out_path = r"E:\Java\webser\web_app\webme\hermes-lite-deploy.tar.gz"
 
-exclude_dirs = {'.venv', '__pycache__', '.pytest_cache', '.git', 'data', 'node_modules'}
+exclude_dirs = {'.venv', '__pycache__', '.pytest_cache', '.git', 'data', 'node_modules', '_onnx_model'}
 exclude_suffixes = {'.pyc', '.pyo'}
 exclude_files = {'$null', '.server.pid', 'server_out.txt', 'server_err.txt', 'test_ssh.py'}
 
