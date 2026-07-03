@@ -3019,7 +3019,15 @@ async def restart_server():
                         "软重启: %d 个流未在等待时间内完成，继续重启", remaining
                     )
 
-        # 4. 构建新 Orchestrator（失败时保留旧的）
+        # 4. 冲刷旧 Orchestrator 的待处理记忆 + 关闭 ChromaDB 连接
+        #    （关断后建新实例，避免两个 ChromaDB 客户端争用同一 sqlite 文件）
+        old_orchestrator = orchestrator
+        try:
+            await asyncio.to_thread(old_orchestrator.shutdown)
+        except Exception as e:
+            logger.warning("软重启: 旧 Orchestrator 关闭异常（已忽略）: %s", e)
+
+        # 5. 构建新 Orchestrator（旧资源已释放，ChromDB 文件可安全打开）
         try:
             new_orchestrator = await asyncio.to_thread(
                 Orchestrator,
@@ -3030,13 +3038,14 @@ async def restart_server():
                 task_manager=task_manager,
             )
         except Exception as e:
-            logger.exception("软重启: 新 Orchestrator 构建失败")
+            logger.exception("软重启: 新 Orchestrator 构建失败，服务不可用")
+            # 构建失败时尝试硬重启恢复
             raise HTTPException(
                 status_code=500,
-                detail=f"新 Orchestrator 构建失败，已保留当前服务: {e}",
+                detail=f"新 Orchestrator 构建失败，请手动 systemctl restart: {e}",
             )
 
-        # 5. 预热 ChromaDB 索引（哑查询，快速）
+        # 6. 预热 ChromaDB 索引（哑查询，快速）
         if new_orchestrator.chroma_store is not None:
             try:
                 new_orchestrator.chroma_store.query_memory(
@@ -3044,14 +3053,6 @@ async def restart_server():
                 )
             except Exception as e:
                 logger.warning("软重启: ChromaDB 预热失败: %s", e)
-
-        # 6. 冲刷旧 Orchestrator 的待处理记忆 + 关闭资源
-        try:
-            old_orchestrator = orchestrator
-            # 在后台线程执行 shutdown（内含 consolidate + close）
-            await asyncio.to_thread(old_orchestrator.shutdown)
-        except Exception as e:
-            logger.warning("软重启: 旧 Orchestrator 关闭异常（已忽略）: %s", e)
 
         # 7. 原子替换
         orchestrator = new_orchestrator
