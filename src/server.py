@@ -1423,57 +1423,69 @@ def chat_stream(req: ChatRequest):
                 # llm.stream_total_timeout 热更新（无需重启即时生效）
                 _req_cfg = load_config(CONFIG_PATH)
                 _activity_timeout, _stream_total_timeout = get_llm_timeouts(_req_cfg)
-                async with asyncio.timeout(_stream_total_timeout):
-                    async for event in orchestrator.chat_stream(
-                        session_id,
-                        req.message,
-                        cancel_event=cancel_event,
+                # 逐事件超时：每个事件完成后重置 _stream_total_timeout 倒计时，
+                # 避免多轮工具调用的累计耗时超过单次硬限。
+                # 只有 LLM 或工具真正卡住（300s 无任何事件）才会触发超时。
+                _chat_stream = orchestrator.chat_stream(
+                    session_id,
+                    req.message,
+                    cancel_event=cancel_event,
+                ).__aiter__()
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            _chat_stream.__anext__(),
+                            timeout=_stream_total_timeout,
+                        )
+                    except StopAsyncIteration:
+                        break
+
+                    etype = event.get("type")
+
+                    # graceful 模式断点检测（在 orchestrator 事件之间）
+                    if etype == "text":
+                        accumulated_text += event.get("text", "")
+                    if (
+                        stream_manager is not None
+                        and stream_manager.is_graceful_pending(session_id)
+                        and breakpoint_detector.should_break(accumulated_text)
                     ):
-                        etype = event.get("type")
-
-                        # graceful 模式断点检测（在 orchestrator 事件之间）
-                        if etype == "text":
-                            accumulated_text += event.get("text", "")
-                        if (
-                            stream_manager is not None
-                            and stream_manager.is_graceful_pending(session_id)
-                            and breakpoint_detector.should_break(accumulated_text)
-                        ):
-                            # 到达自然断点，触发中断
-                            if cancel_event is not None:
-                                cancel_event.set()
-                            # 保存 InterruptNotice（含用户新消息）
-                            graceful_msg = stream_manager.pop_graceful_message(
-                                session_id
+                        # 到达自然断点，触发中断
+                        if cancel_event is not None:
+                            cancel_event.set()
+                        # 保存 InterruptNotice（含用户新消息）
+                        graceful_msg = stream_manager.pop_graceful_message(
+                            session_id
+                        )
+                        if orchestrator is not None:
+                            orchestrator._save_interrupt_notice(
+                                session_id, graceful_msg
                             )
-                            if orchestrator is not None:
-                                orchestrator._save_interrupt_notice(
-                                    session_id, graceful_msg
-                                )
 
-                        # 中断检测
-                        if cancel_event is not None and cancel_event.is_set():
-                            yield _sse_event({"type": "interrupt"})
-                            return
+                    # 中断检测
+                    if cancel_event is not None and cancel_event.is_set():
+                        yield _sse_event({"type": "interrupt"})
+                        return
 
-                        if etype == "done":
-                            # done 事件补充 timestamp，不透传 messages（体积大）
-                            yield _sse_event({
-                                "type": "done",
-                                "response": event.get("response", ""),
-                                "timestamp": _now_iso(),
-                            })
-                        else:
-                            # text / tool / approval_request / approval_resolved /
-                            # round_start / todo_init / todo_update / todo_complete
-                            # 事件原样透传
-                            yield _sse_event(event)
+                    if etype == "done":
+                        # done 事件补充 timestamp，不透传 messages（体积大）
+                        yield _sse_event({
+                            "type": "done",
+                            "response": event.get("response", ""),
+                            "timestamp": _now_iso(),
+                        })
+                    else:
+                        # text / tool / approval_request / approval_resolved /
+                        # round_start / todo_init / todo_update / todo_complete
+                        # 事件原样透传
+                        yield _sse_event(event)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "流式对话超时（%ss），session=%s",
+                    "流式对话超时（%ss 无事件），session=%s",
                     _stream_total_timeout, session_id,
                 )
                 yield _sse_event({"type": "error", "message": "请求超时，请重试"})
+                yield _sse_event({"type": "interrupt"})
             except StreamCancelled:
                 logger.info("流被用户中断: session=%s", session_id)
                 yield _sse_event({"type": "interrupt"})
