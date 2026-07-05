@@ -393,6 +393,44 @@ class TestCommandClassifierDeleteBlacklist(unittest.TestCase):
         self.assertEqual(self._classify("dir & echo x > out.txt"), "delete")
         self.assertEqual(self._check("dir & echo x > out.txt").action, "confirm")
 
+    # ------------------------------------------------------------------
+    # 引号内的 > 不视为重定向（修复 python -c "print(1 > 2)" 误判）
+    # ------------------------------------------------------------------
+    def test_redirect_in_double_quotes_not_redirect(self):
+        """``python -c "print(1 > 2)"`` → other（``>`` 在双引号内，是 Python 比较运算符）。"""
+        self.assertEqual(self._classify('python -c "print(1 > 2)"'), "other")
+        d = self._check('python -c "print(1 > 2)"')
+        self.assertEqual(d.action, "allow")
+
+    def test_redirect_in_single_quotes_not_redirect(self):
+        """``python -c 'print(1 > 2)'`` → other（``>`` 在单引号内）。"""
+        self.assertEqual(self._classify("python -c 'print(1 > 2)'"), "other")
+        self.assertEqual(self._check("python -c 'print(1 > 2)'").action, "allow")
+
+    def test_bit_shift_in_quotes_not_redirect(self):
+        """``python -c "print(x >> 1)"`` → other（``>>`` 在双引号内，是位运算）。"""
+        self.assertEqual(self._classify('python -c "print(x >> 1)"'), "other")
+        self.assertEqual(self._check('python -c "print(x >> 1)"').action, "allow")
+
+    def test_redirect_outside_quotes_still_detected(self):
+        """``echo hello > file.txt`` → delete（``>`` 在命令层，真重定向）。"""
+        self.assertEqual(self._classify("echo hello > file.txt"), "delete")
+        self.assertEqual(self._check("echo hello > file.txt").action, "confirm")
+
+    def test_redirect_mixed_quote_and_real_redirect(self):
+        """``python -c "print(1 > 2)" > out.txt`` → delete（命令层有真重定向）。"""
+        self.assertEqual(
+            self._classify('python -c "print(1 > 2)" > out.txt'), "delete"
+        )
+        self.assertEqual(
+            self._check('python -c "print(1 > 2)" > out.txt').action, "confirm"
+        )
+
+    def test_redirect_in_echo_string_not_redirect(self):
+        """``echo "a > b"`` → read（``>`` 在双引号字符串内，无副作用）。"""
+        self.assertEqual(self._classify('echo "a > b"'), "read")
+        self.assertEqual(self._check('echo "a > b"').action, "allow")
+
 
 class TestCommandClassifierInjectionDefense(unittest.TestCase):
     """命令注入防御：含分隔符时拆分子命令，任一黑名单 → confirm；全白名单 → allow。"""

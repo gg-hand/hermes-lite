@@ -20,7 +20,8 @@ function loadPersistedSession() {
 // ========== 会话列表 ==========
 async function loadSessions() {
   try {
-    const data = await api('/sessions');
+    // exclude_cron=true 过滤掉 cron 会话（调度会话只在 /scheduler 页查看）
+    const data = await api('/sessions?exclude_cron=true');
     const sessions = data.sessions || [];
     renderSessionList(sessions);
   } catch (e) {
@@ -33,15 +34,20 @@ function renderSessionList(sessions) {
     sessionListEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">暂无会话<br>点击上方 + 新建</div></div>';
     return;
   }
-  sessionListEl.innerHTML = sessions.map(s => `
+  sessionListEl.innerHTML = sessions.map(s => {
+    // 优先使用 title，无 title 回退到首条消息 preview（前端内存），再回退 id 前 24 字符
+    const _preview = (window._firstMessagePreview && window._firstMessagePreview[s.id]) || '';
+    const displayTitle = (s.title && s.title.trim()) ? s.title.trim()
+      : (_preview || s.id.slice(0, 24));
+    return `
     <div class="session-item ${s.id === currentSessionId ? 'active' : ''}" data-id="${s.id}">
       <div class="session-info">
-        <div class="session-id">${escapeHtml(s.id.slice(0, 24))}</div>
+        <div class="session-id" title="${escapeHtml(s.id)}">${escapeHtml(displayTitle)}</div>
         <div class="session-time">${formatTime(s.updated_at)}</div>
       </div>
       <button class="btn-icon session-delete-btn" data-del="${s.id}" title="删除">&times;</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   sessionListEl.querySelectorAll('.session-item').forEach(el => {
     el.addEventListener('click', (e) => {
@@ -55,6 +61,19 @@ function renderSessionList(sessions) {
       deleteSession(el.dataset.del);
     });
   });
+
+  // 同步顶栏标题：若 currentSessionId 在列表中，使用其 title（回退首条消息 preview / id 前 20 字符）
+  if (currentSessionId) {
+    const cur = sessions.find(s => s.id === currentSessionId);
+    if (cur) {
+      // 存储当前会话数据，供标题退避轮询比较
+      if (window.HermesChatSession) window.HermesChatSession._currentSessionData = cur;
+      const _preview = (window._firstMessagePreview && window._firstMessagePreview[currentSessionId]) || '';
+      const t = (cur.title && cur.title.trim()) ? cur.title.trim()
+        : (_preview ? _preview : currentSessionId.slice(0, 20) + '...');
+      if (sessionTitleEl) sessionTitleEl.textContent = t;
+    }
+  }
 }
 
 // ========== 沉淀触发 ==========
@@ -76,9 +95,13 @@ async function selectSession(sessionId) {
   if (currentSessionId && currentSessionId !== sessionId) {
     flushConsolidation();
   }
+  // 清理旧会话的标题轮询 timer，避免跨会话串扰
+  if (window._titlePollTimer) { clearTimeout(window._titlePollTimer); window._titlePollTimer = null; }
   currentSessionId = sessionId;
   persistCurrentSession();
-  sessionTitleEl.textContent = sessionId.slice(0, 20) + '...';
+  // 标题占位：优先首条消息 preview，回退 id 前 20 字符
+  const _preview = (window._firstMessagePreview && window._firstMessagePreview[sessionId]) || '';
+  sessionTitleEl.textContent = (_preview ? _preview : sessionId.slice(0, 20)) + '...';
   await loadMessages(sessionId);
   loadSessions();
 }
@@ -146,6 +169,8 @@ async function loadMessages(sessionId) {
           }
         }
       }
+      // 历史加载完毕：强制滚动到底部，展示最新内容（覆盖循环中各 append 的非强制跟随）
+      scrollMessagesToBottom(true);
     } else {
       messagesEl.appendChild(welcomeScreenEl);
       welcomeScreenEl.style.display = 'flex';

@@ -1,7 +1,12 @@
-"""Phase 8 Task 2 工作流模板系统。
+"""Phase 8 Task 2 工作流模板系统 + Task 3-8 通用 workflow 引擎。
 
 提供 ``WorkflowTemplate`` 抽象基类与若干内置模板，封装「确定性步骤 + LLM 步骤」
 的两阶段执行模式，供 CronScheduler 在触发含 ``workflow`` 字段的调度项时调用。
+
+Task 3-8 新增通用 workflow 引擎：
+- :class:`WorkflowEngine` 按 ``WorkflowSpec.steps`` 拓扑序执行多步 workflow
+- :class:`WorkflowValidator` 静态校验 spec（id 唯一 / depends_on 无环 / type 合法 等）
+- :func:`wrap_template_as_workflow` 将旧 6 个模板包装为单 step WorkflowSpec
 
 模板列表（按 SubTask 2.2 ~ 2.6 增量交付）：
 - :class:`DirectoryWatchTemplate`：监控目录变更并 LLM 分析趋势
@@ -32,6 +37,22 @@ from .cleanup_suggest import CleanupSuggestTemplate
 from .research import ResearchTemplate
 from .custom import CustomTemplate
 
+# Task 3-8: 通用 workflow 引擎相关导出
+from .spec import (
+    OnFailure,
+    RetryPolicy,
+    StepSpec,
+    WorkflowSpec,
+)
+from .step_trace import StepTrace
+from .validator import (
+    ValidationError,
+    ValidationResult,
+    WorkflowValidator,
+)
+from .engine import WorkflowEngine
+from .adapter import wrap_template_as_workflow
+
 #: 内置模板注册表（name → class），供 CronScheduler 按名查找
 BUILTIN_TEMPLATES = {
     DirectoryWatchTemplate.name: DirectoryWatchTemplate,
@@ -56,10 +77,12 @@ def get_template(name: str):
 
 
 __all__ = [
+    # 基础数据结构
     "WorkflowContext",
     "WorkflowResult",
     "WorkflowTemplate",
     "render_time_variables",
+    # 内置模板
     "DirectoryWatchTemplate",
     "SummaryTemplate",
     "EmailNotifyTemplate",
@@ -68,4 +91,15 @@ __all__ = [
     "CustomTemplate",
     "BUILTIN_TEMPLATES",
     "get_template",
+    # Task 3-8: 通用 workflow 引擎
+    "WorkflowEngine",
+    "WorkflowSpec",
+    "StepSpec",
+    "OnFailure",
+    "RetryPolicy",
+    "StepTrace",
+    "WorkflowValidator",
+    "ValidationResult",
+    "ValidationError",
+    "wrap_template_as_workflow",
 ]

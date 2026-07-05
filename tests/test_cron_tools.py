@@ -55,10 +55,11 @@ from src.agent.cron_tools import (  # noqa: E402
 
 
 class _MockToolRegistry:
-    """记录 register_core 调用的 mock ToolRegistry。
+    """记录 register_core / register_deferred 调用的 mock ToolRegistry。
 
     与 tests/test_plan_tools.py 中的 mock 一致，便于跨测试复用模式。
-    支持 register_core / execute_tool / get_tools_schema。
+    支持 register_core / register_deferred / execute_tool / get_tools_schema。
+    register_deferred 与 register_core 行为一致（仅记录注册，不区分 Tier）。
     """
 
     def __init__(self) -> None:
@@ -71,6 +72,20 @@ class _MockToolRegistry:
         input_schema: dict,
         handler,
     ) -> None:
+        self.tools[name] = {
+            "description": description,
+            "input_schema": input_schema,
+            "handler": handler,
+        }
+
+    def register_deferred(
+        self,
+        name: str,
+        description: str,
+        input_schema: dict,
+        handler,
+    ) -> None:
+        """Deferred Tier 注册（与 register_core 行为一致，仅记录）。"""
         self.tools[name] = {
             "description": description,
             "input_schema": input_schema,
@@ -454,8 +469,9 @@ class TestRegisterCronTools(unittest.TestCase):
         self.assertEqual(set(self.registry.tools.keys()), expected)
 
     def test_all_tools_in_core_tier(self):
-        """4 个工具均通过 register_core 注册（Core Tier）。"""
-        # _MockToolRegistry 只支持 register_core，所有工具均通过它注册
+        """4 个工具均通过 register_deferred 注册（Deferred Tier）。"""
+        # _MockToolRegistry 支持 register_core 与 register_deferred，
+        # 二者行为一致（仅记录注册）
         for name, tool in self.registry.tools.items():
             self.assertIn("description", tool)
             self.assertIn("input_schema", tool)
@@ -988,6 +1004,187 @@ class TestUpdateScheduleTool(unittest.TestCase):
         self.assertTrue(data["snapshot_relocked"])
         sched = self.scheduler.get_schedule(self.sid)
         self.assertEqual(sched["active_tools_snapshot"], [])
+
+
+# ---------------------------------------------------------------------------
+# Task 9: cron_propose / cron_update workflow schema 校验集成
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowValidationInProposeSchedule(unittest.TestCase):
+    """Task 9.2/9.4: cron_propose 多步 workflow 校验。"""
+
+    def setUp(self) -> None:
+        self.registry = _MockToolRegistry()
+        self.scheduler = _MockCronScheduler()
+        self.store = ProposalStore()
+        register_cron_tools(self.registry, self.scheduler, self.store)
+
+    def test_multistep_workflow_validation_passes(self):
+        """多步 workflow 校验通过，proposal 正常创建。"""
+        workflow = {
+            "name": "watch_and_notify",
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "deterministic",
+                    "config": {"template": "directory_watch"},
+                },
+                {
+                    "id": "s2",
+                    "type": "llm",
+                    "config": {"prompt": "总结"},
+                    "depends_on": ["s1"],
+                },
+            ],
+        }
+        result = self.registry.execute_tool(
+            "cron_propose",
+            {
+                "schedule_config": {
+                    "name": "多步测试",
+                    "cron": "0 9 * * *",
+                    "task": "执行多步 workflow",
+                    "workflow": workflow,
+                },
+                "requested_tools": [],
+                "llm_explanation": "多步 workflow 提议",
+            },
+        )
+        data = json.loads(result)
+        self.assertIn("proposal_id", data)
+        self.assertEqual(data["status"], "pending_confirm")
+
+    def test_workflow_validation_failed_rejects_proposal(self):
+        """多步 workflow 校验失败（depends_on 环），拒绝创建 proposal。"""
+        workflow = {
+            "name": "cyclic_workflow",
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "llm",
+                    "config": {"prompt": "A"},
+                    "depends_on": ["s2"],
+                },
+                {
+                    "id": "s2",
+                    "type": "llm",
+                    "config": {"prompt": "B"},
+                    "depends_on": ["s1"],
+                },
+            ],
+        }
+        result = self.registry.execute_tool(
+            "cron_propose",
+            {
+                "schedule_config": {
+                    "cron": "0 9 * * *",
+                    "task": "循环 workflow",
+                    "workflow": workflow,
+                },
+                "requested_tools": [],
+                "llm_explanation": "测试环检测",
+            },
+        )
+        data = json.loads(result)
+        self.assertIn("error", data)
+        self.assertIn("validation_errors", data)
+        self.assertFalse(self.store.list())
+
+    def test_simple_mode_workflow_skips_validation(self):
+        """简易模式（仅 template 字段）跳过校验，proposal 正常创建。"""
+        workflow = {
+            "template": "directory_watch",
+            "watch_path": "/tmp",
+        }
+        result = self.registry.execute_tool(
+            "cron_propose",
+            {
+                "schedule_config": {
+                    "cron": "0 9 * * *",
+                    "task": "目录监控",
+                    "workflow": workflow,
+                },
+                "requested_tools": [],
+                "llm_explanation": "简易模式",
+            },
+        )
+        data = json.loads(result)
+        self.assertIn("proposal_id", data)
+
+    def test_bare_dict_workflow_schema_compatible(self):
+        """LLM 旧调用（裸 dict {template, topic}）通过 schema 校验。"""
+        # LLM 常见调用：workflow 字段含 template + 模板特定字段（如 topic）
+        workflow = {"template": "research", "topic": "AI 趋势"}
+        result = self.registry.execute_tool(
+            "cron_propose",
+            {
+                "schedule_config": {
+                    "cron": "0 9 * * *",
+                    "task": "研究",
+                    "workflow": workflow,
+                },
+                "requested_tools": [],
+                "llm_explanation": "研究类调度",
+            },
+        )
+        data = json.loads(result)
+        self.assertIn("proposal_id", data)
+        self.assertEqual(data["status"], "pending_confirm")
+
+
+class TestWorkflowValidationInUpdateSchedule(unittest.TestCase):
+    """Task 9.3/9.4: cron_update workflow 字段更新校验。"""
+
+    def setUp(self) -> None:
+        self.registry = _MockToolRegistry()
+        self.scheduler = _MockCronScheduler()
+        self.store = ProposalStore()
+        register_cron_tools(self.registry, self.scheduler, self.store)
+        self.sid = self.scheduler.add_schedule(
+            {"name": "orig", "cron": "0 9 * * *", "task": "hi"}
+        )
+
+    def test_update_workflow_validation_failed(self):
+        """cron_update 更新 workflow 字段时校验失败拒绝更新。"""
+        bad_workflow = {
+            "name": "bad_step_type",
+            "steps": [
+                {
+                    "id": "s1",
+                    "type": "invalid_type_xyz",  # 非法 step 类型
+                    "config": {},
+                },
+            ],
+        }
+        result = self.registry.execute_tool(
+            "cron_update",
+            {
+                "schedule_id": self.sid,
+                "fields": {"workflow": bad_workflow},
+            },
+        )
+        data = json.loads(result)
+        self.assertIn("error", data)
+        self.assertIn("validation_errors", data)
+        # 调度项未被更新
+        sched = self.scheduler.get_schedule(self.sid)
+        self.assertIsNone(sched.get("workflow"))
+
+    def test_update_workflow_simple_mode_skips_validation(self):
+        """cron_update 更新为简易模式 workflow（仅 template）跳过校验。"""
+        simple_workflow = {"template": "summary", "session_id": "sess1"}
+        result = self.registry.execute_tool(
+            "cron_update",
+            {
+                "schedule_id": self.sid,
+                "fields": {"workflow": simple_workflow},
+            },
+        )
+        data = json.loads(result)
+        self.assertTrue(data["updated"])
+        sched = self.scheduler.get_schedule(self.sid)
+        self.assertEqual(sched["workflow"], simple_workflow)
 
 
 # ---------------------------------------------------------------------------

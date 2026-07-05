@@ -52,18 +52,36 @@ except ImportError:  # pragma: no cover
         build_default_llm_summary = None  # type: ignore
 
 # 工作流模板注册表（懒导入，避免在 import 阶段强依赖）
+# D2 修复：增加 WorkflowResult 导入，用于失败路径构造结果对象
+# Task 10: 增加 WorkflowEngine / WorkflowSpec / StepTrace 用于多步 workflow 执行
 try:
-    from .workflow import BUILTIN_TEMPLATES, WorkflowContext, render_time_variables
+    from .workflow import (
+        BUILTIN_TEMPLATES,
+        StepTrace,
+        WorkflowContext,
+        WorkflowEngine,
+        WorkflowResult,
+        WorkflowSpec,
+        render_time_variables,
+    )
 except ImportError:  # pragma: no cover
     try:
         from workflow import (  # type: ignore
             BUILTIN_TEMPLATES,
+            StepTrace,
             WorkflowContext,
+            WorkflowEngine,
+            WorkflowResult,
+            WorkflowSpec,
             render_time_variables,
         )
     except ImportError:  # pragma: no cover
         BUILTIN_TEMPLATES = {}  # type: ignore
+        StepTrace = None  # type: ignore
         WorkflowContext = None  # type: ignore
+        WorkflowEngine = None  # type: ignore
+        WorkflowResult = None  # type: ignore
+        WorkflowSpec = None  # type: ignore
         render_time_variables = None  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -467,6 +485,9 @@ class CronScheduler:
         started_at_dt = datetime.now()
         started_at = started_at_dt.isoformat()
 
+        # Task 10：提前生成 run_id，供 WorkflowContext 注入与 RunSummary 持久化
+        run_id = uuid.uuid4().hex[:12]
+
         # 解析上次执行时间（用于 WorkflowContext.last_run_time 与时间变量替换）
         last_run_dt = self._parse_last_run_time(schedule)
 
@@ -484,10 +505,13 @@ class CronScheduler:
         tool_calls: List[Dict[str, Any]] = []
         outputs: List[Dict[str, Any]] = []
         errors: List[str] = []
+        # Task 10.4：step_traces / workflow_name 从 WorkflowResult 提取并持久化
+        step_traces_for_summary: List[Dict[str, Any]] = []
+        workflow_name: Optional[str] = None
 
         try:
             if schedule.workflow:
-                # workflow 路径
+                # workflow 路径（Task 10.2 双轨：多步经 WorkflowEngine，简易走模板）
                 wf_result = await asyncio.to_thread(
                     self._execute_workflow,
                     orchestrator,
@@ -495,6 +519,7 @@ class CronScheduler:
                     task_text,
                     started_at_dt,
                     last_run_dt,
+                    run_id,
                 )
                 if wf_result is not None:
                     success = wf_result.success
@@ -502,14 +527,36 @@ class CronScheduler:
                     tool_calls = list(wf_result.tool_calls)
                     outputs = list(wf_result.outputs)
                     errors = list(wf_result.errors)
+                    # Task 10.4：把 StepTrace 列表转为 List[Dict] 持久化到 runs.jsonl
+                    step_traces_for_summary = [
+                        t.to_dict() if hasattr(t, "to_dict") else dict(t)
+                        for t in (wf_result.step_traces or [])
+                    ]
+                    # workflow_name 优先取 wf_result.workflow_name，回退 schedule.name
+                    workflow_name = (
+                        wf_result.workflow_name or schedule.name
+                    )
             else:
                 # legacy 路径：直接 orchestrator.chat（Task 5 已改 async）
                 response = await orchestrator.chat(session_id, task_text)
                 assistant_response = response or ""
+                workflow_name = schedule.name
         except Exception as e:
             logger.exception("调度项 %s 触发失败", schedule.id)
             success = False
             errors.append(f"触发异常: {e}")
+            workflow_name = schedule.name
+
+        # 设置 cron 会话标题为 schedule.name（避免 cron 会话显示随机串）
+        # 首次触发后写入，后续触发复用（update_session_title 内部用 WHERE id=?，
+        # 若会话尚未创建则 UPDATE 不影响任何行，等下一轮日志记录时由
+        # ensure_session 创建后再写入）。orchestrator.chat 内部会调 ensure_session。
+        _sl = getattr(orchestrator, "session_logger", None)
+        if _sl is not None and schedule.name:
+            try:
+                _sl.update_session_title(session_id, schedule.name)
+            except Exception as e:
+                logger.warning("设置 cron 会话标题失败: %s", e)
 
         finished_at_dt = datetime.now()
         finished_at = finished_at_dt.isoformat()
@@ -528,6 +575,7 @@ class CronScheduler:
         self._persist()
 
         # SubTask 2.9: 生成 RunSummary 并 append 到 runs.jsonl
+        # Task 10.4：透传 step_traces / workflow_name / run_id
         await asyncio.to_thread(
             self._append_run_summary,
             schedule,
@@ -540,6 +588,9 @@ class CronScheduler:
             tool_calls,
             outputs,
             errors,
+            step_traces_for_summary,
+            workflow_name,
+            run_id,
         )
 
     def _execute_workflow(
@@ -549,11 +600,18 @@ class CronScheduler:
         task_text: str,
         started_at_dt: datetime,
         last_run_dt: Optional[datetime],
+        run_id: str = "",
     ):
         """执行 workflow 路径（在线程池中同步调用）。
 
-        构造 :class:`WorkflowContext`，从 ``schedule.workflow`` 取模板名
-        与配置，调用对应 :class:`WorkflowTemplate.execute`。
+        Task 10.2 双轨支持：
+        - **多步模式**（``workflow.steps`` 存在）：构造 :class:`WorkflowSpec`
+          并调 :class:`WorkflowEngine.execute`。
+        - **简易模式**（仅 ``template`` 字段）：走旧 :class:`WorkflowTemplate.execute`
+          路径，由 Task 10.3 补充 step_traces 包装保持 RunSummary 字段一致。
+
+        D2 修复：永不返回 None，所有失败路径返回
+        ``WorkflowResult(success=False, errors=["...具体原因..."])``。
 
         参数:
             orchestrator: 编排器实例，用于默认 WorkflowContext 工厂。
@@ -561,57 +619,270 @@ class CronScheduler:
             task_text: 渲染后的任务文本（已替换时间变量）。
             started_at_dt: 触发开始时间。
             last_run_dt: 上次执行时间。
+            run_id: 本次执行批次 ID（Task 10），注入 WorkflowContext 供
+                模板/StepExecutor 关联工具调用与审计。
 
         返回:
-            :class:`WorkflowResult` 实例；模板未找到或执行异常时返回 None。
+            :class:`WorkflowResult` 实例（失败时 ``success=False`` + 错误描述）。
         """
-        if not BUILTIN_TEMPLATES:
-            logger.warning("workflow 模块不可用，跳过 workflow 路径")
-            return None
+        # WorkflowResult 延迟导入避免循环依赖（与模块顶层 try/except 一致）
+        if WorkflowResult is None:
+            logger.error("WorkflowResult 不可用，无法构造失败结果")
+            return None  # 极端兜底，仅在导入失败时发生
 
         workflow_cfg = schedule.workflow or {}
-        template_name = workflow_cfg.get("template")
-        if not template_name:
-            logger.warning(
-                "调度项 %s 的 workflow 配置缺少 template 字段", schedule.id
-            )
-            return None
+        has_steps = bool(workflow_cfg.get("steps"))
 
-        template_cls = BUILTIN_TEMPLATES.get(template_name)
-        if template_cls is None:
-            logger.warning(
-                "调度项 %s 引用了未知的工作流模板: %s",
-                schedule.id,
-                template_name,
+        # 多步模式前置校验：WorkflowEngine / WorkflowSpec 必须可用
+        if has_steps and (WorkflowEngine is None or WorkflowSpec is None):
+            logger.warning("WorkflowEngine 不可用，无法执行多步 workflow")
+            return WorkflowResult(
+                success=False,
+                errors=["workflow 多步模式不可用（WorkflowEngine 未加载）"],
             )
-            return None
 
-        # 构造 WorkflowContext
+        # 简易模式前置校验：BUILTIN_TEMPLATES 必须非空
+        if not has_steps and not BUILTIN_TEMPLATES:
+            logger.warning("workflow 模块不可用，跳过简易模式 workflow 路径")
+            return WorkflowResult(
+                success=False,
+                errors=["workflow 模块不可用（BUILTIN_TEMPLATES 为空）"],
+            )
+
+        # 简易模式：解析 template_name / template_cls
+        template_name = ""
+        template_cls = None
+        if not has_steps:
+            template_name = workflow_cfg.get("template")
+            # D2 路径 2：缺 template 字段
+            if not template_name:
+                logger.warning(
+                    "调度项 %s 的 workflow 配置缺少 template 字段",
+                    schedule.id,
+                )
+                return WorkflowResult(
+                    success=False,
+                    errors=[
+                        f"调度项 {schedule.id} 的 workflow 配置缺少 template 字段"
+                    ],
+                )
+            template_cls = BUILTIN_TEMPLATES.get(template_name)
+            # D2 路径 3：模板未找到
+            if template_cls is None:
+                logger.warning(
+                    "调度项 %s 引用了未知的工作流模板: %s",
+                    schedule.id,
+                    template_name,
+                )
+                return WorkflowResult(
+                    success=False,
+                    errors=[
+                        f"调度项 {schedule.id} 引用了未知的工作流模板: {template_name}"
+                    ],
+                )
+
+        # 构造 WorkflowContext（Task 10.1：注入 run_id 等额外字段）
         context = self._build_workflow_context(
-            orchestrator, schedule, started_at_dt, last_run_dt
+            orchestrator,
+            schedule,
+            started_at_dt,
+            last_run_dt,
+            run_id=run_id,
+            session_id=f"cron:{schedule.id}",
+        )
+        # D2 路径 4：WorkflowContext 构造失败（极端兜底）
+        if context is None:
+            logger.error("调度项 %s 构造 WorkflowContext 失败", schedule.id)
+            return WorkflowResult(
+                success=False,
+                errors=[f"调度项 {schedule.id} 构造 WorkflowContext 失败"],
+            )
+
+        # Task 10.2：双轨分发
+        if has_steps:
+            return self._execute_workflow_engine(
+                workflow_cfg, context, schedule, run_id
+            )
+        return self._execute_workflow_template(
+            workflow_cfg,
+            context,
+            schedule,
+            run_id,
+            template_name,
+            template_cls,
+            started_at_dt,
         )
 
+    def _execute_workflow_engine(
+        self,
+        workflow_cfg: Dict[str, Any],
+        context: Any,
+        schedule: Schedule,
+        run_id: str,
+    ):
+        """Task 10.2：多步 workflow 路径，经 WorkflowEngine.execute 执行。
+
+        D5 修复：WorkflowEngine 已在末尾合并 ``context.error_channel`` 到
+        ``WorkflowResult.errors``，此处不再重复合并。
+        """
+        try:
+            spec = WorkflowSpec.from_dict(workflow_cfg)
+            engine = WorkflowEngine()
+            result = engine.execute(spec, context)
+            if result is None:
+                logger.warning(
+                    "调度项 %s 的 WorkflowEngine 返回 None",
+                    schedule.id,
+                )
+                return WorkflowResult(
+                    success=False,
+                    errors=["WorkflowEngine 返回 None"],
+                )
+            # 确保 run_id / workflow_name 填充（Task 10.4 持久化需要）
+            if not result.run_id:
+                result.run_id = run_id
+            if not result.workflow_name:
+                result.workflow_name = spec.name or schedule.name
+            return result
+        except NotImplementedError as e:
+            logger.warning(
+                "调度项 %s 的 workflow 未实装: %s", schedule.id, e
+            )
+            return WorkflowResult(
+                success=False,
+                errors=[f"workflow 未实装: {e}"],
+            )
+        except Exception as e:
+            logger.exception(
+                "调度项 %s 的 workflow 执行失败", schedule.id
+            )
+            return WorkflowResult(
+                success=False,
+                errors=[f"workflow 执行异常: {type(e).__name__}: {e}"],
+            )
+
+    def _execute_workflow_template(
+        self,
+        workflow_cfg: Dict[str, Any],
+        context: Any,
+        schedule: Schedule,
+        run_id: str,
+        template_name: str,
+        template_cls: Any,
+        started_at_dt: datetime,
+    ):
+        """Task 10.2/10.3：旧模板路径，含 step_traces 包装与 error_channel 合并。
+
+        Task 10.3：旧路径执行后补充单条 StepTrace（status=success/failed），
+        保持 RunSummary.step_traces 字段与多步路径一致。
+        Task 10.4：合并 ``context.error_channel`` 到 ``WorkflowResult.errors``
+        （D5 修复仅覆盖 WorkflowEngine 路径，旧模板路径在此处补齐）。
+        """
         # 模板配置：剥离 ``template`` 字段，剩余字段作为 config
-        template_cfg = {k: v for k, v in workflow_cfg.items() if k != "template"}
+        template_cfg = {
+            k: v for k, v in workflow_cfg.items() if k != "template"
+        }
 
         template = template_cls()
+        step_started = datetime.now()
         try:
-            return template.execute(template_cfg, context)
+            result = template.execute(template_cfg, context)
+            # 模板返回 None 时兜底为失败结果（防御性）
+            if result is None:
+                logger.warning(
+                    "调度项 %s 的模板 %s 返回 None，转为失败结果",
+                    schedule.id,
+                    template_name,
+                )
+                result = WorkflowResult(
+                    success=False,
+                    errors=[f"模板 {template_name} 返回 None"],
+                )
         except NotImplementedError as e:
+            # D2 路径 5：NotImplementedError
             logger.warning(
                 "调度项 %s 引用的模板 %s 未实装: %s",
                 schedule.id,
                 template_name,
                 e,
             )
-            return None
-        except Exception:
+            result = WorkflowResult(
+                success=False,
+                errors=[f"模板 {template_name} 未实装: {e}"],
+            )
+        except Exception as e:
+            # D2 路径 6：其他异常
             logger.exception(
                 "调度项 %s 的工作流模板 %s 执行失败",
                 schedule.id,
                 template_name,
             )
-            return None
+            result = WorkflowResult(
+                success=False,
+                errors=[f"模板 {template_name} 执行异常: {type(e).__name__}: {e}"],
+            )
+
+        # Task 10.4：合并 context.error_channel 到 result.errors
+        # （旧模板路径未走 WorkflowEngine，D5 合并未覆盖此处，需手动补齐）
+        error_channel = list(getattr(context, "error_channel", []) or [])
+        if error_channel:
+            for err in error_channel:
+                if err not in result.errors:
+                    result.errors.append(err)
+            if result.success:
+                # error_channel 含 LLM 调用失败等异常，标记为失败
+                result.success = False
+
+        # Task 10.3：补充单条 StepTrace 包装（保持与多步路径字段一致）
+        self._wrap_template_result_with_step_trace(
+            result,
+            template_name=template_name,
+            run_id=run_id,
+            schedule=schedule,
+            step_started=step_started,
+        )
+
+        # 确保 run_id / workflow_name 填充
+        if not result.run_id:
+            result.run_id = run_id
+        if not result.workflow_name:
+            result.workflow_name = schedule.name
+        return result
+
+    def _wrap_template_result_with_step_trace(
+        self,
+        result: Any,
+        template_name: str,
+        run_id: str,
+        schedule: Schedule,
+        step_started: datetime,
+    ) -> None:
+        """Task 10.3：旧模板路径补充单条 StepTrace。
+
+        仅当 result.step_traces 为空时填充（避免与模板内部已生成的 trace 冲突）。
+        状态根据 result.success 映射 success/failed，工具调用与文件产出透传。
+        """
+        if StepTrace is None:
+            return
+        if result.step_traces:
+            return  # 已有 trace，不覆盖
+        step_finished = datetime.now()
+        duration_ms = int(
+            (step_finished - step_started).total_seconds() * 1000
+        )
+        trace = StepTrace(
+            step_id="template",
+            step_name=template_name or schedule.name,
+            step_type="deterministic",
+            started_at=step_started.isoformat(),
+            finished_at=step_finished.isoformat(),
+            duration_ms=duration_ms,
+            attempts=1,
+            status="success" if result.success else "failed",
+            tool_calls=list(result.tool_calls or []),
+            files=list(result.outputs or []),
+        )
+        result.step_traces.append(trace)
 
     def _build_workflow_context(
         self,
@@ -619,6 +890,8 @@ class CronScheduler:
         schedule: Schedule,
         started_at_dt: datetime,
         last_run_dt: Optional[datetime],
+        run_id: str = "",
+        session_id: str = "",
     ):
         """构造 WorkflowContext。
 
@@ -626,18 +899,53 @@ class CronScheduler:
         从 ``orchestrator`` 读取 ``llm_client`` / ``chroma_store`` /
         ``session_logger`` 等依赖。
 
+        Task 10.1：在现有 setattr 之后新增 ``run_id`` / ``skill_loader`` /
+        ``tool_registry`` / ``orchestrator`` / ``policy_engine`` /
+        ``audit_logger`` / ``session_id`` 注入，供 StepExecutor 的
+        PolicyEngine.check 与 audit log_tool_call 透传。
+
         参数:
             orchestrator: 编排器实例。
             schedule: 调度项。
             started_at_dt: 触发开始时间。
             last_run_dt: 上次执行时间。
+            run_id: 本次执行批次 ID（Task 10）。
+            session_id: 会话 ID（默认 ``cron:{schedule.id}``）。
 
         返回:
             :class:`WorkflowContext` 实例。
         """
         if self.workflow_context_factory is not None:
             try:
-                return self.workflow_context_factory(schedule, last_run_dt)
+                ctx = self.workflow_context_factory(schedule, last_run_dt)
+                # Task 10.1：factory 路径也注入 run_id 等字段（若 factory 未自填）
+                if ctx is not None and run_id:
+                    setattr(ctx, "run_id", run_id)
+                if ctx is not None:
+                    setattr(
+                        ctx,
+                        "skill_loader",
+                        getattr(orchestrator, "skill_loader", None),
+                    )
+                    setattr(
+                        ctx,
+                        "tool_registry",
+                        getattr(orchestrator, "tool_registry", None),
+                    )
+                    setattr(ctx, "orchestrator", orchestrator)
+                    setattr(
+                        ctx,
+                        "policy_engine",
+                        getattr(orchestrator, "policy_engine", None),
+                    )
+                    setattr(
+                        ctx,
+                        "audit_logger",
+                        getattr(orchestrator, "audit_logger", None),
+                    )
+                    if session_id:
+                        setattr(ctx, "session_id", session_id)
+                return ctx
             except Exception:
                 logger.warning(
                     "workflow_context_factory 调用失败，回退默认工厂",
@@ -654,7 +962,7 @@ class CronScheduler:
         react_loop = getattr(orchestrator, "react_loop", None)
 
         ctx = WorkflowContext(
-            session_id=f"cron:{schedule.id}",
+            session_id=session_id or f"cron:{schedule.id}",
             schedule_id=schedule.id,
             llm_client=llm_client,
             chroma_store=chroma_store,
@@ -666,6 +974,16 @@ class CronScheduler:
         # 通过 setattr 注入（dataclass 不强约束这些字段）
         setattr(ctx, "session_logger", session_logger)
         setattr(ctx, "react_loop", react_loop)
+        # Task 10.1：注入 run_id / skill_loader / tool_registry / orchestrator /
+        # policy_engine / audit_logger / session_id，供 StepExecutor 透传
+        setattr(ctx, "run_id", run_id)
+        setattr(ctx, "skill_loader", getattr(orchestrator, "skill_loader", None))
+        setattr(ctx, "tool_registry", getattr(orchestrator, "tool_registry", None))
+        setattr(ctx, "orchestrator", orchestrator)
+        setattr(ctx, "policy_engine", getattr(orchestrator, "policy_engine", None))
+        setattr(ctx, "audit_logger", getattr(orchestrator, "audit_logger", None))
+        if session_id:
+            setattr(ctx, "session_id", session_id)
         return ctx
 
     def _parse_last_run_time(
@@ -709,6 +1027,9 @@ class CronScheduler:
         tool_calls: List[Dict[str, Any]],
         outputs: List[Dict[str, Any]],
         errors: List[str],
+        step_traces: Optional[List[Dict[str, Any]]] = None,
+        workflow_name: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> None:
         """生成 RunSummary 并 append 到 runs.jsonl（SubTask 2.9）。
 
@@ -716,6 +1037,10 @@ class CronScheduler:
         ``assistant_response`` + ``tool_calls`` 提取，无额外 LLM 成本。
         ``schedule.generate_llm_summary=true`` 时调轻模型生成精炼摘要
         （可选，本方法不实际调用 LLM，仅留接口供 Task 4/5 扩展）。
+
+        Task 10.4：新增 ``step_traces`` / ``workflow_name`` / ``run_id`` 参数，
+        从 :class:`WorkflowResult` 透传到 :class:`RunSummary`，确保
+        ``runs.jsonl`` 每条 run 含完整 step 执行轨迹。
 
         参数:
             schedule: 调度项。
@@ -728,11 +1053,18 @@ class CronScheduler:
             tool_calls: 工具调用列表。
             outputs: 文件输出列表。
             errors: 错误信息列表。
+            step_traces: step 执行轨迹列表（每项为 StepTrace.to_dict()），
+                旧路径无 trace 时为空列表（Task 10.4）。
+            workflow_name: workflow 名称（Task 10.4）。``None`` 时回退到
+                ``schedule.name``。
+            run_id: 本次执行批次 ID（Task 10）。``None`` 时由 RunSummary
+                默认工厂自动生成（保持向后兼容）。
         """
         if RunSummary is None or self.runs_store is None:
             return
 
-        summary = RunSummary(
+        # 构造 RunSummary，run_id 显式传入时覆盖默认工厂（避免双重生成）
+        summary_kwargs: Dict[str, Any] = dict(
             schedule_id=schedule.id,
             started_at=started_at,
             finished_at=finished_at,
@@ -743,7 +1075,12 @@ class CronScheduler:
             tool_calls=tool_calls,
             outputs=outputs,
             errors=errors,
+            step_traces=list(step_traces or []),
+            workflow_name=workflow_name or schedule.name,
         )
+        if run_id:
+            summary_kwargs["run_id"] = run_id
+        summary = RunSummary(**summary_kwargs)
 
         # 默认 llm_summary（无额外 LLM 成本）
         if build_default_llm_summary is not None:

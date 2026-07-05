@@ -1,0 +1,146 @@
+# ============================================================
+# hermes-lite 配置模板
+# 复制为 config.yaml 后按需修改，API Key 使用 ${VAR} 环境变量
+# 或直接填入明文（不推荐提交到仓库）
+# ============================================================
+
+llm:
+  main_provider: deepseek
+  main_model: deepseek-v4-flash
+  main_api_key: ${DEEPSEEK_API_KEY}
+  main_base_url: https://api.deepseek.com
+  consolidation_provider: deepseek
+  consolidation_model: deepseek-v4-flash
+  consolidation_api_key: ${DEEPSEEK_API_KEY}
+  consolidation_base_url: https://api.deepseek.com
+  max_context_tokens: 200000
+  context_threshold: 0.8
+  activity_timeout: 60
+  stream_total_timeout: 300
+
+memory:
+  chroma_path: data/chroma
+  memory_md_path: data/memory.md
+  consolidation_threshold: 15
+  dedup_similarity_threshold: 0.85
+  retrieval_top_k: 5
+  retrieval_relevance_threshold: 0.6
+  surprise_gate_enabled: true
+  surprise_similarity_threshold: 0.85
+  surprise_skip_threshold: 0.92
+  decay_rate: 0.01
+  frequency_weight: 0.5
+  history_max_turns: 50
+  archive_turns_on_evict: true
+  condenser:
+    enabled: true
+    strategy: masking
+    keep_recent_n: 6
+    keep_first: 2
+    llm_summary_threshold: 100000
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  cors_origins:
+    - http://localhost:3000
+
+storage:
+  sqlite_path: data/sessions.db
+  session_ttl_days: 30
+  cleanup_interval_hours: 24
+
+files:
+  upload_dir: data/uploads
+  max_upload_size_mb: 50
+  max_files_per_session: 50
+  cleanup_interval_hours: 24
+  allowed_extensions:
+    - .pdf
+    - .docx
+    - .txt
+    - .md
+    - .png
+    - .jpg
+    - .jpeg
+    - .gif
+  chunk_size: 512
+  chunk_overlap: 64
+  chroma_namespace: file
+  query_min_score: 0.30
+  llm_fallback_enabled: false
+  ocr_enabled: true
+  ocr_lang: chi_sim+eng
+  max_injected_files: 5
+  max_file_injection_tokens: 1000
+  etl_max_queue: 100
+
+history:
+  persistence_dir: data/history
+
+tools:
+  max_react_loops: 50
+  defer_loading_threshold: 20
+  bash_timeout: 120
+
+monitoring:
+  enabled: true
+  daily_persistence: true
+  flush_interval_minutes: 60
+
+interrupt:
+  enabled: true
+  breakpoint_threshold: 40
+  graceful_timeout_seconds: 5
+
+skills:
+  mcp: []
+
+security:
+  enabled: true
+  api_key: ''
+  workspace_root: .
+  approval_timeout_seconds: 300
+  rules: []
+  read_paths:
+    mode: deny_first
+    deny:
+      - "src/"
+      - "tests/"
+      - ".git/"
+      - ".trae/"
+      - "__pycache__/"
+      - "config.yaml"
+      - "config.yaml.bak"
+      - ".env"
+      - "requirements.txt"
+      - ".server.pid"
+      - "*.pyc"
+    allow:
+      - "data/"
+      - "web/"
+      - "cron_tool/"
+      - "tmp/"
+      - "uploads/"
+
+guardrails:
+  input_scan:
+    enabled: true
+    action: warn
+  sanitizer:
+    enabled: true
+    trusted_tools:
+      - memory_search
+      - search_memory
+      - memory_query
+    max_output_length: 20000
+  output_filter:
+    enabled: true
+    enable_bank_card: true
+
+web_search:
+  bing_api_key: ${BING_API_KEY}
+  baidu_api_key: ${BAIDU_API_KEY}
+
+tasks: {}
+schedules: []

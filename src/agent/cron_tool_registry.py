@@ -26,6 +26,7 @@ registry**——用户会话不可见，仅用于 cron 调度会话。
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -49,7 +50,32 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         load_tool as _load_tool,
     )
 
+# 兼容相对导入与直接运行两种方式
+try:
+    from .tool_error import (
+        ParamError,
+        ToolError,
+        ToolNotFoundError,
+        from_cron_error,
+        from_exception,
+    )
+except ImportError:  # pragma: no cover
+    from agent.tool_error import (  # type: ignore
+        ParamError,
+        ToolError,
+        ToolNotFoundError,
+        from_cron_error,
+        from_exception,
+    )
+
 logger = logging.getLogger(__name__)
+
+# jsonschema 延迟导入
+try:
+    import jsonschema  # type: ignore
+    _HAS_JSONSCHEMA = True
+except ImportError:  # pragma: no cover
+    _HAS_JSONSCHEMA = False
 
 
 class CronToolRegistry:
@@ -75,6 +101,8 @@ class CronToolRegistry:
         self.base_dir = base_dir
         self._tools: Dict[str, CronToolMeta] = {}
         self._handlers: Dict[str, Callable[..., str]] = {}
+        # schema validator 缓存：name -> Draft7Validator
+        self._schema_cache: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # 注册 / 注销 / 重载
@@ -212,24 +240,89 @@ class CronToolRegistry:
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """执行 cron_tool，返回结果字符串。
 
-        与全局 :meth:`ToolRegistry.execute_tool` 接口一致：异常不抛出，
-        返回错误信息字符串，保证 ReactLoop 稳定。
+        失败语义（与 :meth:`ToolRegistry.execute_tool` 对齐）：
+        - 工具未注册 → 抛 :class:`ToolNotFoundError`
+        - 参数校验失败 → 抛 :class:`ParamError`
+        - 子进程返回错误 JSON → 由 :func:`from_cron_error` 归一化
+        - 其他异常 → 由 :func:`from_exception` 归一化
 
         参数:
             tool_name: 工具名。
             tool_input: 工具入参 dict。
 
         返回:
-            执行结果字符串。未注册时返回错误信息字符串。
+            执行结果字符串（成功时）。
+
+        抛出:
+            ToolError: 工具执行失败的统一异常基类。
         """
         handler = self._handlers.get(tool_name)
-        if handler is None:
-            return f"未注册的 cron_tool: {tool_name}"
+        meta = self._tools.get(tool_name)
+        if handler is None or meta is None:
+            raise ToolNotFoundError(
+                tool_name=tool_name,
+                reason=f"未注册的 cron_tool: {tool_name}",
+                suggestion="检查 cron_tool 配置或调用 list_tools 查看可用工具",
+            )
+
+        # schema 校验（meta.input_schema 在主进程可用）
+        schema = getattr(meta, "input_schema", None)
+        if _HAS_JSONSCHEMA and schema:
+            validator = self._get_validator(tool_name, schema)
+            try:
+                validator.validate(tool_input or {})
+            except jsonschema.ValidationError as ve:
+                allowed = list(schema.get("properties", {}).keys())
+                raise ParamError(
+                    tool_name=tool_name,
+                    reason=f"参数校验失败：{ve.message}",
+                    suggestion=f"cron_tool 支持参数：{allowed}" if allowed else "检查 TOOL.md input_schema",
+                ) from ve
+            # 额外属性检查
+            allowed_keys = set(schema.get("properties", {}).keys())
+            if allowed_keys:
+                extra = set((tool_input or {}).keys()) - allowed_keys
+                if extra:
+                    raise ParamError(
+                        tool_name=tool_name,
+                        reason=f"未声明的参数：{sorted(extra)}",
+                        suggestion=f"cron_tool 支持参数：{sorted(allowed_keys)}",
+                    )
+            # 必填字段检查
+            # 注意：必须用 ``k not in tool_input`` 而非 ``not tool_input.get(k)``，
+            # 后者会把合法的 falsy 值（0/False/""）误判为缺失。
+            required = schema.get("required", [])
+            missing = [k for k in required if k not in (tool_input or {})]
+            if missing:
+                raise ParamError(
+                    tool_name=tool_name,
+                    reason=f"缺少必填参数：{missing}",
+                    suggestion=f"必填参数：{required}",
+                )
+
         try:
-            return str(handler(**(tool_input or {})))
+            raw = handler(**(tool_input or {}))
+            result_str = str(raw)
+            # 检测子进程返回的错误 JSON（cron_tool_loader._format_error 格式）
+            if result_str.startswith('{"error"') and result_str.endswith("}"):
+                try:
+                    err_dict = json.loads(result_str)
+                    if isinstance(err_dict, dict) and "error" in err_dict:
+                        raise from_cron_error(tool_name, err_dict)
+                except json.JSONDecodeError:
+                    pass  # 不是错误 JSON，按正常结果处理
+            return result_str
+        except ToolError:
+            raise
         except Exception as exc:
             logger.error("cron_tool %s 执行失败: %s", tool_name, exc)
-            return f"cron_tool {tool_name} 执行出错: {exc}"
+            raise from_exception(tool_name, exc) from exc
+
+    def _get_validator(self, name: str, schema: dict):
+        """获取（或编译缓存）jsonschema Draft7Validator。"""
+        if name not in self._schema_cache:
+            self._schema_cache[name] = jsonschema.Draft7Validator(schema)
+        return self._schema_cache[name]
 
     # ------------------------------------------------------------------
     # 内部辅助

@@ -73,6 +73,26 @@ class TestApprovalManagerCreateAndResolve(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_resolve_with_reason_persists_in_status(self):
+        """resolve 传 reason 后，get_status 的 decision_reason 等于该值。"""
+        mgr = ApprovalManager(timeout=5.0)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+        ok = mgr.resolve(approval_id, "deny", "操作风险过高")
+        self.assertTrue(ok)
+        status = mgr.get_status(approval_id)
+        self.assertEqual(status["status"], "denied")
+        self.assertEqual(status["decision_reason"], "操作风险过高")
+
+    def test_resolve_without_reason_backward_compat(self):
+        """不传 reason 时 decision_reason 为 None（向后兼容）。"""
+        mgr = ApprovalManager(timeout=5.0)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+        ok = mgr.resolve(approval_id, "deny")
+        self.assertTrue(ok)
+        status = mgr.get_status(approval_id)
+        self.assertEqual(status["status"], "denied")
+        self.assertIsNone(status["decision_reason"])
+
 
 class TestApprovalManagerTimeout(unittest.TestCase):
     """验证超时自动拒绝逻辑。"""
@@ -195,6 +215,200 @@ class TestApprovalManagerDefaults(unittest.TestCase):
         """默认 timeout=300.0。"""
         mgr = ApprovalManager()
         self.assertEqual(mgr.timeout, 300.0)
+
+    def test_default_metrics_is_none(self):
+        """默认 metrics=None（向后兼容）。"""
+        mgr = ApprovalManager()
+        self.assertIsNone(mgr.metrics)
+
+
+class TestApprovalMetricsReporting(unittest.TestCase):
+    """Phase 2 反馈监控：approval 决策计数埋点。"""
+
+    def test_timeout_reports_timeout_decision(self):
+        """超时路径上报 observe_approval_decision('timeout')。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        metrics = MetricsCollector()
+        mgr = ApprovalManager(timeout=0.1, metrics=metrics)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+
+        async def _run():
+            decision, reason = await mgr.wait_for_decision(
+                approval_id, timeout=0.1
+            )
+            self.assertEqual(decision, "deny")
+            self.assertEqual(reason, "审批超时自动拒绝")
+
+        asyncio.run(_run())
+
+        snap = metrics.snapshot()
+        self.assertEqual(snap["approval_decisions_total"].get("timeout", 0), 1)
+        # 用户主动路径不应被误计数
+        self.assertNotIn("approve", snap["approval_decisions_total"])
+        self.assertNotIn("deny", snap["approval_decisions_total"])
+
+    def test_metrics_none_does_not_crash_on_timeout(self):
+        """metrics=None 时超时路径不崩溃（向后兼容）。"""
+        mgr = ApprovalManager(timeout=0.1, metrics=None)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+
+        async def _run():
+            decision, reason = await mgr.wait_for_decision(
+                approval_id, timeout=0.1
+            )
+            self.assertEqual(decision, "deny")
+
+        # 不应抛异常
+        asyncio.run(_run())
+
+    def test_user_resolve_does_not_double_count_timeout(self):
+        """用户主动 approve 后再 wait 不应触发 timeout 上报。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        metrics = MetricsCollector()
+        mgr = ApprovalManager(timeout=5.0, metrics=metrics)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+        # 用户立即 approve
+        self.assertTrue(mgr.resolve(approval_id, "approve"))
+
+        async def _run():
+            decision, _ = await mgr.wait_for_decision(
+                approval_id, timeout=5.0
+            )
+            self.assertEqual(decision, "approve")
+
+        asyncio.run(_run())
+
+        snap = metrics.snapshot()
+        # 用户主动 approve 不在 approval.py 内上报（由 server.py 端点上报）
+        self.assertNotIn("timeout", snap["approval_decisions_total"])
+        self.assertNotIn("approve", snap["approval_decisions_total"])
+
+
+class TestMetricsApprovalDecisionCounter(unittest.TestCase):
+    """Phase 2 反馈监控：MetricsCollector.observe_approval_decision 计数器。"""
+
+    def test_observe_approval_decision_accumulates_by_decision(self):
+        """observe_approval_decision 按 decision 分桶累加。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        collector = MetricsCollector()
+        collector.observe_approval_decision("approve")
+        collector.observe_approval_decision("approve")
+        collector.observe_approval_decision("deny")
+        collector.observe_approval_decision("timeout")
+        snap = collector.snapshot()
+        self.assertEqual(snap["approval_decisions_total"]["approve"], 2)
+        self.assertEqual(snap["approval_decisions_total"]["deny"], 1)
+        self.assertEqual(snap["approval_decisions_total"]["timeout"], 1)
+
+    def test_reset_clears_approval_decisions(self):
+        """reset 清空 approval_decisions_total。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        collector = MetricsCollector()
+        collector.observe_approval_decision("approve")
+        collector.reset()
+        snap = collector.snapshot()
+        self.assertEqual(snap["approval_decisions_total"], {})
+
+    def test_initial_snapshot_has_empty_approval_decisions(self):
+        """新 collector 的 approval_decisions_total 为空 dict。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        collector = MetricsCollector()
+        snap = collector.snapshot()
+        self.assertEqual(snap["approval_decisions_total"], {})
+
+
+class TestApprovalManagerResolveAll(unittest.TestCase):
+    """验证 resolve_all 批量处理 PENDING 审批。"""
+
+    def test_resolve_all_denies_all_pending(self):
+        """resolve_all('deny') 处理所有 PENDING，返回处理数量。"""
+        mgr = ApprovalManager(timeout=5.0)
+        id1 = mgr.create_request("bash_exec", {"cmd": "ls"}, "shell", "medium")
+        id2 = mgr.create_request("file_write", {"path": "a.txt"}, "write", "high")
+        id3 = mgr.create_request("memory_delete", {}, "delete", "high")
+
+        n = mgr.resolve_all("deny", "HIL 已关闭")
+
+        self.assertEqual(n, 3)
+        self.assertEqual(mgr.get_status(id1)["status"], "denied")
+        self.assertEqual(mgr.get_status(id2)["status"], "denied")
+        self.assertEqual(mgr.get_status(id3)["status"], "denied")
+        self.assertEqual(mgr.get_status(id1)["decision_reason"], "HIL 已关闭")
+
+    def test_resolve_all_skips_non_pending(self):
+        """resolve_all 跳过非 PENDING 状态的审批，只处理 PENDING。"""
+        mgr = ApprovalManager(timeout=5.0)
+        id1 = mgr.create_request("bash_exec", {}, "shell", "medium")
+        id2 = mgr.create_request("file_write", {}, "write", "high")
+        id3 = mgr.create_request("memory_delete", {}, "delete", "high")
+        # 先 resolve id1 为 approved
+        mgr.resolve(id1, "approve")
+
+        n = mgr.resolve_all("deny", "HIL 已关闭")
+
+        # 只处理了 id2 和 id3
+        self.assertEqual(n, 2)
+        self.assertEqual(mgr.get_status(id1)["status"], "approved")
+        self.assertEqual(mgr.get_status(id2)["status"], "denied")
+        self.assertEqual(mgr.get_status(id3)["status"], "denied")
+
+    def test_resolve_all_wakes_waiters(self):
+        """resolve_all 唤醒所有 wait_for_decision 协程，返回 deny。"""
+        mgr = ApprovalManager(timeout=5.0)
+        approval_id = mgr.create_request("bash_exec", {}, "shell", "high")
+
+        async def _run():
+            # 启动 wait 协程，await 期间 resolve_all 应唤醒它
+            import asyncio as _asyncio
+
+            task = _asyncio.create_task(
+                mgr.wait_for_decision(approval_id, timeout=2.0)
+            )
+            # 让控制权回到 task，让它开始 await event.wait()
+            await _asyncio.sleep(0.05)
+            # 此时 task 仍在等待，未完成
+            self.assertFalse(task.done())
+            # resolve_all 唤醒
+            n = mgr.resolve_all("deny", "HIL 已关闭")
+            self.assertEqual(n, 1)
+            decision, reason = await task
+            self.assertEqual(decision, "deny")
+            self.assertEqual(reason, "HIL 已关闭")
+
+        asyncio.run(_run())
+
+    def test_resolve_all_invalid_decision_returns_zero(self):
+        """resolve_all 收到非法 decision 返回 0，不处理任何审批。"""
+        mgr = ApprovalManager(timeout=5.0)
+        mgr.create_request("bash_exec", {}, "shell", "medium")
+
+        n = mgr.resolve_all("invalid", "bad decision")
+        self.assertEqual(n, 0)
+        # 所有审批仍为 PENDING
+        self.assertEqual(len(mgr.list_pending()), 1)
+
+    def test_resolve_all_empty_returns_zero(self):
+        """无 PENDING 审批时 resolve_all 返回 0。"""
+        mgr = ApprovalManager(timeout=5.0)
+        n = mgr.resolve_all("deny", "HIL 已关闭")
+        self.assertEqual(n, 0)
+
+    def test_resolve_all_approve_all(self):
+        """resolve_all('approve') 也支持，处理所有 PENDING 为 approved。"""
+        mgr = ApprovalManager(timeout=5.0)
+        id1 = mgr.create_request("bash_exec", {}, "shell", "medium")
+        id2 = mgr.create_request("file_write", {}, "write", "high")
+
+        n = mgr.resolve_all("approve", "批量通过")
+
+        self.assertEqual(n, 2)
+        self.assertEqual(mgr.get_status(id1)["status"], "approved")
+        self.assertEqual(mgr.get_status(id2)["status"], "approved")
 
 
 if __name__ == "__main__":

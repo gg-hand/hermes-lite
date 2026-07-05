@@ -66,6 +66,12 @@ class MetricsCollector:
         # 直方图
         self._llm_latency_ms: Dict[str, Any] = _new_histogram()
         self._tool_latency_ms: Dict[str, Any] = _new_histogram()
+        # 反馈机制计数器（Phase 1 反馈监控扩展）
+        self._termination_reasons_total: Dict[str, int] = {}
+        self._tool_error_classes_total: Dict[str, Dict[str, int]] = {}
+        self._tool_retries_total: Dict[str, int] = {}
+        # Phase 2 反馈监控：审批决策计数器
+        self._approval_decisions_total: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # 公开采集方法
@@ -127,6 +133,59 @@ class MetricsCollector:
             self._observe_histogram("tool_latency_ms", latency_ms)
 
     # ------------------------------------------------------------------
+    # 反馈机制采集方法（Phase 1 反馈监控扩展）
+    # ------------------------------------------------------------------
+    def observe_termination(self, reason: str) -> None:
+        """记录一次循环终止原因。
+
+        参数:
+            reason: 终止原因，取值 normal/user_cancel/tool_permanent_fail/max_loops。
+        """
+        with self._lock:
+            self._termination_reasons_total[reason] = (
+                self._termination_reasons_total.get(reason, 0) + 1
+            )
+
+    def observe_tool_error_class(self, tool_name: str, error_class: str) -> None:
+        """记录一次工具错误分类计数。
+
+        参数:
+            tool_name: 工具名称，用于分桶。
+            error_class: 错误分类字符串，取值（17 类 + 1 兼容）：
+                - pre_execution(7): param_error, tool_not_found, policy_denied,
+                  user_rejected, non_stream_hil, stuck_detected, cancelled
+                - execution(8): not_found, permission, timeout, transient,
+                  permanent, anti_crawler, auth_required, internal_error
+                - protocol(2): orphan_tool_result, llm_failure
+                - 兼容(1): unknown（历史数据 / ErrorClassifier 兜底）
+        """
+        with self._lock:
+            bucket = self._tool_error_classes_total.setdefault(tool_name, {})
+            bucket[error_class] = bucket.get(error_class, 0) + 1
+
+    def observe_tool_retry(self, tool_name: str) -> None:
+        """记录一次工具重试（Phase 2 调用，Phase 1 预留接口）。
+
+        参数:
+            tool_name: 工具名称，用于分桶。
+        """
+        with self._lock:
+            self._tool_retries_total[tool_name] = (
+                self._tool_retries_total.get(tool_name, 0) + 1
+            )
+
+    def observe_approval_decision(self, decision: str) -> None:
+        """记录一次审批决策（Phase 2 反馈监控）。
+
+        参数:
+            decision: 决策类型，取值 approve/deny/timeout。
+        """
+        with self._lock:
+            self._approval_decisions_total[decision] = (
+                self._approval_decisions_total.get(decision, 0) + 1
+            )
+
+    # ------------------------------------------------------------------
     # 导出与重置
     # ------------------------------------------------------------------
     def snapshot(self) -> dict:
@@ -163,6 +222,10 @@ class MetricsCollector:
                 "tool_calls_errors_total": copy.deepcopy(self._tool_calls_errors_total),
                 "llm_latency_ms": llm_latency,
                 "tool_latency_ms": tool_latency,
+                "termination_reasons_total": copy.deepcopy(self._termination_reasons_total),
+                "tool_error_classes_total": copy.deepcopy(self._tool_error_classes_total),
+                "tool_retries_total": copy.deepcopy(self._tool_retries_total),
+                "approval_decisions_total": copy.deepcopy(self._approval_decisions_total),
             }
 
     def reset(self) -> None:
@@ -179,6 +242,10 @@ class MetricsCollector:
             self._tool_calls_errors_total = {}
             self._llm_latency_ms = _new_histogram()
             self._tool_latency_ms = _new_histogram()
+            self._termination_reasons_total = {}
+            self._tool_error_classes_total = {}
+            self._tool_retries_total = {}
+            self._approval_decisions_total = {}
 
     # ------------------------------------------------------------------
     # 内部辅助方法

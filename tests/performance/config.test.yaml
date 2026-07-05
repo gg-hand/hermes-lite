@@ -51,7 +51,6 @@ monitoring:
   enabled: true
 
 skills:
-  hermes: []
   mcp: []
 
 security:

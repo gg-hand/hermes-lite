@@ -242,7 +242,15 @@ class MemoryRetriever:
                     sim, self.relevance_threshold, content[:60],
                 )
 
-        return kept if kept else memories[:1]
+        if kept:
+            return kept
+        # 全部低于阈值时返回空，让工具层给出"未找到相关记忆"提示
+        # （旧逻辑兜底返回 memories[:1] 会污染上下文，详见 audit log 分析）
+        logger.debug(
+            "全部 %d 条记忆低于阈值 %.2f，返回空列表避免污染",
+            len(memories), self.relevance_threshold,
+        )
+        return []
 
     @staticmethod
     def _cosine_similarity(a: List[float], b: List[float]) -> float:

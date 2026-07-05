@@ -147,16 +147,16 @@ class TestContextManagerIntegration(unittest.TestCase):
         all_files = self.um.list_all()
         self.assertGreater(len(all_files), 0)
 
-    def test_07_non_done_files_excluded(self):
-        """pending/processing/failed 文件不应出现在注入中。"""
+    def test_07_pending_included_failed_excluded(self):
+        """pending 文件应注入'处理中'标记；failed 文件仍排除。"""
         fid, _ = self.um.save("pending.txt", b"test", "s1")
-        # 不设置 done
         injector = FileContextInjector(self.um, max_files=5, max_tokens=1000)
         text = injector.get_injection_text("s1")
-        # 没有 done 文件 → 返回空
-        self.assertEqual(text, "")
+        # pending 文件现在应被注入（显示"处理中"标记）
+        self.assertIn("pending.txt", text)
+        self.assertIn("处理中", text)
 
-        # 设为 failed
+        # 设为 failed 后应排除
         self.um.update_error(fid, "error")
         text = injector.get_injection_text("s1")
         self.assertEqual(text, "")

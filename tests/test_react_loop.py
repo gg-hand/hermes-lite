@@ -118,7 +118,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             stop_reason="end_turn",
         )
 
-        final_response, messages, _ = await self.loop.run("Hi")
+        final_response, messages, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "Hello!")
         self.mock_llm.chat_main.assert_called_once()
@@ -135,7 +135,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = await self.loop.run("Hi")
+        final_response, _, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "")
 
@@ -164,7 +164,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "search result"
 
-        final_response, messages, _ = await self.loop.run("Search for test")
+        final_response, messages, _, _ = await self.loop.run("Search for test")
 
         self.assertEqual(final_response, "Final answer")
         self.assertEqual(self.mock_llm.chat_main.call_count, 2)
@@ -195,7 +195,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.side_effect = ["r1", "r2"]
 
-        final_response, messages, _ = await self.loop.run("Hi")
+        final_response, messages, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "done")
         self.assertEqual(self.mock_tool_registry.execute_tool.call_count, 2)
@@ -219,7 +219,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.side_effect = RuntimeError("tool broken")
 
-        final_response, messages, _ = await self.loop.run("Hi")
+        final_response, messages, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "after tool error")
         self.mock_tool_registry.execute_tool.assert_called_once()
@@ -227,7 +227,10 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         tool_result_msg = messages[2]
         tool_result = tool_result_msg["content"][0]
         self.assertTrue(tool_result.get("is_error"))
-        self.assertIn("工具执行出错", tool_result["content"])
+        # Phase A: 异常通过 from_exception 归一化为 InternalError，receipt 格式
+        # 为 "[失败] 内部错误\n原因：RuntimeError: tool broken\n建议：..."
+        self.assertIn("[失败]", tool_result["content"])
+        self.assertIn("RuntimeError", tool_result["content"])
 
     # ------------------------------------------------------------------
     # 异常分支
@@ -255,7 +258,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "ok"
 
-        final_response, messages, _ = await self.loop.run("Hi")
+        final_response, messages, _, _ = await self.loop.run("Hi")
 
         # 降级返回先前已得到的文本
         self.assertEqual(final_response, "partial answer")
@@ -294,7 +297,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "result"
 
-        final_response, messages, _ = await self.loop.run("Hi")
+        final_response, messages, _, _ = await self.loop.run("Hi")
 
         # 达到 max_loops 后触发 T8 总结调用（3 次循环 + 1 次总结 = 4 次）
         self.assertEqual(self.mock_llm.chat_main.call_count, 4)
@@ -317,7 +320,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = await loop.run("Hi")
+        final_response, _, _, _ = await loop.run("Hi")
 
         self.assertEqual(final_response, "hi")
         _, kwargs = self.mock_llm.chat_main.call_args
@@ -332,7 +335,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             tool_use_blocks=[_make_tool_use_block()],
         )
 
-        final_response, _, _ = await loop.run("Hi")
+        final_response, _, _, _ = await loop.run("Hi")
 
         self.assertEqual(final_response, "need tool but no registry")
         self.mock_llm.chat_main.assert_called_once()
@@ -352,7 +355,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             stop_reason="end_turn",
         )
 
-        final_response, messages, _ = await self.loop.run("new question", history=history)
+        final_response, messages, _, _ = await self.loop.run("new question", history=history)
 
         self.assertEqual(final_response, "ok")
         # messages[0:2] 是 history 浅拷贝
@@ -404,7 +407,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
             stop_reason="end_turn",
         )
 
-        final_response, _, _ = await self.loop.run("Hi")
+        final_response, _, _, _ = await self.loop.run("Hi")
 
         self.assertEqual(final_response, "ok")
         _, kwargs = self.mock_llm.chat_main.call_args
@@ -439,7 +442,7 @@ class TestReactLoopRun(unittest.IsolatedAsyncioTestCase):
         ]
         self.mock_tool_registry.execute_tool.return_value = "r"
 
-        _, messages, _ = await self.loop.run("new", history=history)
+        _, messages, _, _ = await self.loop.run("new", history=history)
 
         # 期望: history(1) + user_input(1) + assistant(1) + tool_result(1) + assistant(1) = 5
         self.assertEqual(len(messages), 5)
@@ -790,7 +793,7 @@ class TestAntiCrawlerHintInjection(unittest.IsolatedAsyncioTestCase):
             "[HTTP 403]\n\nAccess Denied by WAF"
         )
 
-        _, messages, _ = await self.loop.run("fetch bilibili")
+        _, messages, _, _ = await self.loop.run("fetch bilibili")
 
         # 检查 tool_result 内容是否含 [系统提示]
         tool_result_msg = messages[2]
@@ -818,7 +821,7 @@ class TestAntiCrawlerHintInjection(unittest.IsolatedAsyncioTestCase):
             "[HTTP 404]\n\nNot Found"
         )
 
-        _, messages, _ = await self.loop.run("fetch")
+        _, messages, _, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertIn("[系统提示", tool_result["content"])
@@ -844,7 +847,7 @@ class TestAntiCrawlerHintInjection(unittest.IsolatedAsyncioTestCase):
             "[HTTP 200]\n\n<html>...</html>"
         )
 
-        _, messages, _ = await self.loop.run("fetch")
+        _, messages, _, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertNotIn("[系统提示", tool_result["content"])
@@ -869,10 +872,252 @@ class TestAntiCrawlerHintInjection(unittest.IsolatedAsyncioTestCase):
             "[HTTP 503]\n\nService Unavailable"
         )
 
-        _, messages, _ = await self.loop.run("fetch")
+        _, messages, _, _ = await self.loop.run("fetch")
 
         tool_result = messages[2]["content"][0]
         self.assertIn("[系统提示", tool_result["content"])
+
+
+class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
+    """Phase 1 反馈监控：验证 ErrorClassifier 错误识别会同步 is_error 并上报 error_class。
+
+    覆盖 react_loop.run() :810-813 和 run_stream() :1366-1369 两处盲区修复。
+    """
+
+    async def test_permanent_error_sets_is_error_and_reports_class(self):
+        """web_fetch 返回 404 时 metrics.observe_tool_error_class 被调用且 is_error=True。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://example.com/missing"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "[HTTP 404]\n\nNot Found"
+
+        metrics = MetricsCollector()
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+            metrics=metrics,
+        )
+        _, messages, _, _ = await loop.run("fetch")
+
+        # 验证 error_class 已上报为 permanent
+        snap = metrics.snapshot()
+        self.assertIn("web_fetch", snap["tool_error_classes_total"])
+        self.assertEqual(
+            snap["tool_error_classes_total"]["web_fetch"].get("permanent", 0), 1
+        )
+        # 验证 tool_calls_errors_total 也累加（is_error=True 透传到 observe_tool_call）
+        self.assertEqual(snap["tool_calls_errors_total"].get("web_fetch", 0), 1)
+        # 验证 tool_calls_total 累加
+        self.assertEqual(snap["tool_calls_total"].get("web_fetch", 0), 1)
+
+    async def test_anti_crawler_error_reports_anti_crawler_class(self):
+        """web_fetch 返回 403 时 metrics 上报 anti_crawler 分类。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://bilibili.com/up"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = (
+            "[HTTP 403]\n\nAccess Denied by WAF"
+        )
+
+        metrics = MetricsCollector()
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+            metrics=metrics,
+        )
+        await loop.run("fetch bilibili")
+
+        snap = metrics.snapshot()
+        self.assertEqual(
+            snap["tool_error_classes_total"]["web_fetch"].get("anti_crawler", 0), 1
+        )
+        self.assertEqual(snap["tool_calls_errors_total"].get("web_fetch", 0), 1)
+
+    async def test_success_does_not_report_error_class(self):
+        """正常返回不触发 error_class 上报，也不累加 errors。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://example.com"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "[HTTP 200]\n\n<html>...</html>"
+
+        metrics = MetricsCollector()
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+            metrics=metrics,
+        )
+        await loop.run("fetch")
+
+        snap = metrics.snapshot()
+        # 成功路径不应有任何 error_class 上报
+        self.assertEqual(snap["tool_error_classes_total"], {})
+        self.assertEqual(snap["tool_calls_errors_total"], {})
+        # 但 tool_calls_total 仍累加
+        self.assertEqual(snap["tool_calls_total"].get("web_fetch", 0), 1)
+
+    async def test_metrics_none_does_not_crash_on_error(self):
+        """metrics=None 时 ErrorClassifier 错误路径不崩溃（向后兼容）。"""
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://example.com/missing"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "[HTTP 404]\n\nNot Found"
+
+        # 不传 metrics，应为 None
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+        )
+        # 不应抛异常
+        response, _, _, _ = await loop.run("fetch")
+        self.assertEqual(response, "done")
+
+    async def test_error_class_also_reports_retry(self):
+        """Phase 2 反馈监控：error_class 识别时同步上报 observe_tool_retry。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://example.com/missing"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "[HTTP 404]\n\nNot Found"
+
+        metrics = MetricsCollector()
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+            metrics=metrics,
+        )
+        await loop.run("fetch")
+
+        snap = metrics.snapshot()
+        # error_class 识别一次 → retry 计数也累加一次
+        self.assertEqual(snap["tool_retries_total"].get("web_fetch", 0), 1)
+        # 同时 error_class 也累加
+        self.assertEqual(
+            snap["tool_error_classes_total"]["web_fetch"].get("permanent", 0), 1
+        )
+
+    async def test_success_does_not_report_retry(self):
+        """Phase 2 反馈监控：成功路径不触发 retry 计数。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=[
+            _make_llm_response(
+                text="fetching",
+                stop_reason="tool_use",
+                tool_use_blocks=[_make_tool_use_block(
+                    name="web_fetch",
+                    input_data={"url": "https://example.com"},
+                    block_id="t1",
+                )],
+            ),
+            _make_llm_response(text="done", stop_reason="end_turn"),
+        ])
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "web_fetch", "description": "fetch", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "[HTTP 200]\n\n<html>...</html>"
+
+        metrics = MetricsCollector()
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=5,
+            metrics=metrics,
+        )
+        await loop.run("fetch")
+
+        snap = metrics.snapshot()
+        # 成功路径不应触发 retry
+        self.assertEqual(snap["tool_retries_total"], {})
 
 
 if __name__ == "__main__":

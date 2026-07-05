@@ -62,6 +62,142 @@ logger = logging.getLogger(__name__)
 # 项时返回错误。Task 4 会实装 PolicyEngine 的完整三层检查，此处仅做入口检测。
 HARD_DISABLED_TOOLS = {"memory_delete", "bash_exec", "tool_call"}
 
+# Task 9: workflow schema 结构化定义（cron_propose 与 cron_update 共用）
+# 所有字段 optional，仅通过 template 或 steps 二选一判别简易/多步模式
+_WORKFLOW_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "工作流配置。简易模式含 template 字段（引用内置模板如 "
+        "directory_watch/summary/research/email_notify/cleanup_suggest/custom），"
+        "多步模式含 steps 数组。两种模式互斥，优先识别 steps。"
+        "所有字段可选，LLM 旧调用（裸 dict 如 "
+        "{\"template\":\"research\",\"topic\":\"...\"}）继续通过 schema。"
+    ),
+    "properties": {
+        "template": {
+            "type": "string",
+            "description": "简易模式：内置模板名（如 directory_watch/summary/research 等）",
+        },
+        "name": {
+            "type": "string",
+            "description": "多步模式：workflow 名称（用于展示）",
+        },
+        "version": {
+            "type": "string",
+            "description": "workflow schema 版本，默认 '1'",
+            "default": "1",
+        },
+        "steps": {
+            "type": "array",
+            "description": "多步模式：step 列表，按 depends_on 拓扑序执行",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "step 唯一标识",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "step 显示名称",
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "deterministic",
+                            "llm",
+                            "tool",
+                            "react",
+                            "subworkflow",
+                        ],
+                        "description": "step 类型",
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "step 配置（结构由 type 决定）",
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "依赖的 step id 列表",
+                    },
+                    "condition": {
+                        "type": "string",
+                        "description": "执行条件表达式（P0 简化版正则）",
+                    },
+                    "on_failure": {
+                        "type": "object",
+                        "description": "失败策略（retry/fallback/skip/abort）",
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "description": "step 级超时（秒）",
+                    },
+                },
+                "required": ["id", "type"],
+            },
+        },
+        "on_failure": {
+            "type": "object",
+            "description": "workflow 级失败策略（默认 action=retry）",
+        },
+        "timeout_seconds": {
+            "type": "number",
+            "description": "workflow 级超时（秒）",
+        },
+    },
+}
+
+
+def _validate_workflow_config(
+    workflow_dict: Any,
+    tool_registry: Any = None,
+) -> Dict[str, Any]:
+    """校验 workflow 配置（Task 9.2/9.3 共用）。
+
+    多步模式（含 ``steps`` 字段）走 ``WorkflowSpec.from_dict`` +
+    ``WorkflowValidator.validate``；简易模式（仅 ``template``）跳过校验
+    （由调度执行路径在运行时检测模板是否存在）。
+
+    参数:
+        workflow_dict: workflow 配置 dict。
+        tool_registry: 可选 ToolRegistry 实例，用于工具白名单校验。
+
+    返回:
+        ``{}`` 表示校验通过；``{"error": ..., "validation_errors": [...]}``
+        表示校验失败。非 dict 输入或无 steps 字段时返回 ``{}``（跳过校验）。
+    """
+    if not isinstance(workflow_dict, dict):
+        return {}
+
+    # 简易模式（无 steps）：跳过静态校验，运行时由 _execute_workflow 检测
+    steps = workflow_dict.get("steps")
+    if not steps:
+        return {}
+
+    try:
+        from ..tasks.workflow import WorkflowSpec, WorkflowValidator
+
+        spec = WorkflowSpec.from_dict(workflow_dict)
+        validator = WorkflowValidator()
+        result = validator.validate(spec, tool_registry=tool_registry)
+        if not result.valid:
+            error_msgs = [
+                ve.message for ve in result.errors if getattr(ve, "message", "")
+            ]
+            return {
+                "error": "workflow 校验失败",
+                "validation_errors": error_msgs,
+            }
+    except Exception as e:
+        logger.warning("workflow 校验抛异常: %s", e)
+        return {
+            "error": "workflow 校验失败",
+            "validation_errors": [f"解析或校验异常: {type(e).__name__}: {e}"],
+        }
+    return {}
+
+
 # list_schedules 返回的精简字段（不含 granted_tools / active_tools_snapshot
 # 等敏感配置，避免泄露权限快照）
 _SCHEDULE_PUBLIC_FIELDS = (
@@ -217,6 +353,17 @@ def _register_propose_schedule(
             if not task_text or not str(task_text).strip():
                 return "错误：schedule_config.task 必填且不能为空"
 
+            # 2b. Task 9.2: workflow 多步模式校验
+            workflow_cfg = schedule_config.get("workflow")
+            if workflow_cfg:
+                validation_err = _validate_workflow_config(
+                    workflow_cfg, tool_registry=None
+                )
+                if validation_err:
+                    return json.dumps(
+                        validation_err, ensure_ascii=False, indent=2
+                    )
+
             # 3. 创建 proposal
             proposal_id = proposal_store.create(
                 schedule_config=schedule_config,
@@ -277,10 +424,13 @@ def _register_propose_schedule(
                             "description": "是否启用，默认 true",
                             "default": True,
                         },
-                        "workflow": {
-                            "type": "object",
-                            "description": "可选工作流模板配置",
-                        },
+                        "workflow": dict(
+                            _WORKFLOW_SCHEMA,
+                            description=(
+                                "工作流配置。简易模式含 template 字段引用内置模板，"
+                                "多步模式含 steps 数组。多步模式提交时会被校验。"
+                            ),
+                        ),
                         "generate_llm_summary": {
                             "type": "boolean",
                             "description": "是否生成 LLM 摘要，默认 false",
@@ -471,6 +621,16 @@ def _register_update_schedule(
             if not fields or not isinstance(fields, dict):
                 return "错误：fields 不能为空"
 
+            # Task 9.3: workflow 字段更新时触发校验
+            if "workflow" in fields and fields["workflow"]:
+                validation_err = _validate_workflow_config(
+                    fields["workflow"], tool_registry=None
+                )
+                if validation_err:
+                    return json.dumps(
+                        validation_err, ensure_ascii=False, indent=2
+                    )
+
             # 工具集变更时重新锁定 active_tools_snapshot
             snapshot_relocked = False
             update_fields = dict(fields)
@@ -553,7 +713,13 @@ def _register_update_schedule(
                                 "required": ["tool", "scope"],
                             },
                         },
-                        "workflow": {"type": "object"},
+                        "workflow": dict(
+                            _WORKFLOW_SCHEMA,
+                            description=(
+                                "工作流配置。简易模式含 template 字段引用内置模板，"
+                                "多步模式含 steps 数组。多步模式提交时会被校验。"
+                            ),
+                        ),
                         "generate_llm_summary": {"type": "boolean"},
                     },
                 },

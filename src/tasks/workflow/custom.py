@@ -282,7 +282,10 @@ class CustomTemplate(WorkflowTemplate):
         context.ensure_report_dir()
         safe_name = _sanitize_tool_name(tool_name)
         date_str = context.current_time.strftime("%Y%m%d")
-        filename = f"custom_{safe_name}_{date_str}.md"
+        # D4 修复：追加 run_id[:8] 后缀避免同日多次触发覆盖
+        run_id = getattr(context, "run_id", None) or "unknown"
+        run_id_suffix = run_id[:8] if isinstance(run_id, str) else "unknown"
+        filename = f"custom_{safe_name}_{date_str}_{run_id_suffix}.md"
         report_path = os.path.join(context.report_dir, filename)
 
         # 报告内容：工具执行摘要 + LLM 分析

@@ -745,8 +745,8 @@ class _MockReactLoopForCache:
     def run(self, user_input=None, history=None, system=None, session_id=None,
             tools_override=None, **kwargs):
         self.last_tools_override = tools_override
-        # Phase 9 Task 7.4: ReactLoop.run 返回三元组 (response, messages, is_complete)
-        return "mock response", [], True
+        # ReactLoop.run 返回四元组 (response, messages, is_complete, termination_reason)
+        return "mock response", [], True, "normal"
 
     def run_stream(self, user_input=None, history=None, system=None, session_id=None,
                    tools_override=None, **kwargs):

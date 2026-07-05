@@ -287,7 +287,7 @@ function appendMergedToolCard(toolName, toolUseContent, toolResultContent, isErr
   const actionDesc = describeToolAction(toolName, toolInput);
   const resultStr = toolResultContent || '';
   const finalIsError = (isError === null || isError === undefined)
-    ? (resultStr || '').toLowerCase().includes('error')
+    ? /(\[失败\]|\[拦截\]|已拦截|error|失败|permission denied|forbidden)/i.test(resultStr || '')
     : !!isError;
 
   details.innerHTML = `
@@ -365,7 +365,7 @@ function appendToolResultCard(toolName, content, isError) {
 
   const resultStr = content || '';
   const finalIsError = (isError === null || isError === undefined)
-    ? (resultStr || '').toLowerCase().includes('error')
+    ? /(\[失败\]|\[拦截\]|已拦截|error|失败|permission denied|forbidden)/i.test(resultStr || '')
     : !!isError;
 
   details.innerHTML = `
@@ -396,12 +396,11 @@ const TODO_STEP_ICONS = {
 };
 
 function appendTodoCard(msgEl, todoData) {
-  let card = document.querySelector('.todo-card');
+  // 作用域查找：只在当前消息节点内查找 .todo-card，避免多消息/多会话串扰
+  let card = msgEl.querySelector('.todo-card');
   if (!card) {
     card = document.createElement('div');
     card.className = 'todo-card';
-    msgEl.appendChild(card);
-  } else if (card.parentNode !== msgEl) {
     msgEl.appendChild(card);
   }
   updateTodoCard(card, todoData);
@@ -482,18 +481,12 @@ function updateTodoCard(cardOrMsgEl, todoData) {
 }
 
 // ========== 审批卡片 ==========
-function appendApprovalCard(msgEl, evt) {
-  const card = document.createElement('div');
-  card.className = 'approval-card';
-  card.dataset.approvalId = evt.approval_id;
-  card.dataset.resolved = 'false';
-
+function renderGenericApproval(evt) {
   const riskLevel = (evt.risk_level || 'medium').toLowerCase();
   const safeRisk = ['high', 'medium', 'low'].includes(riskLevel) ? riskLevel : 'medium';
   const riskLabel = safeRisk === 'high' ? '高风险' : safeRisk === 'low' ? '低风险' : '中风险';
   const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
-
-  card.innerHTML = `
+  return `
     <div class="approval-header">
       <span class="approval-icon">⚠</span>
       <span class="approval-title">需要审批</span>
@@ -509,24 +502,246 @@ function appendApprovalCard(msgEl, evt) {
       <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
     </div>
   `;
+}
+
+function renderFileApproval(evt) {
+  const path = (evt.tool_input && evt.tool_input.path) || '(未指定路径)';
+  const opMap = {
+    file_write: '写入/新建',
+    file_edit: '修改',
+    file_delete: '删除',
+    file_read: '读取',
+  };
+  const op = opMap[evt.tool_name] || '文件操作';
+  const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
+  return `
+    <div class="approval-header">
+      <span class="approval-icon">📄</span>
+      <span class="approval-title">文件操作审批</span>
+      <span class="approval-risk tag tag-warning">${op}</span>
+    </div>
+    <div class="approval-body">
+      <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>
+      <div class="approval-file-path">
+        <span class="approval-label">路径:</span>
+        <code>${escapeHtml(path)}</code>
+      </div>
+      <pre class="tool-card-content">${highlightJSON(inputJson)}</pre>
+    </div>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(evt.approval_id)}">批准</button>
+      <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
+    </div>
+  `;
+}
+
+function renderShellApproval(evt) {
+  const cmd = (evt.tool_input && evt.tool_input.command) || '(空命令)';
+  return `
+    <div class="approval-header">
+      <span class="approval-icon">⚡</span>
+      <span class="approval-title">Shell 命令审批</span>
+      <span class="approval-risk tag tag-danger">高危</span>
+    </div>
+    <div class="approval-body">
+      <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>
+      <div class="approval-shell-cmd">
+        <span class="approval-label">命令:</span>
+        <pre class="tool-card-content"><code>${escapeHtml(cmd)}</code></pre>
+      </div>
+    </div>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(evt.approval_id)}">批准</button>
+      <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
+    </div>
+  `;
+}
+
+function renderSkillApproval(evt) {
+  // skill__{name} 或 skill__{name}__{tool}
+  const parts = (evt.tool_name || '').split('__').filter(Boolean);
+  const skillName = parts[1] || '(未知)';
+  const subTool = parts.length > 2 ? parts.slice(2).join('__') : '';
+  const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
+  return `
+    <div class="approval-header">
+      <span class="approval-icon">🧩</span>
+      <span class="approval-title">Skill 操作审批</span>
+      <span class="approval-risk tag tag-info">${escapeHtml(skillName)}</span>
+    </div>
+    <div class="approval-body">
+      <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>
+      <div class="approval-skill-name">
+        <span class="approval-label">Skill:</span>
+        <code>${escapeHtml(skillName)}</code>
+        ${subTool ? `<span class="approval-sub-tool">→ ${escapeHtml(subTool)}</span>` : ''}
+      </div>
+      <pre class="tool-card-content">${highlightJSON(inputJson)}</pre>
+    </div>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(evt.approval_id)}">批准</button>
+      <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
+    </div>
+  `;
+}
+
+function renderMcpApproval(evt) {
+  // mcp__{server}__{tool}
+  const parts = (evt.tool_name || '').split('__').filter(Boolean);
+  const serverName = parts[1] || '(未知)';
+  const toolName = parts.slice(2).join('__') || '(未知)';
+  const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
+  return `
+    <div class="approval-header">
+      <span class="approval-icon">🔌</span>
+      <span class="approval-title">MCP 工具审批</span>
+      <span class="approval-risk tag tag-purple">${escapeHtml(serverName)}</span>
+    </div>
+    <div class="approval-body">
+      <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>
+      <div class="approval-mcp-info">
+        <span class="approval-label">Server:</span>
+        <code>${escapeHtml(serverName)}</code>
+        <span class="approval-label" style="margin-left:12px">Tool:</span>
+        <code>${escapeHtml(toolName)}</code>
+      </div>
+      <pre class="tool-card-content">${highlightJSON(inputJson)}</pre>
+    </div>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(evt.approval_id)}">批准</button>
+      <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
+    </div>
+  `;
+}
+
+function renderMemoryApproval(evt) {
+  const opMap = {
+    memory_delete: '删除记忆',
+    memory_update: '修改记忆',
+    profile_update: '修改用户画像',
+    memory_search: '搜索记忆',
+  };
+  const op = opMap[evt.tool_name] || '记忆操作';
+  const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
+  return `
+    <div class="approval-header">
+      <span class="approval-icon">🧠</span>
+      <span class="approval-title">记忆操作审批</span>
+      <span class="approval-risk tag tag-danger">高危</span>
+    </div>
+    <div class="approval-memory-warning">
+      ⚠ 此操作将直接修改长期记忆/用户画像,可能不可恢复,请谨慎确认。
+    </div>
+    <div class="approval-body">
+      <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>
+      <div class="approval-memory-op">
+        <span class="approval-label">操作:</span>
+        <code>${escapeHtml(op)}</code>
+      </div>
+      <pre class="tool-card-content">${highlightJSON(inputJson)}</pre>
+    </div>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(evt.approval_id)}">批准</button>
+      <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(evt.approval_id)}">拒绝</button>
+    </div>
+  `;
+}
+
+function appendApprovalCard(msgEl, evt) {
+  const kind = evt.tool_kind || "generic";
+  const renderers = {
+    file: renderFileApproval,
+    shell: renderShellApproval,
+    skill: renderSkillApproval,
+    mcp: renderMcpApproval,
+    memory: renderMemoryApproval,
+    generic: renderGenericApproval,
+  };
+  const renderer = renderers[kind] || renderers.generic;
+  const card = document.createElement('div');
+  card.className = `approval-card tool-kind-${kind}`;
+  card.dataset.approvalId = evt.approval_id;
+  card.dataset.resolved = 'false';
+  card.innerHTML = renderer(evt);
 
   msgEl.appendChild(card);
 
-  card.querySelector('[data-approval-action="approve"]').addEventListener('click', () => resolveApproval(evt.approval_id, 'approve'));
-  card.querySelector('[data-approval-action="deny"]').addEventListener('click', () => resolveApproval(evt.approval_id, 'deny'));
+  card.querySelector('[data-approval-action="approve"]')?.addEventListener('click', () => resolveApproval(evt.approval_id, 'approve'));
+  card.querySelector('[data-approval-action="deny"]')?.addEventListener('click', () => showDenyReasonPanel(evt.approval_id));
 
   scrollMessagesToBottom();
   pendingApprovalCount++;
   updateSendBtnState();
 }
 
-async function resolveApproval(approvalId, decision) {
+const DENY_QUICK_REASONS = ['操作风险过高', '不需要此操作', '改用其他方式'];
+
+function showDenyReasonPanel(approvalId) {
+  const card = findApprovalCard(approvalId);
+  if (!card || card.dataset.resolved === 'true') return;
+  const actions = card.querySelector('.approval-actions');
+  if (!actions) return;
+
+  const chips = DENY_QUICK_REASONS.map((r, i) =>
+    `<button type="button" class="deny-chip" data-chip-idx="${i}">${escapeHtml(r)}</button>`
+  ).join('');
+
+  actions.innerHTML = `
+    <div class="deny-reason-panel">
+      <div class="deny-chips">${chips}</div>
+      <textarea class="deny-reason-input" maxlength="200" placeholder="补充说明（可选）" rows="2"></textarea>
+      <div class="deny-reason-actions">
+        <button type="button" class="btn btn-danger btn-sm" data-deny-action="submit">提交拒绝</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-deny-action="cancel">取消</button>
+      </div>
+    </div>
+  `;
+
+  let selectedReason = '';
+  actions.querySelectorAll('.deny-chip').forEach((chip, idx) => {
+    chip.addEventListener('click', () => {
+      if (chip.classList.contains('is-selected')) {
+        chip.classList.remove('is-selected');
+        selectedReason = '';
+      } else {
+        actions.querySelectorAll('.deny-chip').forEach(c => c.classList.remove('is-selected'));
+        chip.classList.add('is-selected');
+        selectedReason = DENY_QUICK_REASONS[idx];
+      }
+    });
+  });
+
+  actions.querySelector('[data-deny-action="submit"]')?.addEventListener('click', () => {
+    const text = (actions.querySelector('.deny-reason-input')?.value || '').trim();
+    const reason = [selectedReason, text].filter(Boolean).join('：') || '';
+    resolveApproval(approvalId, 'deny', reason);
+  });
+  actions.querySelector('[data-deny-action="cancel"]')?.addEventListener('click', () => {
+    restoreApprovalActions(card);
+  });
+}
+
+function restoreApprovalActions(card) {
+  const actions = card.querySelector('.approval-actions');
+  if (!actions) return;
+  const approvalId = card.dataset.approvalId;
+  actions.innerHTML = `
+    <button class="btn btn-primary btn-sm" data-approval-action="approve" data-approval-id="${escapeHtml(approvalId)}">批准</button>
+    <button class="btn btn-danger btn-sm" data-approval-action="deny" data-approval-id="${escapeHtml(approvalId)}">拒绝</button>
+  `;
+  card.querySelector('[data-approval-action="approve"]')?.addEventListener('click', () => resolveApproval(approvalId, 'approve'));
+  card.querySelector('[data-approval-action="deny"]')?.addEventListener('click', () => showDenyReasonPanel(approvalId));
+}
+
+async function resolveApproval(approvalId, decision, reason = null) {
   try {
+    const body = { decision: decision };
+    if (reason !== null && reason !== '') body.reason = reason;
     await api(`/approvals/${encodeURIComponent(approvalId)}/resolve`, {
       method: 'POST',
-      body: { decision: decision }
+      body: body
     });
-    updateApprovalCardStatus(approvalId, decision, '');
+    updateApprovalCardStatus(approvalId, decision, reason || '');
   } catch (e) {
     showToast('审批提交失败: ' + e.message, 'error');
   }
@@ -689,6 +904,8 @@ async function sendMessage(textOverride) {
   if (!currentSessionId) sessionTitleEl.textContent = '新会话';
 
   appendMessage('user', text);
+  // 用户主动发消息：强制滚动到底部，确保看到自己的消息和接下来的回应
+  scrollMessagesToBottom(true);
   _prevTodoStepStatuses = {};
   messageInputEl.value = '';
   autoResize();
@@ -720,7 +937,16 @@ async function sendMessage(textOverride) {
         case 'session':
           currentSessionId = evt.session_id;
           persistCurrentSession();
-          sessionTitleEl.textContent = currentSessionId.slice(0, 20) + '...';
+          // 标题占位：用首条消息前 20 字（比 session id 更有意义），存入全局供列表渲染复用
+          if (typeof text === 'string' && text) {
+            window._firstMessagePreview = window._firstMessagePreview || {};
+            if (!window._firstMessagePreview[currentSessionId]) {
+              window._firstMessagePreview[currentSessionId] = text.slice(0, 20);
+            }
+            sessionTitleEl.textContent = text.slice(0, 20) + '...';
+          } else {
+            sessionTitleEl.textContent = currentSessionId.slice(0, 20) + '...';
+          }
           break;
         case 'status': {
           // 状态文案注入当前活跃气泡的 .bubble-status（取代输入框上方独立状态条）
@@ -862,6 +1088,41 @@ async function sendMessage(textOverride) {
 
     _cleanupStreamRounds(rounds, streamMsg);
     loadSessions();
+    // 标题由后端异步 LLM 生成（fire-and-forget，~2-15s）。退避轮询
+    // 直到标题不再是占位符（首条消息前 20 字）或达到 5 次尝试。
+    // 同时把首条消息前 20 字存入 window._firstMessagePreview 供列表占位。
+    if (window._titlePollTimer) clearTimeout(window._titlePollTimer);
+    if (typeof text === 'string' && text && currentSessionId) {
+      window._firstMessagePreview = window._firstMessagePreview || {};
+      if (!window._firstMessagePreview[currentSessionId]) {
+        window._firstMessagePreview[currentSessionId] = text.slice(0, 20);
+      }
+    }
+    const _titlePlaceholder = (typeof text === 'string' && text) ? text.slice(0, 20) : '';
+    let _titleAttempt = 0;
+    const _titleDelays = [2000, 4000, 8000, 15000, 30000];
+    function _pollTitle() {
+      if (_titleAttempt >= _titleDelays.length) return;
+      window._titlePollTimer = setTimeout(() => {
+        if (window.HermesChatSession && typeof window.HermesChatSession.loadSessions === 'function') {
+          window.HermesChatSession.loadSessions().then(() => {
+            const cur = window.HermesChatSession._currentSessionData;
+            if (cur && (!cur.title || !cur.title.trim()) && _titlePlaceholder &&
+                _titleAttempt + 1 < _titleDelays.length) {
+              _titleAttempt++;
+              _pollTitle();
+            }
+          }).catch(() => {});
+        }
+      }, _titleDelays[_titleAttempt]);
+    }
+    if (_titlePlaceholder) {
+      _pollTitle();
+    } else {
+      window._titlePollTimer = setTimeout(() => {
+        if (window.HermesChatSession) window.HermesChatSession.loadSessions();
+      }, 3000);
+    }
   } catch (e) {
     _cleanupStreamRounds(rounds, streamMsg);
     const er2 = rounds[roundIdx];

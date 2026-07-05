@@ -1,6 +1,6 @@
 """Skill 管理工具（5 个 handler）单元测试。
 
-覆盖 skill_template / propose_skill / reload_skill / toggle_skill / list_skills
+覆盖 skill__template / propose_skill / reload_skill / toggle_skill / list_skills
 共 5 个 handler，全部通过 ToolRegistry.execute_tool 调用。
 
 mock 策略:
@@ -108,46 +108,72 @@ def _build_mock_skill(
 # ===========================================================================
 
 class TestSkillTemplate(TestCase):
-    """验证 skill_template 返回合法 JSON 且包含 fields 与 tools.py 模板。"""
+    """验证 skill__template 返回合法 JSON 且包含 fields 与 scripts/ 模板。"""
 
     def setUp(self):
         self.registry = ToolRegistry()
         self.skill_loader = MagicMock(spec=SkillLoader)
         register_skill_tools(self.registry, self.skill_loader)
 
-    def test_returns_valid_json_with_fields_and_tools_py(self):
-        """skill_template 返回 JSON，含 fields 和 tools.py。"""
-        result = self.registry.execute_tool("skill_template", {})
+    def test_returns_valid_json_with_fields_and_scripts_template(self):
+        """skill__template 返回 JSON，含 fields、scripts_template 和 skill_md_template。"""
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
         self.assertIn("fields", data)
-        self.assertIn("tools_py", data)
+        self.assertIn("scripts_template", data)
+        self.assertIn("skill_md_template", data)
         self.assertIsInstance(data["fields"], dict)
-        self.assertIsInstance(data["tools_py"], str)
+        self.assertIsInstance(data["scripts_template"], str)
+        self.assertIsInstance(data["skill_md_template"], str)
+        # 旧路径 tools_py 不应再出现
+        self.assertNotIn("tools_py", data)
 
     def test_fields_contains_required_keys(self):
         """fields 包含 name / description / version / requires / skill_body。"""
-        result = self.registry.execute_tool("skill_template", {})
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
         for key in ("name", "description", "version", "requires", "skill_body"):
             self.assertIn(key, data["fields"])
 
-    def test_tools_py_contains_TOOLS_list(self):
-        """tools.py 模板包含 TOOLS 列表定义。"""
-        result = self.registry.execute_tool("skill_template", {})
+    def test_fields_requires_description_mentions_python_packages(self):
+        """fields.requires 描述应含 'Python 包'（不再是 Skill 名称列表）。"""
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
-        self.assertIn("TOOLS = [", data["tools_py"])
+        self.assertIn("Python 包", data["fields"]["requires"])
 
-    def test_tools_py_contains_handler_function(self):
-        """tools.py 模板包含 handler 函数定义。"""
-        result = self.registry.execute_tool("skill_template", {})
+    def test_fields_version_mentions_default_0_1_0(self):
+        """fields.version 描述应含 '0.1.0'（默认版本统一为 0.1.0）。"""
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
-        self.assertIn("def my_handler", data["tools_py"])
+        self.assertIn("0.1.0", data["fields"]["version"])
 
-    def test_tools_py_has_valid_syntax(self):
-        """tools.py 模板是合法 Python（compile 不抛异常）。"""
-        result = self.registry.execute_tool("skill_template", {})
+    def test_scripts_template_contains_handler_function(self):
+        """scripts_template 包含 handler 函数定义。"""
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
-        compile(data["tools_py"], "<test>", "exec")
+        self.assertIn("def my_handler", data["scripts_template"])
+
+    def test_scripts_template_contains_cli_entry(self):
+        """scripts_template 包含 CLI 入口（_main + __main__ 守卫）。"""
+        result = self.registry.execute_tool("skill__template", {})
+        data = json.loads(result)
+        self.assertIn("def _main", data["scripts_template"])
+        self.assertIn('__name__ == "__main__', data["scripts_template"])
+
+    def test_scripts_template_has_valid_syntax(self):
+        """scripts_template 是合法 Python（compile 不抛异常）。"""
+        result = self.registry.execute_tool("skill__template", {})
+        data = json.loads(result)
+        compile(data["scripts_template"], "<test>", "exec")
+
+    def test_skill_md_template_contains_frontmatter(self):
+        """skill_md_template 含 frontmatter（--- ... ---）与 version: 0.1.0。"""
+        result = self.registry.execute_tool("skill__template", {})
+        data = json.loads(result)
+        md = data["skill_md_template"]
+        self.assertTrue(md.startswith("---\n"))
+        self.assertIn("version: 0.1.0", md)
+        self.assertIn("name: my_skill", md)
 
 
 # ===========================================================================
@@ -184,8 +210,8 @@ class TestProposeSkill(TestCase):
             tools_input = dict(self._DEFAULT_TOOL_INPUT)
         if patch_base:
             with patch("src.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
-                return self.registry.execute_tool("skill_propose", tools_input)
-        return self.registry.execute_tool("skill_propose", tools_input)
+                return self.registry.execute_tool("skill__propose", tools_input)
+        return self.registry.execute_tool("skill__propose", tools_input)
 
     # -- 成功路径 -----------------------------------------------------------
 
@@ -220,11 +246,11 @@ class TestProposeSkill(TestCase):
         self.assertIn("skill__calc__add", self.registry._deferred_tools)
 
     def test_propose_calls_unload_then_load(self):
-        """propose 成功时调 skill_loader.unload 再调 skill_loader.load。"""
+        """propose 成功时调 skill_loader.unload 再调 skill_loader.load（旧路径）。"""
         mock_skill = _build_mock_skill(name="s1")
         self.skill_loader.load.return_value = mock_skill
 
-        self._propose({"name": "s1", "description": "Test"})
+        self._propose({"name": "s1", "description": "Test", "tools_py": _make_empty_tools_py()})
 
         self.skill_loader.unload.assert_called_once_with("s1")
         self.skill_loader.load.assert_called_once_with("s1")
@@ -320,7 +346,7 @@ class TestProposeSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_BASE_DIR", other_temp):
                 result = self.registry.execute_tool(
-                    "skill_propose",
+                    "skill__propose",
                     {
                         "name": "existing_skill",
                         "description": "Test",
@@ -373,6 +399,42 @@ class TestProposeSkill(TestCase):
         data = json.loads(result)
         self.assertEqual(data["status"], "activated")
 
+    def test_propose_skill_with_scripts_files(self):
+        """propose 传 scripts_files 时创建 scripts/main.py 文件并返回 activated。
+
+        验证新路径（scripts_files 非空）：
+        - propose 成功返回 status=activated
+        - skill 目录含 scripts/main.py 文件，内容与传入一致
+        - 测试后由 tearDown 清理临时目录
+        """
+        with patch("src.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
+            result = self.registry.execute_tool(
+                "skill__propose",
+                {
+                    "name": "scripts_skill",
+                    "description": "Skill with scripts files",
+                    "scripts_files": {"main.py": "print('hello')"},
+                },
+            )
+        data = json.loads(result)
+        self.assertEqual(data["status"], "activated")
+
+        # scripts/main.py 文件应被创建
+        scripts_file = self.temp_dir / "scripts_skill" / "scripts" / "main.py"
+        self.assertTrue(
+            scripts_file.exists(),
+            "scripts/main.py 应被创建",
+        )
+        self.assertEqual(
+            scripts_file.read_text(encoding="utf-8"),
+            "print('hello')",
+        )
+        # SKILL.md 也应被创建
+        self.assertTrue(
+            (self.temp_dir / "scripts_skill" / "SKILL.md").exists(),
+            "SKILL.md 应被创建",
+        )
+
 
 # ===========================================================================
 # 3. TestReloadSkill
@@ -395,7 +457,7 @@ class TestReloadSkill(TestCase):
         )
         self.skill_loader.load.return_value = mock_skill
 
-        result = self.registry.execute_tool("skill_reload", {"name": "reload_me"})
+        result = self.registry.execute_tool("skill__reload", {"name": "reload_me"})
         data = json.loads(result)
 
         self.assertEqual(data["status"], "reloaded")
@@ -406,7 +468,7 @@ class TestReloadSkill(TestCase):
         mock_skill = _build_mock_skill(name="r1")
         self.skill_loader.load.return_value = mock_skill
 
-        self.registry.execute_tool("skill_reload", {"name": "r1"})
+        self.registry.execute_tool("skill__reload", {"name": "r1"})
 
         self.skill_loader.unload.assert_called_once_with("r1")
         self.skill_loader.load.assert_called_once_with("r1")
@@ -419,7 +481,7 @@ class TestReloadSkill(TestCase):
         )
         self.skill_loader.load.return_value = mock_skill
 
-        self.registry.execute_tool("skill_reload", {"name": "reloaded_skill"})
+        self.registry.execute_tool("skill__reload", {"name": "reloaded_skill"})
 
         self.assertIn(
             "skill__reloaded_skill__my_tool",
@@ -441,7 +503,7 @@ class TestReloadSkill(TestCase):
         )
         self.skill_loader.load.return_value = mock_skill
 
-        self.registry.execute_tool("skill_reload", {"name": "old_skill"})
+        self.registry.execute_tool("skill__reload", {"name": "old_skill"})
 
         # 旧工具应不再存在
         self.assertNotIn("skill__old_skill__stale_tool", self.registry._deferred_tools)
@@ -452,14 +514,14 @@ class TestReloadSkill(TestCase):
 
     def test_reload_empty_name_returns_error(self):
         """空名称返回 error。"""
-        result = self.registry.execute_tool("skill_reload", {"name": ""})
+        result = self.registry.execute_tool("skill__reload", {"name": ""})
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
 
     def test_reload_nonexistent_returns_error(self):
         """不存在的技能返回 error。"""
         self.skill_loader.load.return_value = None
-        result = self.registry.execute_tool("skill_reload", {"name": "ghost"})
+        result = self.registry.execute_tool("skill__reload", {"name": "ghost"})
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
         self.assertIn("不存在", data["reason"])
@@ -468,7 +530,7 @@ class TestReloadSkill(TestCase):
         """skill_loader 为 None 时返回 error。"""
         registry2 = ToolRegistry()
         register_skill_tools(registry2, None)
-        result = registry2.execute_tool("skill_reload", {"name": "test"})
+        result = registry2.execute_tool("skill__reload", {"name": "test"})
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
         self.assertIn("skill_loader 不可用", data["reason"])
@@ -476,7 +538,7 @@ class TestReloadSkill(TestCase):
     def test_reload_load_exception_returns_error(self):
         """skill_loader.load 抛异常时返回 error。"""
         self.skill_loader.load.side_effect = RuntimeError("load failed")
-        result = self.registry.execute_tool("skill_reload", {"name": "broken"})
+        result = self.registry.execute_tool("skill__reload", {"name": "broken"})
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
         self.assertIn("重新加载失败", data["reason"])
@@ -508,7 +570,7 @@ class TestToggleSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "disable"}
+                    "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
             data = json.loads(result)
             self.assertEqual(data["status"], "disabled")
@@ -516,7 +578,12 @@ class TestToggleSkill(TestCase):
             Path(state_path).unlink(missing_ok=True)
 
     def test_disable_removes_tools_from_registry(self):
-        """禁用后 skill 的工具从 registry 移除。"""
+        """禁用后 skill 的工具走软禁用（保留在 registry，schema 标 enabled: False）。
+
+        P1 改造：disable_skill 改为软禁用语义（不再 unregister 硬删除），
+        工具仍保留在 _deferred_tools 中保持 schema 稳定，仅追加 enabled: False
+        标记，执行时抛 ToolNotFoundError。
+        """
         self.registry.register_deferred(
             name="skill__my_skill__tool1",
             description="test",
@@ -537,13 +604,22 @@ class TestToggleSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "disable"}
+                    "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
         finally:
             Path(state_path).unlink(missing_ok=True)
 
-        self.assertNotIn("skill__my_skill__tool1", self.registry._deferred_tools)
-        self.assertNotIn("skill__my_skill__tool2", self.registry._deferred_tools)
+        # 软禁用：工具仍在 _deferred_tools 中（未硬删除）
+        self.assertIn("skill__my_skill__tool1", self.registry._deferred_tools)
+        self.assertIn("skill__my_skill__tool2", self.registry._deferred_tools)
+        # registry 标记 skill 为已禁用
+        self.assertTrue(self.registry.is_skill_disabled("my_skill"))
+        # schema 中对应工具含 enabled: False
+        schemas = self.registry.get_tools_schema()
+        for tool_name in ("skill__my_skill__tool1", "skill__my_skill__tool2"):
+            entry = next(s for s in schemas if s["name"] == tool_name)
+            self.assertIn("enabled", entry)
+            self.assertFalse(entry["enabled"])
 
     def test_disable_writes_to_state_file(self):
         """禁用后状态文件记录 disabled 列表。"""
@@ -555,13 +631,103 @@ class TestToggleSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "disable"}
+                    "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
             # 读取状态文件
             saved = json.loads(Path(state_path).read_text(encoding="utf-8"))
             self.assertIn("my_skill", saved["disabled"])
         finally:
             Path(state_path).unlink(missing_ok=True)
+
+    def test_toggle_disable_uses_soft_disable(self):
+        """skill__toggle action=disable 走软禁用，stub 保留在 registry 中。
+
+        断言：
+        - registry.is_skill_disabled(name) 为 True
+        - registry.get_full_schema(f"skill__{name}") 非 None/空（stub 仍在）
+        - 工具未被硬删除（_core_tools 仍含 stub）
+        - schema 中 stub 含 enabled: False
+        """
+        name = "soft_disable"
+        # 预注册 stub 到 Core Tier（模拟 register_skill_stub 的产物）
+        self.registry.register_core(
+            name=f"skill__{name}",
+            description=f"[Skill] 激活 {name}",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda **kw: "ok",
+        )
+        fd, state_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        Path(state_path).write_text(
+            json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
+        )
+        try:
+            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+                result = self.registry.execute_tool(
+                    "skill__toggle", {"name": name, "action": "disable"}
+                )
+        finally:
+            Path(state_path).unlink(missing_ok=True)
+
+        data = json.loads(result)
+        self.assertEqual(data["status"], "disabled")
+
+        # 软禁用：标记为已禁用
+        self.assertTrue(self.registry.is_skill_disabled(name))
+        # stub 仍在 registry 中（公开 API 返回非空 schema）
+        schema = self.registry.get_full_schema(f"skill__{name}")
+        self.assertTrue(schema, "stub 应保留在 registry 中（软禁用不删工具）")
+        # 工具未被硬删除
+        self.assertIn(f"skill__{name}", self.registry._core_tools)
+        # schema 中 stub 标 enabled: False
+        schemas = self.registry.get_tools_schema()
+        entry = next(s for s in schemas if s["name"] == f"skill__{name}")
+        self.assertIn("enabled", entry)
+        self.assertFalse(entry["enabled"])
+
+    def test_toggle_enable_restores_soft_disable(self):
+        """skill__toggle 先 disable 再 enable，schema 恢复为启用状态。
+
+        断言：
+        - registry.is_skill_disabled(name) 为 False
+        - schema 中 stub 不再含 enabled: False 字段（默认启用）
+        """
+        name = "toggle_restore"
+        # 预注册 stub
+        self.registry.register_core(
+            name=f"skill__{name}",
+            description=f"[Skill] 激活 {name}",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda **kw: "ok",
+        )
+        fd, state_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        Path(state_path).write_text(
+            json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
+        )
+        try:
+            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+                # 先禁用
+                self.registry.execute_tool(
+                    "skill__toggle", {"name": name, "action": "disable"}
+                )
+                self.assertTrue(self.registry.is_skill_disabled(name))
+                # 再启用
+                result = self.registry.execute_tool(
+                    "skill__toggle", {"name": name, "action": "enable"}
+                )
+        finally:
+            Path(state_path).unlink(missing_ok=True)
+
+        data = json.loads(result)
+        self.assertEqual(data["status"], "enabled")
+
+        # 软禁用标记已清除
+        self.assertFalse(self.registry.is_skill_disabled(name))
+        # schema 中 stub 不再标 enabled: False（默认启用 = 字段不存在或为 True）
+        schemas = self.registry.get_tools_schema()
+        entry = next(s for s in schemas if s["name"] == f"skill__{name}")
+        self.assertNotEqual(entry.get("enabled"), False)
 
     # -- 启用 ---------------------------------------------------------------
 
@@ -571,7 +737,7 @@ class TestToggleSkill(TestCase):
         self.skill_loader.load.return_value = mock_skill
 
         result = self.registry.execute_tool(
-            "skill_toggle", {"name": "my_skill", "action": "enable"}
+            "skill__toggle", {"name": "my_skill", "action": "enable"}
         )
         data = json.loads(result)
         self.assertEqual(data["status"], "enabled")
@@ -588,7 +754,7 @@ class TestToggleSkill(TestCase):
                 mock_skill = _build_mock_skill(name="my_skill")
                 self.skill_loader.load.return_value = mock_skill
                 self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "enable"}
+                    "skill__toggle", {"name": "my_skill", "action": "enable"}
                 )
             saved = json.loads(Path(state_path).read_text(encoding="utf-8"))
             self.assertNotIn("my_skill", saved["disabled"])
@@ -604,7 +770,7 @@ class TestToggleSkill(TestCase):
         self.skill_loader.load.return_value = mock_skill
 
         self.registry.execute_tool(
-            "skill_toggle", {"name": "just_enabled", "action": "enable"}
+            "skill__toggle", {"name": "just_enabled", "action": "enable"}
         )
 
         self.skill_loader.unload.assert_called_once_with("just_enabled")
@@ -619,7 +785,7 @@ class TestToggleSkill(TestCase):
         registry2 = ToolRegistry()
         register_skill_tools(registry2, None)
         result = registry2.execute_tool(
-            "skill_toggle", {"name": "x", "action": "enable"}
+            "skill__toggle", {"name": "x", "action": "enable"}
         )
         data = json.loads(result)
         self.assertEqual(data["status"], "enabled")
@@ -629,7 +795,7 @@ class TestToggleSkill(TestCase):
         self.skill_loader.load.side_effect = RuntimeError("reload failed")
 
         result = self.registry.execute_tool(
-            "skill_toggle", {"name": "broken", "action": "enable"}
+            "skill__toggle", {"name": "broken", "action": "enable"}
         )
         data = json.loads(result)
         self.assertEqual(data["status"], "enabled")
@@ -641,7 +807,7 @@ class TestToggleSkill(TestCase):
     def test_toggle_invalid_action_returns_error(self):
         """非 enable/disable 的 action 返回 error。"""
         result = self.registry.execute_tool(
-            "skill_toggle", {"name": "my_skill", "action": "invalid"}
+            "skill__toggle", {"name": "my_skill", "action": "invalid"}
         )
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
@@ -650,7 +816,7 @@ class TestToggleSkill(TestCase):
     def test_toggle_empty_name_returns_error(self):
         """空名称返回 error。"""
         result = self.registry.execute_tool(
-            "skill_toggle", {"name": "", "action": "disable"}
+            "skill__toggle", {"name": "", "action": "disable"}
         )
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
@@ -661,7 +827,7 @@ class TestToggleSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "disable"}
+                    "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
             data = json.loads(result)
             self.assertEqual(data["status"], "error")
@@ -675,7 +841,7 @@ class TestToggleSkill(TestCase):
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
-                    "skill_toggle", {"name": "my_skill", "action": "disable"}
+                    "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
             data = json.loads(result)
             self.assertEqual(data["status"], "error")
@@ -690,7 +856,7 @@ class TestToggleSkill(TestCase):
             Path(tempfile.mktemp(suffix=".json")),
         ):
             result = self.registry.execute_tool(
-                "skill_toggle", {"name": "random", "action": "enable"}
+                "skill__toggle", {"name": "random", "action": "enable"}
             )
         data = json.loads(result)
         self.assertEqual(data["status"], "enabled")
@@ -714,7 +880,7 @@ class TestListSkills(TestCase):
 
     def test_list_overview_contains_required_keys(self):
         """概览返回 loaded_skills / on_disk_skills / disabled / locked。"""
-        result = self.registry.execute_tool("skill_list", {})
+        result = self.registry.execute_tool("skill__list", {})
         data = json.loads(result)
 
         self.assertIn("loaded_skills", data)
@@ -726,7 +892,7 @@ class TestListSkills(TestCase):
 
     def test_list_overview_empty_when_nothing_loaded(self):
         """无加载技能时 loaded_skills 为空列表。"""
-        result = self.registry.execute_tool("skill_list", {})
+        result = self.registry.execute_tool("skill__list", {})
         data = json.loads(result)
         self.assertEqual(data["loaded_skills"], [])
 
@@ -740,7 +906,7 @@ class TestListSkills(TestCase):
         skill_b.description = "Skill B"
         self.skill_loader._skills = {"skill_a": skill_a, "skill_b": skill_b}
 
-        result = self.registry.execute_tool("skill_list", {})
+        result = self.registry.execute_tool("skill__list", {})
         data = json.loads(result)
 
         loaded_names = [s["name"] for s in data["loaded_skills"]]
@@ -758,7 +924,7 @@ class TestListSkills(TestCase):
         )
         self.skill_loader.discover.return_value = [meta]
 
-        result = self.registry.execute_tool("skill_list", {})
+        result = self.registry.execute_tool("skill__list", {})
         data = json.loads(result)
 
         disk_names = [s["name"] for s in data["on_disk_skills"]]
@@ -773,7 +939,7 @@ class TestListSkills(TestCase):
         """discover() 抛异常时 on_disk_skills 为空列表，不崩溃。"""
         self.skill_loader.discover.side_effect = RuntimeError("discover error")
 
-        result = self.registry.execute_tool("skill_list", {})
+        result = self.registry.execute_tool("skill__list", {})
         data = json.loads(result)
         self.assertEqual(data["on_disk_skills"], [])
 
@@ -784,7 +950,7 @@ class TestListSkills(TestCase):
         )
         try:
             with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
-                result = self.registry.execute_tool("skill_list", {})
+                result = self.registry.execute_tool("skill__list", {})
             data = json.loads(result)
             self.assertIn("offline_skill", data["disabled"])
             self.assertIn("locked_skill", data["locked"])
@@ -809,7 +975,7 @@ class TestListSkills(TestCase):
         )
         self.skill_loader._skills = {"detail_skill": mock_skill}
 
-        result = self.registry.execute_tool("skill_list", {"name": "detail_skill"})
+        result = self.registry.execute_tool("skill__list", {"name": "detail_skill"})
         data = json.loads(result)
 
         self.assertEqual(data["name"], "detail_skill")
@@ -825,27 +991,45 @@ class TestListSkills(TestCase):
         self.assertEqual(data["tools"][0]["description"], "Tool A")
 
     def test_list_with_name_falls_back_to_load(self):
-        """_skills 缓存未命中时回退到 skill_loader.load()。"""
-        mock_skill = _build_mock_skill(
-            name="lazy_load",
-            description="Loaded on demand",
-            tools=[{"name": "tool1", "description": "T1", "input_schema": {}}],
-        )
-        self.skill_loader._skills = {}
-        self.skill_loader.load.return_value = mock_skill
+        """_skills 缓存未命中时从 _metas / discover() 取 meta。
 
-        result = self.registry.execute_tool("skill_list", {"name": "lazy_load"})
+        P1 改造：list_skills 含 name 参数时不再调 skill_loader.load()，改为
+        从 _metas 缓存或 discover() 取 SkillMeta，返回 meta 信息
+        （含 body_preview / stub_registered 字段）。
+        """
+        from src.skill.loader import SkillMeta
+        meta = SkillMeta(
+            name="lazy_load",
+            version="0.1.0",
+            description="Loaded on demand",
+            requires=[],
+            body="Lazy loaded skill body content.",
+        )
+        self.skill_loader._metas = {"lazy_load": meta}
+        self.skill_loader._skills = {}
+
+        result = self.registry.execute_tool("skill__list", {"name": "lazy_load"})
         data = json.loads(result)
 
+        # 主信息来自 meta
         self.assertEqual(data["name"], "lazy_load")
-        self.skill_loader.load.assert_called_once_with("lazy_load")
+        self.assertEqual(data["description"], "Loaded on demand")
+        self.assertEqual(data["version"], "0.1.0")
+        # 新字段：body_preview 与 stub_registered
+        self.assertIn("body_preview", data)
+        self.assertIn("stub_registered", data)
+        self.assertIn("Lazy loaded skill body", data["body_preview"])
+        # 未注册 stub → stub_registered 为 False
+        self.assertFalse(data["stub_registered"])
+        # 不再调 skill_loader.load()
+        self.skill_loader.load.assert_not_called()
 
     def test_list_nonexistent_name_returns_error(self):
         """不存在的技能名返回 error。"""
         self.skill_loader._skills = {}
         self.skill_loader.load.return_value = None
 
-        result = self.registry.execute_tool("skill_list", {"name": "nonexistent"})
+        result = self.registry.execute_tool("skill__list", {"name": "nonexistent"})
         data = json.loads(result)
 
         self.assertEqual(data["status"], "error")
@@ -855,7 +1039,7 @@ class TestListSkills(TestCase):
         """skill_loader 为 None 时查询详情返回 error。"""
         registry2 = ToolRegistry()
         register_skill_tools(registry2, None)
-        result = registry2.execute_tool("skill_list", {"name": "test"})
+        result = registry2.execute_tool("skill__list", {"name": "test"})
         data = json.loads(result)
         self.assertEqual(data["status"], "error")
         self.assertIn("skill_loader 不可用", data["reason"])
@@ -877,7 +1061,7 @@ class TestListSkills(TestCase):
 
         try:
             with patch("src.agent.skill_tools.SKILL_BASE_DIR", tmp_skills):
-                result = registry2.execute_tool("skill_list", {})
+                result = registry2.execute_tool("skill__list", {})
             data = json.loads(result)
             disk_names = [s["name"] for s in data["on_disk_skills"]]
             self.assertIn("found_skill", disk_names)
@@ -903,11 +1087,11 @@ class TestSkillToolRegistration(TestCase):
         names = {s["name"] for s in schemas}
 
         for expected in (
-            "skill_template",
-            "skill_propose",
-            "skill_reload",
-            "skill_toggle",
-            "skill_list",
+            "skill__template",
+            "skill__propose",
+            "skill__reload",
+            "skill__toggle",
+            "skill__list",
         ):
             with self.subTest(tool=expected):
                 self.assertIn(expected, names)
@@ -920,8 +1104,8 @@ class TestSkillToolRegistration(TestCase):
 
     def test_execute_tool_dispatches_to_correct_handler(self):
         """execute_tool 正确分发到各 handler。"""
-        # skill_template: 无参数，返回模板 JSON
-        result = self.registry.execute_tool("skill_template", {})
+        # skill__template: 无参数，返回模板 JSON
+        result = self.registry.execute_tool("skill__template", {})
         data = json.loads(result)
         self.assertIn("fields", data)
 

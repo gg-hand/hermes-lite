@@ -15,7 +15,6 @@ function initGlobals() {
   toastEl = document.getElementById('toast');
   sessionTitleEl = document.getElementById('sessionTitle');
   statusDotEl = document.getElementById('statusDot');
-  schedulePanelEl = document.getElementById('schedulePanel');
   sidebarEl = document.getElementById('sidebar');
   memorySearchBtnEl = document.getElementById('memorySearchBtn');
   memorySearchInputEl = document.getElementById('memorySearchInput');
@@ -64,10 +63,34 @@ function bindEvents() {
     });
   }
 
-  // 侧边栏折叠
+  // 侧边栏折叠 + 移动端遮罩
   const menuToggle = document.getElementById('menuToggle');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
   if (menuToggle && sidebarEl) {
-    menuToggle.addEventListener('click', () => sidebarEl.classList.toggle('collapsed'));
+    // HTML 中 sidebar 已带 collapsed 类，双端默认收起
+    // 移动端遮罩初始隐藏
+    if (sidebarOverlay) sidebarOverlay.classList.remove('show');
+
+    const toggleSidebar = () => {
+      const willCollapse = !sidebarEl.classList.contains('collapsed');
+      sidebarEl.classList.toggle('collapsed');
+      // 移动端：展开时显示遮罩，收起时隐藏遮罩
+      if (sidebarOverlay) {
+        if (willCollapse) {
+          sidebarOverlay.classList.remove('show');
+        } else {
+          sidebarOverlay.classList.add('show');
+        }
+      }
+    };
+    menuToggle.addEventListener('click', toggleSidebar);
+    // 点击遮罩关闭侧栏
+    if (sidebarOverlay) {
+      sidebarOverlay.addEventListener('click', () => {
+        sidebarEl.classList.add('collapsed');
+        sidebarOverlay.classList.remove('show');
+      });
+    }
   }
 
   // 新建会话 / 设置
@@ -82,30 +105,6 @@ function bindEvents() {
 
   const restartServerBtn = document.getElementById('restartServerBtn');
   if (restartServerBtn) restartServerBtn.addEventListener('click', restartServer);
-
-  // 调度管理绑定
-  const createScheduleBtn = document.getElementById('createScheduleBtn');
-  if (createScheduleBtn) createScheduleBtn.addEventListener('click', createScheduleUI);
-
-  const schedName = document.getElementById('schedName');
-  const schedCron = document.getElementById('schedCron');
-  const schedTask = document.getElementById('schedTask');
-  if (schedName) schedName.addEventListener('input', updateCreateScheduleBtnState);
-  if (schedCron) schedCron.addEventListener('input', updateCreateScheduleBtnState);
-  if (schedTask) schedTask.addEventListener('input', updateCreateScheduleBtnState);
-
-  const btnNewScheduleTab = document.getElementById('btnNewScheduleTab');
-  if (btnNewScheduleTab) {
-    btnNewScheduleTab.addEventListener('click', () => {
-      if (schedName) schedName.value = '';
-      if (schedCron) schedCron.value = '';
-      if (schedTask) schedTask.value = '';
-      const schedEnabled = document.getElementById('schedEnabled');
-      if (schedEnabled) schedEnabled.value = 'true';
-      updateCreateScheduleBtnState();
-      openModal('scheduleModal');
-    });
-  }
 
   // 侧边栏 Tab 切换
   document.querySelectorAll('.sidebar-tab').forEach(btn => {
@@ -151,75 +150,12 @@ function bindEvents() {
     });
   });
 
-  // 调度下拉面板
-  const scheduleDropdownBtn = document.getElementById('scheduleDropdownBtn');
-  if (scheduleDropdownBtn && schedulePanelEl) {
-    scheduleDropdownBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (schedulePanelEl.classList.contains('closing')) {
-        schedulePanelEl.classList.remove('closing');
-        schedulePanelEl.classList.add('show');
-        scheduleDropdownBtn.classList.add('active');
-        return;
-      }
-      const isOpen = schedulePanelEl.classList.toggle('show');
-      scheduleDropdownBtn.classList.toggle('active', isOpen);
-      if (isOpen) {
-        if (!_scheduleDataLoaded) {
-          _scheduleDataLoaded = true;
-          fetchScheduleRuns();
-          fetchSchedules();
-          fetchProposals();
-          fetchCronToolsPending();
-          fetchCronTools();
-        }
-        startScheduleRunsAutoRefresh();
-      }
-    });
-  }
-
-  // 点击外部关闭调度下拉
-  document.addEventListener('click', (e) => {
-    if (!schedulePanelEl) return;
-    const btn = document.getElementById('scheduleDropdownBtn');
-    if (!btn) return;
-    if (!schedulePanelEl.classList.contains('show')) return;
-    if (!schedulePanelEl.contains(e.target) && !btn.contains(e.target)) {
-      closeScheduleDropdown();
-    }
-  });
-
-  // ESC 关闭调度下拉
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && schedulePanelEl && schedulePanelEl.classList.contains('show')) {
-      closeScheduleDropdown();
-    }
-  });
-
-  // 调度面板事件委托
-  if (schedulePanelEl) {
-    schedulePanelEl.addEventListener('click', handleSchedulePanelClick);
-    schedulePanelEl.addEventListener('change', handleSchedulePanelChange);
-  }
-
   // 代码块复制（事件委托）
   if (messagesEl) {
     messagesEl.addEventListener('click', (e) => {
       handleCodeCopyClick(e);
     });
   }
-
-  // 调度刷新按钮
-  const btnRefreshScheduleRuns = document.getElementById('btnRefreshScheduleRuns');
-  if (btnRefreshScheduleRuns) btnRefreshScheduleRuns.addEventListener('click', fetchScheduleRuns);
-  const btnRefreshProposals = document.getElementById('btnRefreshProposals');
-  if (btnRefreshProposals) btnRefreshProposals.addEventListener('click', fetchProposals);
-  const btnRefreshScheduleAudit = document.getElementById('btnRefreshScheduleAudit');
-  if (btnRefreshScheduleAudit) btnRefreshScheduleAudit.addEventListener('click', loadScheduleAudit);
-  const btnRefreshCronToolsPending = document.getElementById('btnRefreshCronToolsPending');
-  if (btnRefreshCronToolsPending) btnRefreshCronToolsPending.addEventListener('click', fetchCronToolsPending);
-  const btnRefreshCronTools = document.getElementById('btnRefreshCronTools');
-  if (btnRefreshCronTools) btnRefreshCronTools.addEventListener('click', fetchCronTools);
 }
 
 // ========== 启动 ==========

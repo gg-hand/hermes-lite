@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +34,7 @@ try:
     from .storage.sqlite_log import SessionLogger
     from .storage.chroma_store import _get_onnx_embedder
     from .monitoring.metrics import MetricsCollector
+    from .monitoring.metrics_store import MetricsStore, compute_delta
     from .monitoring.health import HealthChecker
     from .agent.audit import AuditLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
@@ -47,6 +48,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from storage.sqlite_log import SessionLogger  # type: ignore
     from storage.chroma_store import _get_onnx_embedder  # type: ignore
     from monitoring.metrics import MetricsCollector  # type: ignore
+    from monitoring.metrics_store import MetricsStore, compute_delta  # type: ignore
     from monitoring.health import HealthChecker  # type: ignore
     from agent.audit import AuditLogger  # type: ignore
 
@@ -54,13 +56,13 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
 # 双层 try/except：先尝试相对导入（包内运行），失败后回退到绝对导入
 # （直接运行模块时 _SRC_DIR 已在 sys.path 中），两者均失败则禁用扩展能力。
 try:
-    from .skill.loader import SkillLoader, load_skill_to_registry
+    from .skill.loader import SkillLoader, load_skill_to_registry, register_skill_stub
     from .mcp.client import MCPServerDef
     from .mcp.manager import MCPManager, register_mcp_tools_to_registry
     SKILL_MCP_AVAILABLE = True
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     try:
-        from skill.loader import SkillLoader, load_skill_to_registry  # type: ignore
+        from skill.loader import SkillLoader, load_skill_to_registry, register_skill_stub  # type: ignore
         from mcp.client import MCPServerDef  # type: ignore
         from mcp.manager import MCPManager, register_mcp_tools_to_registry  # type: ignore
         SKILL_MCP_AVAILABLE = True
@@ -68,6 +70,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         logger.warning(f"Skill/MCP 模块加载失败，扩展能力禁用: {e}")
         SkillLoader = None  # type: ignore
         load_skill_to_registry = None  # type: ignore
+        register_skill_stub = None  # type: ignore
         MCPServerDef = None  # type: ignore
         MCPManager = None  # type: ignore
         register_mcp_tools_to_registry = None  # type: ignore
@@ -164,14 +167,15 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
 
 # Phase 8 Task 6: Skill 工具管理（可选，加载失败时降级）
 try:
-    from .agent.skill_tools import register_skill_tools
+    from .agent.skill_tools import register_skill_tools, _make_skill_activate_handler
     SKILL_TOOLS_AVAILABLE = True
 except ImportError:
     try:
-        from agent.skill_tools import register_skill_tools
+        from agent.skill_tools import register_skill_tools, _make_skill_activate_handler
         SKILL_TOOLS_AVAILABLE = True
     except ImportError:
         SKILL_TOOLS_AVAILABLE = False
+        _make_skill_activate_handler = None  # type: ignore
 
 
 # 文件上传与 ETL 模块（可选，加载失败时降级）
@@ -323,6 +327,8 @@ logger = _setup_logging(SERVER_LOG_PATH)
 orchestrator: Optional[Orchestrator] = None
 session_logger: Optional[SessionLogger] = None
 metrics_collector: Optional[MetricsCollector] = None
+metrics_store: Optional["MetricsStore"] = None
+metrics_persist_task: Optional[asyncio.Task] = None
 audit_logger: Optional[AuditLogger] = None
 approval_manager: Optional[ApprovalManager] = None
 # Phase 4: Skill/MCP 扩展组件（lifespan 中按需初始化）
@@ -392,11 +398,16 @@ class HealthResponse(BaseModel):
 
 
 class SessionItem(BaseModel):
-    """会话条目。"""
+    """会话条目。
+
+    ``title`` 为可空字段，未生成标题的会话返回 None，前端回退到 id 前 24 字符。
+    cron 会话的 title 取 schedule.name；用户会话的 title 由 LLM 首轮异步生成。
+    """
 
     id: str
     created_at: str
     updated_at: str
+    title: Optional[str] = None
 
 
 class SessionListResponse(BaseModel):
@@ -460,6 +471,7 @@ class ApprovalResolveRequest(BaseModel):
     """审批决定请求体。"""
 
     decision: str = Field(..., description="approve 或 deny")
+    reason: Optional[str] = Field(None, description="决定原因（用户拒绝时的备注），可选")
 
 
 class ApprovalResolveResponse(BaseModel):
@@ -488,22 +500,33 @@ class ApprovalListResponse(BaseModel):
 
 # Phase 6: 调度模型
 class ScheduleCreateRequest(BaseModel):
-    """调度项创建请求体。"""
+    """调度项创建请求体。
+
+    支持可选 ``workflow`` 字段（声明式 workflow 配置），结构遵循
+    ``WorkflowSpec.from_dict``：
+    - 简易模式: ``{"template": "research", "template_config": {...}}``
+    - 多步模式: ``{"name": "...", "steps": [{...}, ...]}``
+    """
 
     name: str
     cron: str
     task: str
     enabled: bool = True
     id: Optional[str] = None
+    workflow: Optional[Dict[str, Any]] = None
 
 
 class ScheduleUpdateRequest(BaseModel):
-    """调度项更新请求体。"""
+    """调度项更新请求体。
+
+    ``workflow`` 字段变更需重启调度器才能生效（与 cron/task/name 一致）。
+    """
 
     name: Optional[str] = None
     cron: Optional[str] = None
     task: Optional[str] = None
     enabled: Optional[bool] = None
+    workflow: Optional[Dict[str, Any]] = None
 
 
 class ScheduleListResponse(BaseModel):
@@ -588,6 +611,11 @@ async def cleanup_loop():
                         "定时清理完成: 删除了 %d 个旧会话（超过 %d 天）",
                         deleted, ttl_days,
                     )
+            # 清理过期监控历史记录（复用 session_ttl_days）
+            if metrics_store is not None:
+                deleted_metrics = metrics_store.delete_old_metrics(ttl_days)
+                if deleted_metrics:
+                    logger.info("清理了 %d 条过期监控历史记录", deleted_metrics)
             # 清理已删除 session 的 JSONL 历史文件：delete_old_sessions 已从 SQLite
             # 删除过期 session，此处同步删除 persistence_dir 下对应 session 的 JSONL。
             # 文件名格式 {session_id.replace(":","_")}.jsonl（cron:abc → cron_abc.jsonl），
@@ -616,6 +644,25 @@ async def cleanup_loop():
                                 logger.warning(
                                     "清理历史文件失败 %s: %s", f.name, e
                                 )
+                    # 同步清理 todo/ 子目录下过期 session 的 plan JSON 文件
+                    # （与 JSONL 同源，命名规则一致）
+                    todo_dir = persist_dir / "todo"
+                    if todo_dir.exists():
+                        for f in todo_dir.glob("*.json"):
+                            stem = f.stem
+                            candidates = {stem, stem.replace("_", ":")}
+                            if not (candidates & existing_sessions):
+                                try:
+                                    f.unlink()
+                                    logger.info(
+                                        "清理过期 session todo 文件: %s",
+                                        f.name,
+                                    )
+                                except OSError as e:
+                                    logger.warning(
+                                        "清理 todo 文件失败 %s: %s",
+                                        f.name, e,
+                                    )
         except Exception as e:
             logger.error("定时清理会话失败: %s", e)
         await asyncio.sleep(interval_hours * 3600)
@@ -679,6 +726,62 @@ async def file_cleanup_loop() -> None:
         await asyncio.sleep(interval_hours * 3600)
 
 
+async def metrics_persist_loop() -> None:
+    """定时将监控指标增量持久化到 SQLite 的后台任务。
+
+    策略：
+    - 维护内存 baseline（上次刷新时的快照）
+    - 每隔 flush_interval_minutes 计算一次 delta（当前 - baseline），upsert 到当天记录
+    - 午夜额外触发：将跨天前的 delta 归入旧日期
+    - 重启后 baseline = 全零，首次 delta = 重启后全部活动，自动合并到当天已有记录
+    - 所有 SQLite 调用通过 asyncio.to_thread 包装，避免阻塞事件循环
+    """
+    global metrics_store
+    if metrics_collector is None or metrics_store is None:
+        return
+
+    try:
+        config = load_config(CONFIG_PATH)
+    except Exception as e:
+        logger.warning("metrics_persist_loop 读取配置失败: %s", e)
+        return
+
+    monitoring_cfg = config.get("monitoring", {})
+    flush_interval = int(monitoring_cfg.get("flush_interval_minutes", 60))
+    if flush_interval <= 0:
+        flush_interval = 60
+
+    baseline = metrics_collector.snapshot()
+    current_date = datetime.now().date()
+
+    while True:
+        try:
+            now = datetime.now()
+            next_flush = now + timedelta(minutes=flush_interval)
+            next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
+            sleep_until = min(next_flush, next_midnight)
+            await asyncio.sleep((sleep_until - now).total_seconds())
+
+            current_snap = metrics_collector.snapshot()
+            delta = compute_delta(current_snap, baseline)
+            today = datetime.now().date()
+
+            if today != current_date:
+                # 跨天：delta 归入旧日期
+                target_date = current_date.isoformat()
+                current_date = today
+            else:
+                target_date = current_date.isoformat()
+
+            await asyncio.to_thread(metrics_store.upsert_daily, target_date, delta)
+            baseline = current_snap
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("监控指标持久化失败: %s", e)
+            # 失败时不重置 baseline，下次重试
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI 生命周期：启动时初始化资源，关闭时释放。
@@ -736,6 +839,13 @@ async def lifespan(app: FastAPI):
     monitoring_enabled = monitoring_cfg.get("enabled", True)
     if monitoring_enabled:
         metrics_collector = MetricsCollector()
+        if monitoring_cfg.get("daily_persistence", True):
+            try:
+                metrics_store = MetricsStore(db_path=sqlite_path)
+                logger.info("MetricsStore 已初始化: %s", sqlite_path)
+            except Exception as e:
+                logger.warning("MetricsStore 初始化失败，按天持久化降级: %s", e)
+                metrics_store = None
         audit_log_path = monitoring_cfg.get("audit_log_path", "data/audit.jsonl")
         audit_buffer_size = int(monitoring_cfg.get("audit_buffer_size", 1000))
         audit_logger = AuditLogger(
@@ -749,7 +859,10 @@ async def lifespan(app: FastAPI):
         try:
             security_cfg = config.get("security", {})
             approval_timeout = float(security_cfg.get("approval_timeout_seconds", 300))
-            approval_manager = ApprovalManager(timeout=approval_timeout)
+            approval_manager = ApprovalManager(
+                timeout=approval_timeout,
+                metrics=metrics_collector,
+            )
             logger.info("ApprovalManager 已初始化: timeout=%ss", approval_timeout)
         except Exception as e:
             logger.warning("ApprovalManager 初始化失败: %s", e)
@@ -802,30 +915,31 @@ async def lifespan(app: FastAPI):
             # 1. 初始化 SkillLoader 并发现本地 Skill
             skill_loader = SkillLoader()
             discovered = skill_loader.discover()
+            # 供 orchestrator._build_active_skills_section 使用（L2 body 注入）
+            orchestrator.skill_loader = skill_loader
             logger.info(
                 "已发现 %d 个本地 Skill: %s",
                 len(discovered),
                 [m.name for m in discovered],
             )
 
-            # 2. 按配置加载 Skill 到 registry 的 Deferred Tier
+            # 2. 为每个 discovered skill 注册激活按钮到 Core Tier
+            #    （对齐 agentskills.io: 不再 importlib 加载 tools.py，改为 L1 stub + L2 body 按需注入）
             skills_cfg = config.get("skills", {}) or {}
-            for skill_name in skills_cfg.get("hermes", []) or []:
-                try:
-                    skill = skill_loader.load(skill_name)
-                    if skill is None:
-                        logger.error("Skill 加载失败（未找到）: %s", skill_name)
-                        continue
-                    load_skill_to_registry(orchestrator.tool_registry, skill)
-                    logger.info(
-                        "已加载 Skill: %s（%d 个工具）",
-                        skill_name,
-                        len(skill.tools),
-                    )
-                except Exception as e:
-                    logger.error("Skill '%s' 加载失败: %s", skill_name, e)
+            if _make_skill_activate_handler is not None and register_skill_stub is not None:
+                for meta in discovered:
+                    try:
+                        handler = _make_skill_activate_handler(
+                            skill_loader, orchestrator, meta.name
+                        )
+                        register_skill_stub(orchestrator.tool_registry, meta, handler)
+                        logger.info("已注册 Skill 激活按钮: %s", meta.name)
+                    except Exception as e:
+                        logger.error("Skill '%s' 注册失败: %s", meta.name, e)
+            else:
+                logger.warning("register_skill_stub / _make_skill_activate_handler 不可用，跳过 Skill stub 注册")
 
-            # 3. 连接 MCP Server 并注册工具到 registry 的 Deferred Tier
+            # 3. 连接 MCP Server 并注册工具到 registry 的 Core Tier
             mcp_manager = MCPManager()
             for mcp_def in skills_cfg.get("mcp", []) or []:
                 try:
@@ -836,11 +950,14 @@ async def lifespan(app: FastAPI):
                             registry=orchestrator.tool_registry,
                             mcp_manager=mcp_manager,
                             server_name=server_def.name,
+                            hil=mcp_def.get("hil", True),
+                            advertise_threshold=skills_cfg.get("mcp_advertise_threshold", 30),
                         )
                         logger.info(
-                            "已连接 MCP Server: %s（%d 个工具）",
+                            "已连接 MCP Server: %s（%d 个工具，hil=%s）",
                             server_def.name,
                             count,
+                            mcp_def.get("hil", True),
                         )
                     # add_server 失败时已由 MCPManager 记录 error 日志
                 except Exception as e:
@@ -849,6 +966,19 @@ async def lifespan(app: FastAPI):
                         mcp_def.get("name", "?"),
                         e,
                     )
+
+            # 4. 构建 MCP HIL 配置并注入 PolicyEngine（支持热更新）
+            mcp_hil_config = {
+                m.get("name", ""): m.get("hil", True)
+                for m in (skills_cfg.get("mcp", []) or [])
+            }
+            if (
+                hasattr(orchestrator, "policy_engine")
+                and orchestrator.policy_engine is not None
+                and mcp_hil_config
+            ):
+                orchestrator.policy_engine.set_mcp_hil_config(mcp_hil_config)
+                logger.info("已注入 MCP HIL 配置: %s", mcp_hil_config)
         except Exception as e:
             logger.error("Skill/MCP 扩展加载失败（整体降级）: %s", e)
             # 不抛异常，服务继续启动（纯内置工具模式）
@@ -856,18 +986,29 @@ async def lifespan(app: FastAPI):
     # Phase 8 Task 6: 注册 Skill 管理工具（register_skill_tools）
     if SKILL_TOOLS_AVAILABLE and orchestrator is not None and orchestrator.tool_registry is not None:
         try:
-            register_skill_tools(orchestrator.tool_registry, skill_loader)
+            register_skill_tools(orchestrator.tool_registry, skill_loader, orchestrator)
             skill_tools_registered = True
             logger.info("Skill 管理工具已注册（Core Tier）")
         except Exception as e:
             logger.error("注册 Skill 管理工具失败: %s", e)
 
     # 从持久化状态恢复 Skill 的 disabled 标记
-    if skill_loader is not None:
+    # 启动期 discover 循环已为所有 skill 注册 stub（保持 schema 稳定），
+    # 此处对 disabled 列表中的 skill 调 disable_skill 实现软禁用：
+    # schema 标 enabled: False，工具仍在 registry 但执行抛 ToolNotFoundError。
+    if skill_loader is not None and orchestrator is not None and orchestrator.tool_registry is not None:
         try:
             skill_state = _load_skill_state()
             for skill_name in skill_state.get("disabled", []):
-                logger.info("Skill 处于禁用状态: %s（启动时跳过注册）", skill_name)
+                try:
+                    orchestrator.tool_registry.disable_skill(skill_name)
+                    logger.info(
+                        "Skill 已注册 stub 并标记为 disabled: %s", skill_name
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Skill %s 标记 disabled 失败: %s", skill_name, e
+                    )
         except Exception as e:
             logger.warning("恢复 Skill 状态失败: %s", e)
 
@@ -966,6 +1107,11 @@ async def lifespan(app: FastAPI):
 
     # 启动定时清理古早会话的后台任务
     cleanup_task = asyncio.create_task(cleanup_loop())
+
+    # 启动监控指标按天持久化后台任务
+    if metrics_store is not None and metrics_collector is not None:
+        metrics_persist_task = asyncio.create_task(metrics_persist_loop())
+        logger.info("监控指标持久化任务已启动")
 
     # Phase 6: 启动 CronScheduler 后台调度循环
     if CronScheduler is not None and orchestrator is not None:
@@ -1107,6 +1253,18 @@ async def lifespan(app: FastAPI):
             await cleanup_task
         except asyncio.CancelledError:
             pass
+        # 取消监控指标持久化任务
+        if metrics_persist_task is not None:
+            metrics_persist_task.cancel()
+            try:
+                await metrics_persist_task
+            except asyncio.CancelledError:
+                pass
+        if metrics_store is not None:
+            try:
+                metrics_store.close()
+            except Exception as e:
+                logger.warning("关闭 MetricsStore 失败: %s", e)
         # Phase 6: 停止 CronScheduler
         if cron_scheduler is not None:
             try:
@@ -1681,6 +1839,50 @@ def get_metrics():
     return JSONResponse(metrics_collector.snapshot())
 
 
+@app.get("/metrics/history")
+def get_metrics_history(days: int = Query(default=30, ge=1, le=90)):
+    """返回最近 N 天的监控历史数据（按日期升序）。
+
+    用于前端监控面板的历史趋势展示。若持久化未启用或 store 未初始化，
+    返回空列表。
+    """
+    if metrics_store is None:
+        return JSONResponse([])
+    try:
+        records = metrics_store.get_history(days)
+        return JSONResponse(records)
+    except Exception as e:
+        logger.error("查询监控历史失败: %s", e)
+        return JSONResponse([], status_code=500)
+
+
+@app.get("/metrics/signals")
+def get_signals_metrics():
+    """Phase 2 反馈监控：返回信号池仪表盘数据。
+
+    用于监控面板渲染"攻略进度条"，按 section 分组展示信号累积状态。
+    若 orchestrator 或 signal_pool 未初始化，返回空结构。
+    """
+    if orchestrator is None or getattr(orchestrator, "signal_pool", None) is None:
+        return JSONResponse({
+            "signals": [],
+            "sections": {},
+            "summary": {},
+            "threshold": 7,
+        })
+    try:
+        return JSONResponse(orchestrator.signal_pool.get_dashboard_data())
+    except Exception as e:
+        logger.warning("信号池仪表盘数据获取失败: %s", e)
+        return JSONResponse({
+            "signals": [],
+            "sections": {},
+            "summary": {},
+            "threshold": 7,
+            "error": str(e),
+        })
+
+
 @app.get("/tools")
 async def list_tools_inventory():
     """返回当前工具清单（按 Tier 分类）。
@@ -1736,9 +1938,15 @@ def resolve_approval(approval_id: str, req: ApprovalResolveRequest):
         raise HTTPException(status_code=503, detail="审批管理器未初始化")
     if req.decision not in ("approve", "deny"):
         raise HTTPException(status_code=400, detail="decision 必须是 approve 或 deny")
-    ok = approval_manager.resolve(approval_id, req.decision)
+    ok = approval_manager.resolve(approval_id, req.decision, req.reason)
     if not ok:
         raise HTTPException(status_code=404, detail="审批请求不存在或已处理")
+    # Phase 2 反馈监控：用户主动 approve/deny 上报（timeout 在 approval.py 内独立上报）
+    if metrics_collector is not None:
+        try:
+            metrics_collector.observe_approval_decision(req.decision)
+        except Exception:
+            pass
     logger.info("审批 %s 已 %s", approval_id, req.decision)
     return ApprovalResolveResponse(
         status="resolved",
@@ -1813,6 +2021,16 @@ def create_schedule(req: ScheduleCreateRequest):
             CronExpr(req.cron)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"cron 表达式非法: {e}")
+    # 校验 workflow 配置（若提供）
+    if req.workflow:
+        try:
+            from .tasks.workflow import WorkflowSpec
+            WorkflowSpec.from_dict(req.workflow)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"workflow 配置非法: {e}")
+        except ImportError:
+            # workflow 模块不可用时仅记录，不阻断创建（向后兼容）
+            logger.warning("workflow 模块不可用，跳过 workflow 配置校验")
     try:
         sched_id = cron_scheduler.add_schedule({
             "id": req.id,
@@ -1820,6 +2038,7 @@ def create_schedule(req: ScheduleCreateRequest):
             "cron": req.cron,
             "task": req.task,
             "enabled": req.enabled,
+            "workflow": req.workflow,
         })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1845,7 +2064,7 @@ def update_schedule(schedule_id: str, req: ScheduleUpdateRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="调度项不存在")
     # 判断是否需要重启：仅 enabled 变更不需要
-    needs_restart = any(k in fields for k in ("cron", "task", "name"))
+    needs_restart = any(k in fields for k in ("cron", "task", "name", "workflow"))
     return {"status": "ok", "needs_restart": needs_restart}
 
 
@@ -2547,61 +2766,111 @@ def list_skills():
 
 @app.get("/skills/{name}")
 def get_skill(name: str):
-    """获取指定 Skill 的详细信息。"""
+    """获取指定 Skill 的详细信息。
+
+    基于 SkillMeta（来自 ``_metas`` 缓存或 ``discover()``）返回元数据，
+    不再调 ``skill_loader.load()`` 读空的 ``tools.py``。同时返回软禁用状态
+    与 stub 注册状态。
+    """
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
-    try:
-        skill = skill_loader.load(name)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"加载 Skill 失败: {e}")
-    if skill is None:
+    if orchestrator is None or orchestrator.tool_registry is None:
+        raise HTTPException(status_code=503, detail="ToolRegistry 尚未初始化")
+
+    # 优先从 _metas 缓存取 meta，未命中则 discover 一次刷新缓存
+    meta = None
+    if hasattr(skill_loader, "_metas"):
+        meta = skill_loader._metas.get(name)
+    if meta is None:
+        try:
+            for m in skill_loader.discover():
+                if m.name == name:
+                    meta = m
+                    break
+        except Exception as e:
+            logger.warning("discover 扫描失败: %s", e)
+    if meta is None:
         raise HTTPException(status_code=404, detail=f"Skill '{name}' 不存在")
-    skill_state = _load_skill_state()
-    disabled_list = skill_state.get("disabled", [])
+
+    registry = orchestrator.tool_registry
+    # 公开 API get_full_schema 返回空 dict 表示工具未注册
+    stub_schema = registry.get_full_schema(f"skill__{name}") if hasattr(registry, "get_full_schema") else {}
     return {
-        "name": skill.name,
-        "system_prompt": skill.system_prompt,
-        "disabled": skill.name in disabled_list,
-        "tools": [
-            {
-                "name": t.get("name", ""),
-                "description": t.get("description", ""),
-                "input_schema": t.get("input_schema", {}),
-            }
-            for t in skill.tools
-        ],
+        "name": meta.name,
+        "version": meta.version,
+        "description": meta.description,
+        "body_preview": (meta.body or "")[:200],
+        "resources": meta.resources or [],
+        "disabled": registry.is_skill_disabled(name),
+        "stub_registered": bool(stub_schema),
     }
 
 
 @app.post("/skills/{name}/reload")
 def reload_skill(name: str):
-    """热重载指定 Skill：从磁盘重新加载并注册到 registry。"""
+    """热重载指定 Skill：双路径注册（stub 激活按钮 + 业务工具）。"""
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
         raise HTTPException(status_code=503, detail="ToolRegistry 尚未初始化")
 
     try:
-        # 清除前缀匹配的旧工具
+        registry = orchestrator.tool_registry
+
+        # 清除前缀匹配的旧业务工具（skill__{name}__*）
+        # 注意：保留 skill__{name} 激活按钮本身，由 register_skill_stub 覆盖更新
         prefix = f"skill__{name}__"
         for store_key in ("_core_tools", "_deferred_tools", "_loaded_tools"):
-            store = getattr(orchestrator.tool_registry, store_key, {})
+            store = getattr(registry, store_key, {})
             for tname in list(store.keys()):
                 if tname.startswith(prefix):
-                    orchestrator.tool_registry.unregister(tname)
+                    registry.unregister(tname)
+        # 同步移除旧激活按钮（register_skill_stub 会重新注册）
+        try:
+            registry.unregister(f"skill__{name}")
+        except Exception:
+            pass
 
-        # 重新加载 Skill
+        # 重新加载 Skill（reload 会清 _skills/_metas 缓存并重新 import）
         skill = skill_loader.reload(name)
         if skill is None:
             raise HTTPException(status_code=404, detail=f"Skill '{name}' 不存在或加载失败")
 
-        # 注册到 registry
-        load_skill_to_registry(orchestrator.tool_registry, skill)
-        logger.info("Skill 已热重载: %s（%d 个工具）", name, len(skill.tools))
+        stub_registered = False
+
+        # 新路径：注册 skill__{name} 激活按钮到 Core Tier
+        if register_skill_stub is not None and _make_skill_activate_handler is not None:
+            try:
+                # 获取最新 meta（reload 已刷新 _metas 缓存）
+                meta = None
+                if hasattr(skill_loader, "_metas"):
+                    meta = skill_loader._metas.get(name)
+                if meta is None and hasattr(skill_loader, "_parse_meta"):
+                    skill_file = Path(skill_loader.skill_dir) / name / "SKILL.md"
+                    if skill_file.exists():
+                        meta = skill_loader._parse_meta(skill_file)
+                if meta is not None:
+                    handler = _make_skill_activate_handler(
+                        skill_loader, orchestrator, name
+                    )
+                    register_skill_stub(registry, meta, handler)
+                    stub_registered = True
+            except Exception as e:
+                logger.error("reload 时注册 skill stub %s 失败: %s", name, e)
+
+        # 旧路径：注册业务工具到 Deferred Tier（向后兼容，tools.py 非空时）
+        if skill.tools:
+            load_skill_to_registry(registry, skill)
+
+        logger.info(
+            "Skill 已热重载: %s（stub=%s，%d 个业务工具）",
+            name, stub_registered, len(skill.tools),
+        )
         return {
             "status": "reloaded",
             "skill_name": name,
             "tool_count": len(skill.tools),
+            "stub_registered": stub_registered,
             "message": f"Skill '{name}' 已重新加载",
         }
     except HTTPException:
@@ -2629,32 +2898,63 @@ def toggle_skill(name: str):
         raise HTTPException(status_code=403, detail=f"Skill '{name}' 已锁定，不可切换")
 
     if name in disabled_list:
-        # 启用：从禁用清单移除，重新加载并注册
+        # 启用：从禁用清单移除，清除软禁用标记，重新加载并走双路径注册
         disabled_list.remove(name)
         state["disabled"] = disabled_list
         _save_skill_state(state)
+
+        # 清除软禁用标记（使 schema 中 enabled: False 移除）
+        orchestrator.tool_registry.enable_skill(name)
+
+        stub_registered = False
         try:
             skill_loader.unload(name)
             skill = skill_loader.load(name)
             if skill is not None:
-                load_skill_to_registry(orchestrator.tool_registry, skill)
+                # 新路径：注册 skill__{name} 激活按钮到 Core Tier
+                if register_skill_stub is not None and _make_skill_activate_handler is not None:
+                    try:
+                        meta = None
+                        if hasattr(skill_loader, "_metas"):
+                            meta = skill_loader._metas.get(name)
+                        if meta is None and hasattr(skill_loader, "_parse_meta"):
+                            skill_file = Path(skill_loader.skill_dir) / name / "SKILL.md"
+                            if skill_file.exists():
+                                meta = skill_loader._parse_meta(skill_file)
+                        if meta is not None:
+                            handler = _make_skill_activate_handler(
+                                skill_loader, orchestrator, name
+                            )
+                            register_skill_stub(orchestrator.tool_registry, meta, handler)
+                            stub_registered = True
+                    except Exception as e:
+                        logger.error("启用 Skill 时注册 stub %s 失败: %s", name, e)
+
+                # 旧路径：注册业务工具到 Deferred Tier（向后兼容）
+                if skill.tools:
+                    load_skill_to_registry(orchestrator.tool_registry, skill)
         except Exception as e:
             logger.warning("启用 Skill 后重新加载失败: %s", e)
-        logger.info("Skill '%s' 已启用", name)
-        return {"status": "enabled", "skill_name": name, "message": f"Skill '{name}' 已启用"}
+        logger.info("Skill '%s' 已启用（stub=%s）", name, stub_registered)
+        return {
+            "status": "enabled",
+            "skill_name": name,
+            "stub_registered": stub_registered,
+            "message": f"Skill '{name}' 已启用",
+        }
     else:
-        # 禁用：从 registry 移除工具，记入禁用清单
-        prefix = f"skill__{name}__"
-        for store_key in ("_core_tools", "_deferred_tools", "_loaded_tools"):
-            store = getattr(orchestrator.tool_registry, store_key, {})
-            for tname in list(store.keys()):
-                if tname.startswith(prefix):
-                    orchestrator.tool_registry.unregister(tname)
+        # 禁用：软禁用（schema 标 enabled: False，执行抛 ToolNotFoundError），
+        # 工具仍保留在 registry 中保持 schema 稳定，记入禁用清单
+        orchestrator.tool_registry.disable_skill(name)
         disabled_list.append(name)
         state["disabled"] = disabled_list
         _save_skill_state(state)
-        logger.info("Skill '%s' 已禁用", name)
-        return {"status": "disabled", "skill_name": name, "message": f"Skill '{name}' 已禁用"}
+        logger.info("Skill '%s' 已禁用（软禁用）", name)
+        return {
+            "status": "disabled",
+            "skill_name": name,
+            "message": f"Skill '{name}' 已禁用",
+        }
 
 
 @app.delete("/skills/{name}")
@@ -2701,20 +3001,47 @@ def delete_skill(name: str):
 
 
 @app.get("/sessions", response_model=SessionListResponse)
-def list_sessions():
-    """列出所有会话。"""
+def list_sessions(exclude_cron: bool = False, cron_only: bool = False):
+    """列出所有会话。
+
+    cron 会话（session_id 形如 ``cron:{schedule_id}``）若未设置 title，
+    在此回退到 schedule.name，避免 cron 会话显示随机串。
+
+    查询参数：
+    - ``exclude_cron=true``：过滤掉 cron 会话（聊天页使用，避免调度会话污染会话列表）
+    - ``cron_only=true``：仅返回 cron 会话（调度页切换器使用）
+    """
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     try:
         sessions = session_logger.list_sessions()
-        items = [
-            SessionItem(
-                id=s.get("id", ""),
-                created_at=s.get("created_at", ""),
-                updated_at=s.get("updated_at", ""),
+        items = []
+        for s in sessions:
+            sid = s.get("id", "")
+            is_cron = sid.startswith("cron:")
+            # 过滤参数互斥处理
+            if exclude_cron and is_cron:
+                continue
+            if cron_only and not is_cron:
+                continue
+            title = s.get("title")
+            # cron 会话兜底：title 缺失时查 CronScheduler 取 schedule.name
+            if not title and is_cron and cron_scheduler is not None:
+                sched_id = sid[len("cron:"):]
+                try:
+                    sched = cron_scheduler.get_schedule(sched_id)
+                    if sched is not None:
+                        title = sched.get("name")
+                except Exception:
+                    pass
+            items.append(
+                SessionItem(
+                    id=sid,
+                    created_at=s.get("created_at", ""),
+                    updated_at=s.get("updated_at", ""),
+                    title=title,
+                )
             )
-            for s in sessions
-        ]
         return SessionListResponse(sessions=items)
     except Exception as e:
         logger.exception("列出会话失败: %s", e)
@@ -2765,6 +3092,15 @@ def delete_session(session_id: str):
         deleted = session_logger.delete_session(session_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        # 同步清理 todo 持久化文件（避免残留）
+        if (
+            orchestrator is not None
+            and getattr(orchestrator, "todo_registry", None) is not None
+        ):
+            try:
+                orchestrator.todo_registry.delete(session_id)
+            except Exception as e:
+                logger.warning("清理会话 todo 文件失败 %s: %s", session_id, e)
         logger.info("已删除会话: %s", session_id)
         return DeleteSessionResponse(status="deleted", session_id=session_id)
     except HTTPException:
@@ -3094,13 +3430,18 @@ _RESTART_REQUIRED_KEYS = {
     "server",
     "monitoring.audit_log_path",
     # Phase 4: skills.* 涉及进程/连接生命周期，无法热更新
-    "skills.hermes",
     "skills.mcp",
-    # Phase 5: security.rules / security.enabled 涉及 PolicyEngine 重建，需重启
+    # Phase 5: security.rules 涉及 PolicyEngine 规则重建，需重启
+    # security.enabled 通过 _RUNTIME_HOTUPDATE_MAP 热更新（property setter
+    # 仅翻转 _enabled 布尔，不重建 PolicyEngine 实例）
     "security.rules",
-    "security.enabled",
-    # Phase 9: guardrails 涉及 GuardrailEngine 重建，需重启
-    "guardrails",
+    # Phase 9: guardrails 的 enabled 字段通过 _RUNTIME_HOTUPDATE_MAP 热更新
+    # （property setter 仅翻转布尔不重建 InjectionGuard/OutputFilter 内部实例）；
+    # 其他结构性字段变更需重启重建 GuardrailEngine
+    "guardrails.input_scan.action",
+    "guardrails.sanitizer.trusted_tools",
+    "guardrails.sanitizer.max_output_length",
+    "guardrails.output_filter.enable_bank_card",
     # Condenser: strategy 变更涉及 Condenser 实例类型切换（masking ↔ llm_summary），需重启
     "memory.condenser.strategy",
     # Phase 6: plan 模式下 TaskManager 使用内存对象，无文件路径配置；
@@ -3135,6 +3476,13 @@ _RUNTIME_HOTUPDATE_MAP = {
     # MemoryRetriever 持有同一引用，下次检索排序立即生效）
     "memory.decay_rate": ("decay.decay_rate", float),
     "memory.frequency_weight": ("decay.frequency_weight", float),
+    # 防护系统开关热更新：通过 property setter 翻转 enabled 布尔即时生效
+    # PolicyEngine.enabled setter：仅记日志，pending 审批由 _apply_runtime_config 专项处理
+    "security.enabled": ("policy_engine.enabled", bool),
+    # GuardrailEngine 三个 setter：仅翻转 _xxx_enabled 布尔，不重建内部实例
+    "guardrails.input_scan.enabled": ("guardrail_engine.input_scan_enabled", bool),
+    "guardrails.sanitizer.enabled": ("guardrail_engine.sanitizer_enabled", bool),
+    "guardrails.output_filter.enabled": ("guardrail_engine.output_filter_enabled", bool),
 }
 
 
@@ -3423,6 +3771,32 @@ def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
         except Exception as e:
             logger.warning("热更新 memory.condenser 失败: %s", e)
             applied["memory.condenser"] = False
+
+    # 防护开关专项：关闭 HIL 时批量 deny pending 审批，唤醒所有
+    # wait_for_decision 协程，避免它们傻等 approval_manager.timeout 秒超时。
+    # 仅在 security.enabled 被热更新且新值为 False 时触发。
+    sec_cfg = new_config.get("security")
+    if (
+        isinstance(sec_cfg, dict)
+        and "security.enabled" in applied
+        and applied["security.enabled"]
+        and not bool(sec_cfg.get("enabled", True))
+    ):
+        if approval_manager is not None:
+            try:
+                n = approval_manager.resolve_all("deny", "HIL 已关闭，审批自动拒绝")
+                if n > 0:
+                    logger.warning("HIL 关闭，自动 deny %d 条 pending 审批", n)
+                    if audit_logger is not None:
+                        audit_logger.log_guardrail_decision(
+                            layer="policy_switch",
+                            action="disable",
+                            reason=f"HIL 关闭，自动 deny {n} 条 pending 审批",
+                            session_id="system",
+                            risk_level="high",
+                        )
+            except Exception as e:
+                logger.warning("HIL 关闭专项处理失败: %s", e)
 
     return applied
 
@@ -3723,6 +4097,30 @@ def serve_chat():
         raise HTTPException(status_code=404, detail="对话页未找到")
     return FileResponse(
         chat_path,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/monitor")
+def serve_monitor():
+    """提供监控面板页。"""
+    monitor_path = os.path.join(_WEB_DIR, "monitor.html")
+    if not os.path.exists(monitor_path):
+        raise HTTPException(status_code=404, detail="监控页未找到")
+    return FileResponse(
+        monitor_path,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/scheduler")
+def serve_scheduler():
+    """提供调度管理页。"""
+    scheduler_path = os.path.join(_WEB_DIR, "scheduler.html")
+    if not os.path.exists(scheduler_path):
+        raise HTTPException(status_code=404, detail="调度页未找到")
+    return FileResponse(
+        scheduler_path,
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 

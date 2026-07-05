@@ -1,6 +1,6 @@
 """文件摘要上下文注入器。
 
-在每次对话构建时，将会话中已上传且处理完成的文件摘要注入到上下文
+在每次对话构建时，将会话中已上传的文件（含处理中状态）摘要注入到上下文
 （``messages[0]``），与记忆检索注入拼接，受 token 预算控制。
 """
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class FileContextInjector:
     """文件摘要上下文注入器。
 
-    从 UploadManager 获取当前会话已处理完成的文件，格式化为注入文本。
+    从 UploadManager 获取当前会话已上传的文件（done/pending/processing），格式化为注入文本。
 
     Attributes:
         upload_manager: 上传管理器实例。
@@ -50,7 +50,7 @@ class FileContextInjector:
             session_id: 会话 ID。
 
         Returns:
-            注入文本。无已完成文件时返回空字符串。
+            注入文本。无活跃文件（done/pending/processing）时返回空字符串。
         """
         try:
             files = self.upload_manager.get_session_files(session_id)
@@ -58,34 +58,45 @@ class FileContextInjector:
             logger.error("获取会话文件列表失败: %s", e)
             return ""
 
-        # 仅取 etl_status='done' 的文件
-        done_files = [f for f in files if f.get("etl_status") == "done"]
-        if not done_files:
+        # 取 etl_status 为 done/pending/processing 的文件（failed/disk_expired 排除）
+        # 放宽原 done-only 过滤：让用户上传后第一轮（ETL 处理中）即可被 LLM 感知
+        active_files = [
+            f for f in files
+            if f.get("etl_status") in ("done", "pending", "processing")
+        ]
+        if not active_files:
             return ""
 
         # 限制数量（取最新的 max_files 个）
-        done_files = done_files[:self.max_files]
+        active_files = active_files[:self.max_files]
 
-        # 计算知识库总览（跨会话全局）
-        total_chunks = sum(f.get("chunk_count", 0) for f in done_files)
+        # 统计已处理/处理中数量
+        done_count = sum(1 for f in active_files if f.get("etl_status") == "done")
+        pending_count = len(active_files) - done_count
         lines = [
-            f"📚 知识库共 {len(done_files)} 个文件，",
-            f"可通过 file_query 搜索其内容（全局，不限会话）",
+            f"📚 已上传文件 {len(active_files)} 个（已处理 {done_count}，处理中 {pending_count}）",
+            f"可通过 file_query 搜索已处理文件内容",
+            "",
+            "## 已上传文件",
         ]
         total_chars = sum(len(l) for l in lines)
-        lines.append("")
 
-        lines.append("## 已上传文件")
-        total_chars += len(lines[-1])
-
-        for f in done_files:
+        for f in active_files:
             name = f.get("original_name", "unknown")
             file_type = f.get("type", "")
+            etl_status = f.get("etl_status", "pending")
             is_image = file_type in (".png", ".jpg", ".jpeg", ".gif")
 
-            if is_image:
+            if etl_status != "done":
+                # 处理中状态：只显示文件名 + 状态标记，不显示摘要/OCR
+                type_label = "图片" if is_image else "文件"
+                line = f"- {name}（{type_label}，处理中）"
+            elif is_image:
                 img_text = f.get("img_text", "")
-                line = f"- {name} ⬤ 图片中的文字：{img_text}"
+                if img_text:
+                    line = f"- {name} ⬤ 图片中的文字：{img_text}"
+                else:
+                    line = f"- {name}（图片，OCR 未提取到文字）"
             else:
                 summary = f.get("summary", "")
                 if summary:
@@ -101,7 +112,7 @@ class FileContextInjector:
             lines.append(line)
             total_chars += len(line)
 
-        if len(lines) == 1:
-            return ""  # 只有标题，没有实际文件
+        if len(lines) == 4:
+            return ""  # 只有标题，没有实际文件（token 预算耗尽）
 
         return "\n".join(lines)

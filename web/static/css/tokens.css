@@ -39,6 +39,8 @@
   --success-dim: #4a6b3a;
   --warning: #e5c07b;
   --warning-dim: #8a6b2f;
+  --info: #61afef;
+  --info-dim: #2a5f8a;
 
   /* 阴影 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -81,6 +83,8 @@
   --success-dim: #c4dab0;
   --warning: #b8941f;
   --warning-dim: #ecd9a0;
+  --info: #2a6fc9;
+  --info-dim: #a8c8e8;
 
   --shadow-sm: 0 1px 2px rgba(42, 34, 24, 0.08);
   --shadow-md: 0 4px 12px rgba(42, 34, 24, 0.1);

@@ -42,6 +42,8 @@ class ApprovalRequest:
         created_at: 创建时间 ISO 字符串。
         status: 当前状态（PENDING/APPROVED/DENIED/EXPIRED）。
         decision_reason: 决定原因（用户拒绝时的备注或超时提示），可为 None。
+        tool_kind: 工具类别（generic/skill/mcp/file/shell/memory），
+            用于前端弹窗差异化渲染。默认 "generic"。
     """
 
     approval_id: str
@@ -52,21 +54,35 @@ class ApprovalRequest:
     created_at: str
     status: str = PENDING
     decision_reason: Optional[str] = None
+    tool_kind: str = "generic"
 
 
 class ApprovalManager:
-    def __init__(self, timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 300.0,
+        metrics: Optional["object"] = None,
+    ) -> None:
         """初始化审批管理器。
 
         参数:
             timeout: 默认审批超时秒数，超时自动拒绝。默认 300 秒。
+            metrics: 可选 MetricsCollector 实例，用于上报 approve/deny/timeout
+                决策计数。为 None 时不上报（向后兼容）。
         """
         self.timeout = timeout
         self._requests: Dict[str, ApprovalRequest] = {}
         self._events: Dict[str, asyncio.Event] = {}
+        # Phase 2 反馈监控：注入 metrics 用于决策计数
+        self.metrics = metrics
 
     def create_request(
-        self, tool_name: str, tool_input: dict, reason: str, risk_level: str
+        self,
+        tool_name: str,
+        tool_input: dict,
+        reason: str,
+        risk_level: str,
+        tool_kind: str = "generic",
     ) -> str:
         """创建审批请求，返回 approval_id。
 
@@ -84,6 +100,7 @@ class ApprovalManager:
             created_at=datetime.now().isoformat(),
             status=PENDING,
             decision_reason=None,
+            tool_kind=tool_kind,
         )
         self._requests[approval_id] = request
         self._events[approval_id] = asyncio.Event()
@@ -124,6 +141,12 @@ class ApprovalManager:
             await asyncio.wait_for(event.wait(), timeout=actual_timeout)
         except asyncio.TimeoutError:
             self.resolve(approval_id, "deny", "审批超时自动拒绝")
+            # Phase 2 反馈监控：超时独立上报（resolve 内部不重复上报）
+            if self.metrics is not None:
+                try:
+                    self.metrics.observe_approval_decision("timeout")
+                except Exception:
+                    pass
             return ("deny", "审批超时自动拒绝")
         except asyncio.CancelledError:
             raise
@@ -175,11 +198,46 @@ class ApprovalManager:
         )
         return True
 
+    def resolve_all(self, decision: str, reason: Optional[str] = None) -> int:
+        """批量 resolve 所有 PENDING 状态的审批。
+
+        用于 HIL 开关关闭场景：``_apply_runtime_config`` 检测到
+        ``security.enabled`` 翻转为 False 时调用此方法，唤醒所有
+        ``wait_for_decision`` 协程，避免它们傻等 ``timeout`` 秒超时。
+
+        参数:
+            decision: "approve" 或 "deny"（其他值跳过所有项，返回 0）。
+            reason: 决定原因，可为 None。
+
+        返回:
+            int: 成功处理的 PENDING 审批数量。
+
+        逻辑:
+            - 遍历 ``_requests`` 的快照（``list(self._requests.keys())``），
+              避免迭代过程中字典变更。
+            - 对每条 PENDING 审批调 ``resolve``，复用其幂等性与 event.set()。
+            - 非 PENDING 审批与非法 decision 自动跳过。
+        """
+        if decision not in ("approve", "deny"):
+            return 0
+        count = 0
+        for approval_id in list(self._requests.keys()):
+            if self.resolve(approval_id, decision, reason):
+                count += 1
+        if count > 0:
+            logger.info(
+                "批量 resolve %d 条审批 decision=%s reason=%s",
+                count,
+                decision,
+                reason,
+            )
+        return count
+
     def list_pending(self) -> list:
         """返回所有 PENDING 状态的审批摘要列表。
 
         每条摘要为 dict：{approval_id, tool_name, tool_input, reason,
-        created_at}（不含 status 与 decision_reason）。
+        created_at, tool_kind}（不含 status 与 decision_reason）。
         """
         return [
             {
@@ -188,6 +246,7 @@ class ApprovalManager:
                 "tool_input": req.tool_input,
                 "reason": req.reason,
                 "created_at": req.created_at,
+                "tool_kind": req.tool_kind,
             }
             for req in self._requests.values()
             if req.status == PENDING
@@ -197,7 +256,7 @@ class ApprovalManager:
         """返回单条审批的状态摘要。
 
         摘要 dict：{approval_id, tool_name, tool_input, reason, risk_level,
-        created_at, status, decision_reason}。
+        created_at, status, decision_reason, tool_kind}。
         approval_id 不存在返回 None。
         """
         req = self._requests.get(approval_id)
@@ -212,4 +271,5 @@ class ApprovalManager:
             "created_at": req.created_at,
             "status": req.status,
             "decision_reason": req.decision_reason,
+            "tool_kind": req.tool_kind,
         }

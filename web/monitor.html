@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="amber">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>hermes-lite · 监控</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
+
+  <!-- CSS: tokens → base → components → monitor layout -->
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/monitor.css">
+
+  <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
+  <script src="/static/js/theme.js"></script>
+</head>
+<body>
+
+<div class="monitor-app">
+
+  <!-- 顶栏 -->
+  <nav class="monitor-topbar">
+    <div class="monitor-brand">
+      <a href="/" class="monitor-back" title="返回首页">←</a>
+      <h1 class="monitor-title">监控 <span class="text-muted mono">/monitor</span></h1>
+    </div>
+
+    <div class="monitor-topbar-actions">
+      <!-- 自动刷新间隔 -->
+      <div class="refresh-picker">
+        <span class="refresh-label">刷新</span>
+        <select id="refreshInterval" class="refresh-select" title="自动刷新间隔">
+          <option value="0">关闭</option>
+          <option value="2">2s</option>
+          <option value="5" selected>5s</option>
+          <option value="10">10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+        </select>
+      </div>
+
+      <button class="btn btn-ghost btn-sm" id="btnRefresh" title="立即刷新">↻ 刷新</button>
+      <button class="btn btn-danger btn-sm" id="btnReset" title="重置所有指标">重置指标</button>
+
+      <span class="monitor-last-update text-muted mono" id="lastUpdate">—</span>
+
+      <!-- 主题切换器 -->
+      <button class="theme-toggle icon-btn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
+      <div class="accent-picker" id="accentPicker">
+        <span class="accent-dot accent-amber is-active" data-accent="amber" title="琥珀"></span>
+        <span class="accent-dot accent-teal" data-accent="teal" title="深青"></span>
+        <span class="accent-dot accent-violet" data-accent="violet" title="紫罗兰"></span>
+      </div>
+
+      <a href="/chat" class="monitor-link-chat">对话 →</a>
+    </div>
+  </nav>
+
+  <!-- 主体内容（可滚动） -->
+  <main class="monitor-main" id="monitorMain">
+
+    <!-- ========== 健康概览 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Health</div>
+        <h2 class="section-title">系统健康</h2>
+        <span class="section-status" id="overallStatus">—</span>
+      </div>
+
+      <div class="health-summary">
+        <div class="health-stat health-stat-ok">
+          <div class="health-stat-num" id="healthOk">0</div>
+          <div class="health-stat-label">正常</div>
+        </div>
+        <div class="health-stat health-stat-warn">
+          <div class="health-stat-num" id="healthWarn">0</div>
+          <div class="health-stat-label">警告</div>
+        </div>
+        <div class="health-stat health-stat-crit">
+          <div class="health-stat-num" id="healthCrit">0</div>
+          <div class="health-stat-label">严重</div>
+        </div>
+        <div class="health-stat health-stat-total">
+          <div class="health-stat-num" id="healthTotal">0</div>
+          <div class="health-stat-label">总计</div>
+        </div>
+      </div>
+
+      <div class="health-grid" id="healthGrid">
+        <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 性能指标卡片 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Performance</div>
+        <h2 class="section-title">性能与吞吐</h2>
+      </div>
+
+      <div class="metric-cards" id="metricCards">
+        <div class="metric-card">
+          <div class="metric-card-label">LLM 调用次数</div>
+          <div class="metric-card-value mono" id="llmCallsTotal">0</div>
+          <div class="metric-card-sub text-muted" id="llmCallsSub">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">Token 输入</div>
+          <div class="metric-card-value mono" id="tokensInput">0</div>
+          <div class="metric-card-sub text-muted" id="tokensInputSub">含 cache_read</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">Token 输出</div>
+          <div class="metric-card-value mono" id="tokensOutput">0</div>
+          <div class="metric-card-sub text-muted" id="tokensOutputSub">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">缓存命中率</div>
+          <div class="metric-card-value mono" id="cacheHitRate">—</div>
+          <div class="metric-card-sub text-muted" id="cacheHitSub">cache_read / input</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">LLM 平均延迟</div>
+          <div class="metric-card-value mono" id="llmAvgLatency">—</div>
+          <div class="metric-card-sub text-muted" id="llmLatencySub">min / max</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">工具调用总数</div>
+          <div class="metric-card-value mono" id="toolCallsTotal">0</div>
+          <div class="metric-card-sub text-muted" id="toolCallsSub">错误 0</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">工具平均延迟</div>
+          <div class="metric-card-value mono" id="toolAvgLatency">—</div>
+          <div class="metric-card-sub text-muted" id="toolLatencySub">min / max</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">记忆命中率</div>
+          <div class="metric-card-value mono" id="memoryHitRate">—</div>
+          <div class="metric-card-sub text-muted" id="memoryHitSub">hit / miss</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 每日趋势 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">History</div>
+        <h2 class="section-title">每日趋势</h2>
+        <div class="section-actions">
+          <select id="historyDays" class="refresh-select">
+            <option value="7">近 7 天</option>
+            <option value="14">近 14 天</option>
+            <option value="30" selected>近 30 天</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="btnRefreshHistory" title="刷新历史数据">↻</button>
+        </div>
+      </div>
+      <div class="tool-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th class="num">LLM 调用</th>
+              <th class="num">Token 输入</th>
+              <th class="num">Token 输出</th>
+              <th class="num">工具调用</th>
+              <th class="num">LLM 平均延迟</th>
+              <th class="num">记忆命中率</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr><td colspan="7" class="empty-state-text">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 延迟直方图 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Latency Histogram</div>
+        <h2 class="section-title">延迟分布</h2>
+      </div>
+
+      <div class="hist-grid">
+        <div class="hist-card">
+          <div class="hist-card-title">LLM 延迟分布 <span class="text-muted mono" id="llmHistCount">(0)</span></div>
+          <canvas class="hist-canvas" id="llmHistCanvas" width="600" height="180"></canvas>
+          <div class="hist-legend mono" id="llmHistLegend"></div>
+        </div>
+        <div class="hist-card">
+          <div class="hist-card-title">工具延迟分布 <span class="text-muted mono" id="toolHistCount">(0)</span></div>
+          <canvas class="hist-canvas" id="toolHistCanvas" width="600" height="180"></canvas>
+          <div class="hist-legend mono" id="toolHistLegend"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 工具调用分桶 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Tool Breakdown</div>
+        <h2 class="section-title">工具调用明细</h2>
+      </div>
+
+      <div class="tool-table-wrap">
+        <table class="data-table" id="toolTable">
+          <thead>
+            <tr>
+              <th>工具</th>
+              <th class="num">调用数</th>
+              <th class="num">错误数</th>
+              <th class="num" title="该工具错误数 ÷ 该工具调用数">错误率</th>
+              <th class="num" title="该工具调用数 ÷ 总调用数">占比</th>
+            </tr>
+          </thead>
+          <tbody id="toolTableBody">
+            <tr><td colspan="5" class="empty-state-text">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 审计日志 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Audit Log</div>
+        <h2 class="section-title">审计日志</h2>
+        <div class="section-actions">
+          <select id="auditTypeFilter" class="refresh-select" title="按类型过滤">
+            <option value="all">全部</option>
+            <option value="tool_call">工具调用</option>
+            <option value="guardrail">护栏拦截</option>
+          </select>
+          <select id="auditLimit" class="refresh-select" title="条数">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="audit-list" id="auditList">
+        <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 调度运行 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Schedule Runs</div>
+        <h2 class="section-title">调度运行历史</h2>
+        <div class="section-actions">
+          <select id="runsLimit" class="refresh-select" title="条数">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="runs-summary">
+        <span class="text-muted">最近 <span id="runsCount">0</span> 次 · 成功 <span class="text-success" id="runsSuccess">0</span> · 失败 <span class="text-danger" id="runsFail">0</span></span>
+      </div>
+
+      <div class="runs-list" id="runsList">
+        <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 终止原因分布 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Termination Reasons</div>
+        <h2 class="section-title">终止原因分布</h2>
+      </div>
+      <div id="terminationReasonsBody" class="term-list">
+        <div class="empty-state"><div class="empty-state-text">暂无数据</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 工具错误分类（17 类按阶段分组） ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Tool Error Classes</div>
+        <h2 class="section-title">工具错误分类（17 类按阶段分组）</h2>
+      </div>
+
+      <!-- 顶部：3 个 stage 分区卡片 -->
+      <div class="stage-summary-grid" id="toolErrorClassSummary">
+        <div class="empty-state-text">加载中...</div>
+      </div>
+
+      <!-- 下方：工具错误明细表（双行表头由 JS 动态生成） -->
+      <div class="tool-table-wrap">
+        <table class="data-table" id="toolErrorTable">
+          <thead id="toolErrorClassesHead"></thead>
+          <tbody id="toolErrorClassesBody">
+            <tr><td colspan="20" class="empty-state-text">暂无数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 审批统计 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Approval Decisions</div>
+        <h2 class="section-title">审批统计</h2>
+      </div>
+      <div id="approvalStatsBody" class="approval-cards">
+        <div class="empty-state"><div class="empty-state-text">暂无数据</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 信号池攻略进度条 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Signal Pool</div>
+        <h2 class="section-title">信号池攻略进度条</h2>
+      </div>
+      <div id="signalPoolSummary" class="signal-summary"></div>
+      <div id="signalPoolBody" class="signal-pool-body">
+        <div class="empty-state"><div class="empty-state-text">暂无数据</div></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/monitor.js?v=2"></script>
+</body>
+</html>

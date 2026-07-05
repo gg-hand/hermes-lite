@@ -55,6 +55,13 @@ class RunSummary:
         errors: 错误信息列表。
         llm_summary: 执行摘要文本。默认 = ``assistant_response[:500]`` +
             工具调用摘要；``generate_llm_summary=true`` 时由 LLM 生成精炼摘要。
+        step_traces: step 执行轨迹列表（Task 8.3）。每项为 step_trace.to_dict()
+            序列化的 dict，由 CronScheduler._trigger 从
+            WorkflowResult.step_traces 转换写入。旧路径无 step_traces 时为空列表。
+            ``from_dict`` 对缺失字段 ``.get(default=[])`` 容错。
+        workflow_name: workflow 名称（Task 8.3）。由 CronScheduler 从
+            WorkflowResult.workflow_name 或 schedule.name 写入。
+            为 ``None`` 时调用方可回退到 ``schedule.name``。
     """
 
     schedule_id: str
@@ -69,6 +76,8 @@ class RunSummary:
     outputs: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     llm_summary: str = ""
+    step_traces: List[Dict[str, Any]] = field(default_factory=list)
+    workflow_name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转为 dict（用于 JSON 序列化）。"""
@@ -78,7 +87,8 @@ class RunSummary:
     def from_dict(cls, data: Dict[str, Any]) -> "RunSummary":
         """从 dict 构造（用于 JSON 反序列化）。
 
-        兼容缺失字段（向后兼容旧记录）。
+        兼容缺失字段（向后兼容旧记录）：``step_traces`` 与
+        ``workflow_name`` 缺失时分别使用空列表与 ``None``。
         """
         return cls(
             schedule_id=data.get("schedule_id", ""),
@@ -93,6 +103,9 @@ class RunSummary:
             outputs=data.get("outputs", []) or [],
             errors=data.get("errors", []) or [],
             llm_summary=data.get("llm_summary", ""),
+            # Task 8.3: 新字段容错（向后兼容旧记录）
+            step_traces=data.get("step_traces", []) or [],
+            workflow_name=data.get("workflow_name", None),
         )
 
     def truncate_assistant_response(self) -> None:

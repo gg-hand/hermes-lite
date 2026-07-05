@@ -1,6 +1,6 @@
 """Integration test for full skill lifecycle.
 
-Tests the 5 skill management tools (skill_template / propose_skill / reload_skill /
+Tests the 5 skill management tools (skill__template / propose_skill / reload_skill /
 toggle_skill / list_skills) registered by register_skill_tools, along with
 ToolRegistry.disable_skill / enable_skill / is_skill_disabled.
 """
@@ -60,19 +60,22 @@ class TestSkillLifecycle(TestCase):
         # ==================================================================
         # 1. register_skill_tools  —  all 5 tools are Core-registered
         # ==================================================================
-        for name in ("skill_template", "skill_propose", "skill_reload",
-                     "skill_toggle", "skill_list"):
+        for name in ("skill__template", "skill__propose", "skill__reload",
+                     "skill__toggle", "skill__list"):
             self.assertIn(name, self.registry._core_tools,
                           f"Core tool {name!r} should be registered")
 
         # ==================================================================
-        # 2. skill_template  —  returns template JSON
+        # 2. skill__template  —  returns template JSON
         # ==================================================================
-        tmpl = self._call("skill_template")
+        tmpl = self._call("skill__template")
         self.assertIn("fields", tmpl)
-        self.assertIn("tools_py", tmpl)
-        self.assertIn("my_skill", tmpl["fields"]["name"])
-        self.assertIn("my_handler", tmpl["tools_py"])
+        self.assertIn("scripts_template", tmpl)
+        self.assertIn("skill_md_template", tmpl)
+        # skill_md_template 含 name: my_skill frontmatter
+        self.assertIn("my_skill", tmpl["skill_md_template"])
+        # scripts_template 含 my_handler 函数定义
+        self.assertIn("my_handler", tmpl["scripts_template"])
 
         # ==================================================================
         # 3. Prepare a mock Skill object  —  used by propose_skill,
@@ -137,7 +140,7 @@ class TestSkillLifecycle(TestCase):
 
                 # ---- propose ----
                 result = self._call(
-                    "skill_propose",
+                    "skill__propose",
                     name="test_skill",
                     description="A test greeting skill",
                     version="0.1.0",
@@ -189,7 +192,7 @@ class TestSkillLifecycle(TestCase):
                 # ==========================================================
                 # 7. reload_skill  ->  status "reloaded"
                 # ==========================================================
-                result = self._call("skill_reload", name="test_skill")
+                result = self._call("skill__reload", name="test_skill")
                 self.assertEqual(result["status"], "reloaded")
 
                 # verify tool is still registered after reload
@@ -202,7 +205,7 @@ class TestSkillLifecycle(TestCase):
                 # 8. list_skills  ->  response has skill_name in loaded list
                 # ==========================================================
                 self.skill_loader._skills = {"test_skill": mock_skill}
-                result = self._call("skill_list")
+                result = self._call("skill__list")
                 loaded = result.get("loaded_skills", [])
                 loaded_names = [s["name"] for s in loaded]
                 self.assertIn(
@@ -213,7 +216,15 @@ class TestSkillLifecycle(TestCase):
                 # ==========================================================
                 # 9. disable skill and verify schema contains enabled:False
                 # ==========================================================
-                self.registry.disable_skill("test_skill")
+                # P1 改造：通过 skill__toggle action=disable 触发软禁用
+                # （而非直接调 registry.disable_skill），验证端到端流程
+                toggle_result = self._call(
+                    "skill__toggle", name="test_skill", action="disable"
+                )
+                self.assertEqual(
+                    toggle_result["status"], "disabled",
+                    "skill__toggle action=disable 应返回 status=disabled",
+                )
                 schemas = self.registry.get_tools_schema()
                 deferred_entry = None
                 for s in schemas:

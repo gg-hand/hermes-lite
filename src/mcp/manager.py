@@ -169,25 +169,66 @@ def register_mcp_tools_to_registry(
     registry,
     mcp_manager: MCPManager,
     server_name: str,
+    hil: bool = True,
+    advertise_threshold: int = 30,
 ) -> int:
-    """将指定 MCP Server 的工具注册到 ToolRegistry 的 Deferred 层。
+    """将指定 MCP Server 的工具注册到 ToolRegistry 的 Core Tier。
 
-    工具名加前缀 ``mcp__{server_name}__{tool_name}`` 避免冲突。单个工具
-    注册失败只记录 error 并跳过，不影响其他工具。Server 未连接返回 0。
+    P1-4 改造：从 Deferred Tier 迁移到 Core Tier（完整 schema 直接注入 tools），
+    消除 LLM 需要 tool_list/tool_call 两轮往返的冗余流程。命名规范统一双下划线
+    ``mcp__{server_name}__{tool_name}``。
+
+    降级策略：若该 Server 工具数 > ``advertise_threshold``，降级为单个
+    ``mcp__{server}__call_tool(name, args)`` stub（空 schema），LLM 通过该
+    stub 调用具体工具，避免 tools schema 过大撑爆 token 预算。
 
     参数:
-        registry: ``ToolRegistry`` 实例（需提供 ``register_deferred`` 方法）。
+        registry: ``ToolRegistry`` 实例（需提供 ``register_core`` 方法）。
         mcp_manager: ``MCPManager`` 实例。
         server_name: MCP Server 名称。
+        hil: 该 Server 是否走 HIL（True=confirm，False=直接 allow）。
+            注：HIL 决策由 PolicyEngine 的 mcp_hil_config 路由，本函数仅注册
+            工具，不直接处理审批。``hil`` 参数保留供未来扩展（如生成默认
+            规则）。
+        advertise_threshold: 工具数超过此值降级为 stub 模式，默认 30。
 
     返回:
-        成功注册的工具数量（``int``）。
+        成功注册的工具数量（``int``）。降级模式返回 1（仅注册 stub）。
     """
     # 过滤出指定 Server 的工具（get_all_tools 已注入 mcp_server 字段）
     server_tools = [
         t for t in mcp_manager.get_all_tools()
         if t.get("mcp_server") == server_name
     ]
+
+    # 降级：工具数过多时注册单个 stub
+    if len(server_tools) > advertise_threshold:
+        try:
+            registry.register_core(
+                name=f"mcp__{server_name}__call_tool",
+                description=(
+                    f"[MCP: {server_name}] 调用该 Server 上的工具（降级 stub 模式，"
+                    f"工具数 {len(server_tools)} > 阈值 {advertise_threshold}）。"
+                    f"参数：name（工具名）+ args（参数 dict）。"
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "MCP 工具名"},
+                        "args": {"type": "object", "description": "工具参数 dict"},
+                    },
+                    "required": ["name"],
+                },
+                handler=_make_mcp_stub_handler(server_name, mcp_manager),
+            )
+            logger.info(
+                "MCP Server %s 工具数 %d > 阈值 %d，降级为 stub 模式",
+                server_name, len(server_tools), advertise_threshold,
+            )
+            return 1
+        except Exception as e:
+            logger.error(f"注册 MCP stub {server_name} 失败: {e}")
+            return 0
 
     count = 0
     for tool in server_tools:
@@ -198,7 +239,7 @@ def register_mcp_tools_to_registry(
             # MCP 协议用 inputSchema（驼峰），ToolRegistry 用 input_schema（下划线）
             input_schema = tool.get("inputSchema", {})
             handler = _make_mcp_handler(server_name, original_name, mcp_manager)
-            registry.register_deferred(
+            registry.register_core(
                 name=registered_name,
                 description=description,
                 input_schema=input_schema,
@@ -209,3 +250,43 @@ def register_mcp_tools_to_registry(
             logger.error(f"注册 MCP 工具 {server_name}.{original_name} 失败: {e}")
 
     return count
+
+
+def _make_mcp_stub_handler(server_name: str, mgr: MCPManager):
+    """为降级 stub 模式生成 handler（通过 name + args 调用任意工具）。
+
+    参数:
+        server_name: MCP Server 名称。
+        mgr: ``MCPManager`` 实例。
+
+    返回:
+        handler 函数，签名 ``(**kwargs) -> str``。
+    """
+    def _handler(**kwargs) -> str:
+        tool_name = kwargs.get("name", "")
+        args = kwargs.get("args", {}) or {}
+        if not tool_name:
+            return "参数 name 必填"
+        coro = mgr.call_tool(server_name, tool_name, args)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                result: List[str] = []
+
+                def _run() -> None:
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        result.append(new_loop.run_until_complete(coro))
+                    finally:
+                        new_loop.close()
+
+                t = threading.Thread(target=_run)
+                t.start()
+                t.join()
+                return result[0] if result else ""
+            else:
+                return loop.run_until_complete(coro)
+        except RuntimeError:
+            return asyncio.run(coro)
+
+    return _handler

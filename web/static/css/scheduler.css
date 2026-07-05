@@ -1,0 +1,1279 @@
+/* ============================================================
+   scheduler.css — 调度管理独立页样式
+   复用 monitor.css 的 .monitor-app/.monitor-topbar/.monitor-main/
+   .monitor-section/.section-header/.section-label/.section-title/
+   .section-actions/.runs-summary/.runs-list 等基础样式
+   本文件仅定义调度页专属布局与组件样式
+   ============================================================ */
+
+/* ========== 主体布局：左右二列网格，各自内部滚动 ========== */
+.scheduler-main {
+  padding: var(--space-4) var(--space-5);
+  overflow: hidden;       /* main 不滚动，由两列各自内部滚动 */
+  display: flex;
+  flex-direction: column;
+}
+
+.scheduler-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  flex: 1;
+  min-height: 0;          /* 允许 grid 收缩，子项才能内部滚动 */
+  max-width: none;
+  margin: 0;
+  align-items: stretch;   /* 两列等高填满 */
+}
+
+/* 左列：会话框样式，单 section 填满高度，内部双视图切换 */
+.scheduler-col-runs,
+.scheduler-col-session-box {
+  max-width: none;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 会话框专属：左列标题与控件 */
+.scheduler-col-session-box .section-header {
+  flex-shrink: 0;
+}
+.left-col-mode-controls { display: inline-flex; align-items: center; gap: 6px; }
+.left-col-mode-controls[hidden] { display: none !important; }
+
+/* 左列双视图容器 */
+.left-col-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.left-col-view[hidden] { display: none !important; }
+
+/* 左列 history 视图：runs-summary + 列表 */
+.left-col-view-history {
+  overflow: hidden;
+}
+.left-col-view-history .runs-summary { flex-shrink: 0; }
+.left-col-view-history .schedule-runs-list { flex: 1; }
+
+/* 左列 session 视图：会话消息流 */
+.left-col-view-session {
+  overflow: hidden;
+}
+.session-view-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.session-view-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-view-meta { font-size: 11px; color: var(--text-muted); }
+
+/* 右列：flex 布局，section 展开填满高度，各自内部滚动 */
+.scheduler-col-manage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;       /* 不整体滚动，由展开的 section 内部滚动 */
+}
+.scheduler-col-manage .monitor-section {
+  max-width: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 可折叠 section：展开时 flex:1 填满剩余高度 */
+.scheduler-col-manage .monitor-section.collapsible:not(.collapsed) {
+  flex: 1;
+  overflow-y: auto;       /* section 内容超出时内部滚动 */
+}
+/* 折叠时只占 header 高度 */
+.scheduler-col-manage .monitor-section.collapsible.collapsed {
+  flex: none;
+}
+/* section-header sticky，滚动时固定顶部 */
+.scheduler-col-manage .monitor-section .section-header {
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+/* 响应式：平板 1024 起堆叠为单列，main 恢复滚动 */
+@media (max-width: 1024px) {
+  .scheduler-grid { grid-template-columns: 1fr; flex: none; }
+  .scheduler-main { overflow-y: auto; }
+  .scheduler-col-runs, .scheduler-col-manage { height: auto; overflow: visible; }
+  .scheduler-col-manage .monitor-section.collapsible:not(.collapsed) { flex: none; overflow: visible; }
+  .scheduler-col-manage .monitor-section .section-header { position: static; }
+}
+
+/* 手机档 768：modal 全屏化 + 卡片操作区换行 */
+@media (max-width: 768px) {
+  /* modal 全屏（覆盖原 600px max-width） */
+  .proposal-detail-modal,
+  .cron-tool-detail-modal,
+  .schedule-modal,
+  .schedule-modal-pro {
+    max-width: 100% !important;
+    width: 100%;
+    margin: 0;
+  }
+
+  /* 卡片操作区允许换行 */
+  .proposal-card-actions {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .proposal-card-actions .btn {
+    flex: 1;
+    min-width: 100px;
+  }
+
+  /* 子分区头部换行 */
+  .sched-subheader {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* 调度项头部换行 */
+  .schedule-item-header {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* section 操作区换行 */
+  .section-actions {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-left: 0;
+  }
+}
+
+/* ========== 折叠 section（cron_tool 已激活） ========== */
+.scheduler-section.collapsible .section-header { cursor: pointer; }
+.scheduler-section.collapsible.collapsed .has-scroll-mask,
+.scheduler-section.collapsible.collapsed .sched-subsection { display: none; }
+.section-toggle {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  margin-left: 4px;
+  transition: transform 0.2s;
+}
+.scheduler-section.collapsible.collapsed .section-toggle { transform: rotate(-90deg); }
+.section-count {
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-radius: 8px;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+/* ========== 待办区子分组 ========== */
+.sched-subsection {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.sched-subsection:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.sched-subheader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.sched-subtitle { font-weight: 600; color: var(--text-primary); flex: 1; }
+.sched-subcount {
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+/* ========== 滚动容器与空状态 ========== */
+/* 不限制高度，由右列 .scheduler-col-manage 整体滚动，避免嵌套滚动条 */
+.has-scroll-mask { padding: 0 12px 8px; }
+.schedule-empty, .proposal-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ========== 调度执行历史（左列） ========== */
+.schedule-runs-list {
+  padding: 0 12px 8px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.schedule-run-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  font-size: 12px;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.schedule-run-item:hover { border-color: var(--accent); }
+.schedule-run-item.is-success { border-left: 3px solid var(--success); }
+.schedule-run-item.is-failed { border-left: 3px solid var(--danger); }
+
+.schedule-run-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.schedule-run-time { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+.schedule-run-sched-name {
+  flex: 1; min-width: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.schedule-run-status {
+  padding: 2px 6px; border-radius: 8px; font-size: 10px; flex-shrink: 0;
+}
+.schedule-run-status.is-success { background: var(--success-soft); color: var(--success); }
+.schedule-run-status.is-failed { background: var(--danger-soft); color: var(--danger); }
+.run-expand-toggle {
+  color: var(--text-muted); font-size: 10px; flex-shrink: 0;
+  transition: transform 0.2s;
+}
+.schedule-run-item.expanded .run-expand-toggle { transform: rotate(180deg); }
+
+.schedule-run-meta { padding: 0 10px 4px; color: var(--text-muted); font-size: 11px; }
+.schedule-run-summary {
+  padding: 0 10px 8px;
+  color: var(--text-secondary);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+
+/* Run 卡片展开详情（可滑动小面板，不挤出页面） */
+.run-detail {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-secondary);
+}
+.schedule-run-item.expanded .run-detail {
+  max-height: 480px;
+  overflow-y: auto;       /* 内容超出时内部滚动 */
+}
+.run-detail-body { padding: 10px; }
+.run-detail-section { margin-bottom: 10px; }
+.run-detail-section:last-child { margin-bottom: 0; }
+.run-detail-label {
+  font-size: 10px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.run-detail-content {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+
+/* ========== 提议卡片 ========== */
+.proposal-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--bg-primary);
+}
+.proposal-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.proposal-card-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.proposal-card-section { margin-bottom: 6px; }
+.proposal-card-config { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.proposal-card-actions { display: flex; gap: 6px; }
+
+/* ========== 调度项卡片（含二级展开） ========== */
+.schedule-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.schedule-item:hover { border-color: var(--accent); }
+.schedule-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.schedule-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+}
+.schedule-name {
+  flex: 1; min-width: 0;
+  font-size: 12px; font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.schedule-cron {
+  font-size: 11px; color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.schedule-status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+}
+.schedule-status-dot.is-enabled { background: var(--success); }
+.schedule-status-dot.is-disabled { background: var(--text-muted); }
+.schedule-meta {
+  padding: 0 10px 6px;
+  color: var(--text-muted); font-size: 11px;
+}
+.schedule-actions {
+  display: flex; gap: 6px;
+  padding: 0 10px 10px;
+  flex-wrap: wrap;
+}
+
+/* 调度项二级展开（可滑动小面板，不挤出页面） */
+.sched-detail {
+  display: none;
+  margin-top: 4px;
+  padding: 10px;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-secondary);
+}
+.schedule-item.expanded .sched-detail {
+  display: block;
+  max-height: 400px;
+  overflow-y: auto;       /* 内容超出时内部滚动 */
+}
+.sched-detail-subsection { margin-bottom: 12px; }
+.sched-detail-subsection:last-child { margin-bottom: 0; }
+.sched-detail-title {
+  font-size: 11px; font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 6px;
+}
+.sched-memories, .sched-audit {
+  /* 不内部滚动，由 .sched-detail 统一滚动，避免嵌套滚动条 */
+}
+
+/* 调度记忆项 */
+.schedule-memory-item {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  background: var(--bg-primary);
+  font-size: 11px;
+}
+.schedule-memory-item .memory-text {
+  color: var(--text-secondary);
+  white-space: pre-wrap; word-wrap: break-word;
+  margin-bottom: 4px;
+}
+.schedule-memory-item .memory-footer {
+  display: flex; justify-content: flex-end;
+}
+
+/* 审计项 */
+.schedule-audit-item {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  background: var(--bg-primary);
+  font-size: 11px;
+}
+.schedule-audit-item.is-error { border-left: 3px solid var(--danger); }
+.schedule-audit-header {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.schedule-audit-tool {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.schedule-audit-time, .schedule-audit-duration, .schedule-audit-runid {
+  color: var(--text-muted); font-size: 10px;
+}
+.schedule-audit-input, .schedule-audit-result {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-secondary);
+  white-space: pre-wrap; word-wrap: break-word;
+  margin-top: 2px;
+}
+.schedule-audit-result.is-error { color: var(--danger); }
+
+/* 标签（审计来源标记） */
+.tag {
+  padding: 1px 6px; border-radius: 8px; font-size: 10px;
+  background: var(--bg-tertiary); color: var(--text-muted);
+}
+.tag-success { background: var(--success-soft); color: var(--success); }
+.tag-warning { background: var(--warning-soft); color: var(--warning); }
+.tag-danger { background: var(--danger-soft); color: var(--danger); }
+
+/* ========== cron_tool 卡片 ========== */
+.cron-tool-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--bg-primary);
+}
+.cron-tool-card-header {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.cron-tool-card-name { flex: 1; font-size: 12px; font-weight: 600; min-width: 0; }
+.cron-tool-card-meta { font-size: 11px; color: var(--text-muted); }
+.cron-tool-card-actions { display: flex; gap: 6px; }
+
+/* ========== 调度项详情 modal 内的开关 ========== */
+.schedule-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.schedule-toggle input[type="checkbox"] { display: none; }
+.schedule-toggle-slider {
+  width: 36px; height: 20px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.schedule-toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.2s, background 0.2s;
+}
+.schedule-toggle input[type="checkbox"]:checked + .schedule-toggle-slider {
+  background: var(--accent-soft);
+}
+.schedule-toggle input[type="checkbox"]:checked + .schedule-toggle-slider::after {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+
+/* ========== modal 尺寸（迁移自 chat.css） ========== */
+.proposal-detail-modal, .cron-tool-detail-modal { max-width: 600px; }
+
+/* ========== 表单组件（modal 内） ========== */
+.form-section { margin-bottom: 12px; }
+.form-label {
+  font-size: 11px; color: var(--text-muted);
+  margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.form-value {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  background: var(--bg-primary);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.form-row { margin-bottom: 8px; }
+.form-row label {
+  font-size: 11px; color: var(--text-muted);
+  display: block; margin-bottom: 2px;
+}
+.form-row input {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.form-row input:focus { outline: none; border-color: var(--accent); }
+
+/* 提议详情工具勾选 chip */
+.proposal-detail-tools {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 6px;
+}
+.proposal-tool-chip {
+  display: inline-flex;
+  align-items: center; gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.proposal-tool-chip label { cursor: pointer; }
+.proposal-tool-chip.checked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.proposal-tool-chip input[type="checkbox"] { margin: 0; }
+
+/* 宸ュ叿鍗＄墖鍐呭锛坈ron_tool 瀹℃煡 modal 鍐呯殑 pre锛?*/
+.tool-card-content {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap; word-wrap: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+/* ============================================================
+   左列双视图切换 + 会话消息样式（重构版）
+   ============================================================ */
+
+/* 视图容器：默认 history 显示，session 隐藏 */
+.left-col-view { display: flex; }
+.left-col-view[hidden] { display: none !important; }
+
+.session-view-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 消息气泡（与 chat.css 风格一致） */
+.session-view-messages .message {
+  max-width: 85%;
+  flex-shrink: 0;
+  animation: fadeInUp 0.25s ease;
+}
+.session-view-messages .message.user { align-self: flex-end; }
+.session-view-messages .message.assistant { align-self: flex-start; }
+.session-view-messages .message.tool { align-self: stretch; max-width: 100%; }
+
+.session-view-messages .message-role {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-wrap: wrap;
+}
+.session-view-messages .message-role.user { justify-content: flex-end; }
+
+.session-view-messages .role-tag {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+}
+.session-view-messages .role-tag.role-user { background: var(--accent-soft); color: var(--accent); }
+.session-view-messages .role-tag.role-assistant { background: var(--success-soft); color: var(--success); }
+.session-view-messages .role-tag.role-tool { background: var(--warning-soft); color: var(--warning); }
+.session-view-messages .role-tag.role-system { background: var(--bg-tertiary); color: var(--text-muted); }
+.session-view-messages .role-tool-name { color: var(--text-primary); font-weight: 600; }
+.session-view-messages .message-time { margin-left: auto; font-family: var(--font-mono); font-size: 10px; }
+.session-view-messages .message-meta-chip {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.session-view-messages .message-meta-chip.is-error { background: var(--danger-soft); color: var(--danger); }
+.session-view-messages .message-meta-chip.is-callid { background: var(--bg-tertiary); color: var(--text-muted); opacity: 0.7; }
+
+.session-view-messages .message-bubble {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.session-view-messages .message.user .message-bubble {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-bottom-right-radius: 4px;
+}
+.session-view-messages .message.assistant .message-bubble {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+.session-view-messages .message.tool .message-bubble {
+  background: var(--bg-tertiary);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.session-view-messages .message-bubble.is-error {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* markdown 渲染样式（从 chat.css 拷贝并改选择器前缀） */
+.markdown-body p { margin: 0 0 8px; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 12px 0 6px; }
+.markdown-body ul, .markdown-body ol { margin: 4px 0 8px; padding-left: 20px; }
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+}
+.markdown-body pre {
+  margin: 8px 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  overflow-x: auto;
+  position: relative;
+}
+.markdown-body pre code { padding: 0; background: none; font-size: 13px; }
+.markdown-body a { color: var(--accent); text-decoration: underline; }
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-secondary);
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+}
+
+/* 调度名点击跳转（仅当渲染为 <a> 标签时生效） */
+a.schedule-run-sched-name {
+  cursor: pointer;
+  color: var(--accent);
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+a.schedule-run-sched-name:hover { opacity: 0.75; }
+
+/* 会话视图空状态 */
+.session-view-messages .empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+/* ============================================================
+   左列「切换会话」按钮 + 下拉选择器
+   ============================================================ */
+.session-picker-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.session-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.session-picker-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.session-picker-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.session-picker-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* 下拉面板 */
+.session-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 320px;
+  max-height: 420px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.session-picker-dropdown[hidden] { display: none !important; }
+
+.session-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.session-picker-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.session-picker-close {
+  padding: 2px 6px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.session-picker-close:hover { color: var(--danger); }
+
+.session-picker-search {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.session-picker-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.session-picker-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.session-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.session-picker-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 单条 cron 会话项 */
+.session-picker-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+}
+.session-picker-item:last-child { border-bottom: none; }
+.session-picker-item:hover {
+  background: var(--accent-soft);
+}
+.session-picker-item.is-active {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+.session-picker-item-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-picker-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-picker-item-id {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 1px 5px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.session-picker-item-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.session-picker-item-preview {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+/* ============================================================
+   右列顶部新建调度按钮区
+   ============================================================ */
+.sched-action-bar {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.btn-new-schedule {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  position: relative;
+  border: 1px solid var(--accent);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong, var(--accent)) 100%);
+  color: var(--bg-primary);
+  box-shadow: 0 2px 8px var(--accent-soft);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-new-schedule:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--accent-soft);
+}
+.btn-new-schedule:active { transform: translateY(0); }
+.btn-new-schedule-icon {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.btn-new-schedule-hint {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255,255,255,0.3);
+}
+
+/* ============================================================
+   专业版新建调度弹窗（含 workflow 配置）
+   ============================================================ */
+.schedule-modal-pro {
+  max-width: 720px;
+  width: 720px;
+}
+.schedule-modal-pro .modal-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+/* Tab 切换 */
+.sched-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.sched-tab {
+  padding: 10px 20px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sched-tab:hover { color: var(--text-primary); }
+.sched-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.sched-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Tab 内容面板 */
+.sched-tab-pane {
+  display: none;
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.sched-tab-pane.active { display: block; }
+
+/* 表单组件（在 .form-group 基础上局部增强） */
+.schedule-modal-pro .form-group {
+  margin-bottom: 14px;
+}
+.schedule-modal-pro .form-group > label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.schedule-modal-pro .form-input,
+.schedule-modal-pro .form-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+.schedule-modal-pro .form-input:focus,
+.schedule-modal-pro .form-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.schedule-modal-pro .form-input.mono { font-family: var(--font-mono); font-size: 12px; }
+.schedule-modal-pro .hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Cron 行 + 预设按钮 */
+.sched-cron-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sched-cron-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cron-preset {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.cron-preset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Workflow 配置区域 */
+.sched-wf-empty-hint {
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  margin-bottom: 14px;
+}
+.sched-wf-empty-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.sched-wf-empty-desc { font-size: 11px; line-height: 1.5; }
+
+/* 模式选择卡片 */
+.sched-wf-mode-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.sched-wf-mode-option {
+  cursor: pointer;
+  display: block;
+}
+.sched-wf-mode-option input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.sched-wf-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  transition: all 0.15s;
+  height: 100%;
+  box-sizing: border-box;
+}
+.sched-wf-mode-option:hover .sched-wf-mode-card {
+  border-color: var(--accent);
+}
+.sched-wf-mode-option input[type="radio"]:checked + .sched-wf-mode-card {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.sched-wf-mode-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sched-wf-mode-option input[type="radio"]:checked + .sched-wf-mode-card .sched-wf-mode-title {
+  color: var(--accent);
+}
+.sched-wf-mode-desc { font-size: 10px; line-height: 1.4; }
+
+/* Workflow 配置子区域 */
+.sched-wf-config { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.sched-wf-config[hidden] { display: none; }
+
+.sched-wf-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.sched-wf-name-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.sched-wf-steps-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sched-wf-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sched-wf-steps-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+/* 单个 step 卡片 */
+.sched-wf-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+.sched-wf-step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.sched-wf-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.sched-wf-step-id-input,
+.sched-wf-step-name-input {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+}
+.sched-wf-step-id-input { width: 100px; font-family: var(--font-mono); }
+.sched-wf-step-name-input { flex: 1; min-width: 100px; }
+.sched-wf-step-type-select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.sched-wf-step-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.sched-wf-step-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sched-wf-step-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sched-wf-step-field-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.sched-wf-step-config-area,
+.sched-wf-step-deps-input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  box-sizing: border-box;
+  width: 100%;
+}
+.sched-wf-step-config-area {
+  min-height: 60px;
+  resize: vertical;
+}
+.sched-wf-step-deps-input { font-family: inherit; }
+.sched-wf-step-row-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.sched-wf-step-onfailure-select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sched-wf-step-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.sched-wf-step.is-error { border-color: var(--danger); }

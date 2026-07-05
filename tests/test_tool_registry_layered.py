@@ -124,13 +124,15 @@ class TestToolRegistryLayered(unittest.TestCase):
         self.assertEqual(result, "deferred")
 
     def test_execute_tool_unloaded_deferred(self):
-        """未加载 Deferred 工具返回提示。"""
+        """未加载 Deferred 工具抛 ToolNotFoundError。"""
+        from agent.tool_error import ToolNotFoundError
         self.registry.register_deferred(
             "unloaded", "未加载工具", {"type": "object"}, self._make_handler("x"),
         )
-        result = self.registry.execute_tool("unloaded", {})
-        self.assertIn("未加载", result)
-        self.assertIn("tool_list", result)
+        with self.assertRaises(ToolNotFoundError) as ctx:
+            self.registry.execute_tool("unloaded", {})
+        self.assertIn("未加载", str(ctx.exception))
+        self.assertIn("tool_list", ctx.exception.suggestion)
 
     def test_old_register_alias_to_core(self):
         """旧 register() 等价于 register_core()。"""
@@ -222,7 +224,8 @@ class TestToolRegistryDisable(unittest.TestCase):
         self.assertFalse(self.registry.is_skill_disabled("weather"))
 
     def test_disabled_tool_execute(self):
-        """禁用状态下执行工具应返回禁用提示，且 handler 不被调用。"""
+        """禁用状态下执行工具应抛 ToolNotFoundError，且 handler 不被调用。"""
+        from agent.tool_error import ToolNotFoundError
         call_count = [0]
 
         def counting_handler(**kwargs):
@@ -237,8 +240,9 @@ class TestToolRegistryDisable(unittest.TestCase):
         # 加载到 _loaded_tools 以允许执行
         self.registry.search_and_load("select:skill__weather__get_weather")
         self.registry.disable_skill("weather")
-        result = self.registry.execute_tool("skill__weather__get_weather", {})
-        self.assertIn("已被禁用", result)
+        with self.assertRaises(ToolNotFoundError) as ctx:
+            self.registry.execute_tool("skill__weather__get_weather", {})
+        self.assertIn("已被禁用", str(ctx.exception))
         self.assertEqual(call_count[0], 0)
 
     def test_enable_after_disable_allows_execution(self):

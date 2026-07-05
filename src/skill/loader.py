@@ -34,12 +34,16 @@ class SkillMeta:
         version: Skill 版本，默认 ``0.1.0``。
         description: Skill 描述。
         requires: 该 Skill 依赖的 Python 包名列表（用于依赖检查）。
+        body: SKILL.md 正文（frontmatter 之后的 markdown）。L2 body 注入用。
+        resources: ``scripts/`` 子目录下的相对路径列表（L3 资源加载用）。
     """
 
     name: str
     version: str
     description: str
     requires: List[str]
+    body: str = ""
+    resources: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -113,6 +117,8 @@ class SkillLoader:
 
         - 文件不以 ``---`` 开头时返回 None。
         - YAML 解析失败时返回 None（不抛异常）。
+        - 解析成功后同时提取 body（frontmatter 之后的 markdown 正文）与
+          resources（扫描 ``scripts/`` 子目录的文件列表）。
 
         参数:
             skill_file: ``SKILL.md`` 的路径。
@@ -134,6 +140,7 @@ class SkillLoader:
         if len(parts) < 2:
             return None
         frontmatter = parts[1]
+        body = parts[2].strip() if len(parts) >= 3 else ""
 
         try:
             data = yaml.safe_load(frontmatter) or {}
@@ -144,15 +151,51 @@ class SkillLoader:
         if not isinstance(data, dict):
             return None
 
+        # 扫描 scripts/ 子目录的文件列表（L3 资源）
+        skill_dir = skill_file.parent
+        resources = self._scan_resources(skill_dir)
+
         return SkillMeta(
             name=data.get("name", ""),
             version=data.get("version", "0.1.0"),
             description=data.get("description", ""),
             requires=data.get("requires", []) or [],
+            body=body,
+            resources=resources,
         )
+
+    @staticmethod
+    def _scan_resources(skill_dir: Path) -> List[str]:
+        """扫描 ``skill_dir/scripts/`` 子目录下的文件相对路径列表。
+
+        递归扫描一层（仅 scripts/ 直接子文件），不深入子目录。
+        目录不存在时返回空列表。
+
+        参数:
+            skill_dir: Skill 根目录路径。
+
+        返回:
+            scripts/ 下文件的相对路径列表（如 ``["scripts/calculator.py"]``）。
+        """
+        scripts_dir = skill_dir / "scripts"
+        if not scripts_dir.exists() or not scripts_dir.is_dir():
+            return []
+        resources: List[str] = []
+        try:
+            for child in sorted(scripts_dir.iterdir()):
+                if child.is_file():
+                    resources.append(f"scripts/{child.name}")
+        except OSError as e:
+            logger.warning("扫描 scripts/ 失败 %s: %s", scripts_dir, e)
+        return resources
 
     def load(self, skill_name: str) -> Optional[Skill]:
         """按需动态加载 Skill 代码。
+
+        .. deprecated::
+            对齐 agentskills.io 标准后，Skill 不再通过 importlib 加载可执行
+            代码。新主流程改用 :meth:`load_body` / :meth:`load_resource` /
+            :func:`register_skill_stub`。本方法保留仅为向后兼容（仍可工作）。
 
         - 缓存命中直接返回。
         - 依赖缺失只 warning，不抛异常。
@@ -317,6 +360,88 @@ class SkillLoader:
             return True
         return (self.skill_dir / skill_name / "SKILL.md").exists()
 
+    def load_body(self, skill_name: str) -> str:
+        """返回 SKILL.md 正文（frontmatter 之后的 markdown）。
+
+        缓存命中（``_metas`` 中已含 body）直接返回；否则读取并解析
+        ``skills/{name}/SKILL.md``。文件不存在或解析失败返回空串。
+
+        参数:
+            skill_name: Skill 名称。
+
+        返回:
+            SKILL.md 正文 markdown 字符串。
+        """
+        meta = self._metas.get(skill_name)
+        if meta is not None and meta.body:
+            return meta.body
+        # 缓存未命中，重新解析
+        skill_file = self.skill_dir / skill_name / "SKILL.md"
+        if not skill_file.exists():
+            return ""
+        meta = self._parse_meta(skill_file)
+        if meta is None:
+            return ""
+        self._metas[skill_name] = meta
+        return meta.body
+
+    def load_resource(self, skill_name: str, rel_path: str) -> str:
+        """读取 ``skills/{name}/scripts/{rel_path}`` 文件内容。
+
+        路径穿越防护：``rel_path`` 不允许包含 ``..`` 或绝对路径。
+
+        参数:
+            skill_name: Skill 名称。
+            rel_path: scripts/ 下的相对路径（如 ``"scripts/calculator.py"``）。
+
+        返回:
+            文件内容字符串。文件不存在或路径非法返回错误信息字符串。
+
+        异常:
+            无（路径非法或读取失败返回错误字符串，不抛异常）。
+        """
+        # 路径穿越防护
+        if ".." in rel_path or Path(rel_path).is_absolute():
+            return f"rel_path 不允许包含 .. 或绝对路径: {rel_path}"
+
+        # 兼容两种传参：rel_path 含 "scripts/" 前缀 或 不含
+        if rel_path.startswith("scripts/"):
+            full_path = self.skill_dir / skill_name / rel_path
+        else:
+            full_path = self.skill_dir / skill_name / "scripts" / rel_path
+
+        if not full_path.exists():
+            return f"资源文件不存在: {rel_path}"
+        try:
+            return full_path.read_text(encoding="utf-8")
+        except OSError as e:
+            return f"读取资源文件失败: {e}"
+
+    def list_resources(self, skill_name: str) -> List[str]:
+        """返回该 Skill 可用的资源相对路径列表（``scripts/`` 下）。
+
+        缓存命中（``_metas`` 中已含 resources）直接返回；否则扫描
+        ``skills/{name}/scripts/`` 目录。
+
+        参数:
+            skill_name: Skill 名称。
+
+        返回:
+            scripts/ 下文件的相对路径列表（如 ``["scripts/calculator.py"]``）。
+            目录不存在返回空列表。
+        """
+        meta = self._metas.get(skill_name)
+        if meta is not None and meta.resources:
+            return list(meta.resources)
+        # 缓存未命中，重新扫描
+        skill_dir = self.skill_dir / skill_name
+        if not skill_dir.exists():
+            return []
+        resources = self._scan_resources(skill_dir)
+        if meta is not None:
+            meta.resources = resources
+        return resources
+
 
 def load_skill_to_registry(registry, skill: Skill) -> None:
     """将 Skill 的工具注册到 ToolRegistry 的 Deferred Tier。
@@ -347,3 +472,34 @@ def load_skill_to_registry(registry, skill: Skill) -> None:
             )
         except Exception as e:
             logger.error("注册 Skill %s 工具失败: %s", skill.name, e)
+
+
+def register_skill_stub(
+    registry,
+    meta: SkillMeta,
+    activate_handler: Callable,
+) -> None:
+    """注册 ``skill__{name}`` 到 Core Tier（空 schema 激活按钮）。
+
+    对齐 agentskills.io 三层加载模型：
+    - L1 元数据：本 stub 注入 tools schema（空 schema 激活按钮）
+    - L2 body：LLM 调用 ``skill__{name}()`` 后，``activate_handler`` 触发激活，
+      body 在下一轮注入 messages[0] 末位（由 orchestrator.activate_skill 处理）
+    - L3 资源：通过 ``skill__resource`` 工具读取 scripts/ 下文件
+
+    参数:
+        registry: ``ToolRegistry`` 实例（需提供 ``register_core`` 方法）。
+        meta: ``SkillMeta`` 实例（含 name 与 description）。
+        activate_handler: 激活 handler 函数，签名 ``(**kwargs) -> str``。
+            由 ``_make_skill_activate_handler`` 工厂生成（closure 捕获 skill_name）。
+    """
+    try:
+        registry.register_core(
+            name=f"skill__{meta.name}",
+            description=f"[Skill] 激活 {meta.name}: {meta.description}",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=activate_handler,
+        )
+        logger.debug("已注册 Skill stub: skill__%s", meta.name)
+    except Exception as e:
+        logger.error("注册 Skill stub %s 失败: %s", meta.name, e)

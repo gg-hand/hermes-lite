@@ -105,6 +105,9 @@ class WorkflowContext:
         get_env: 环境变量取值回调，签名 ``(key: str, default: str = "") -> str``。
             用于模板获取 SMTP 配置等环境变量。为 ``None`` 时回退到
             ``os.environ.get``。
+        error_channel: LLM 调用等步骤的异常记录通道（D5 修复）。
+            ``append_error`` 追加错误信息，``WorkflowEngine.execute`` 末尾
+            合并到 ``WorkflowResult.errors``。为空列表时无异常。
     """
 
     session_id: str
@@ -115,6 +118,7 @@ class WorkflowContext:
     current_time: datetime = field(default_factory=datetime.now)
     last_run_time: Optional[datetime] = None
     get_env: Optional[Callable[[str, str], str]] = None
+    error_channel: List[str] = field(default_factory=list)
 
     def get_env_value(self, key: str, default: str = "") -> str:
         """获取环境变量值（兼容 ``get_env=None`` 场景）。"""
@@ -124,6 +128,19 @@ class WorkflowContext:
             except Exception:
                 return default
         return os.environ.get(key, default)
+
+    def append_error(self, message: str) -> None:
+        """向 error_channel 追加错误信息（D5 修复）。
+
+        供 ``_call_llm_single_turn`` 等步骤在异常时调用，将错误信息
+        收集到 ``error_channel``，由 ``WorkflowEngine.execute`` 末尾
+        合并到 ``WorkflowResult.errors``，确保 LLM 异常被上层感知。
+
+        参数:
+            message: 一行精炼错误描述（如 ``"LLM 调用失败: timeout"``）。
+        """
+        if message:
+            self.error_channel.append(message)
 
     def render(self, text: Optional[str]) -> str:
         """用当前上下文的时间变量替换 ``text`` 中的占位符。
@@ -160,6 +177,13 @@ class WorkflowResult:
         metrics_for_injection: 待注入到下一轮 cron 上下文 messages[0] 的
             工作流数据。结构由模板自定义，调用方（CronScheduler）将其
             序列化为 markdown 段拼接。为空 dict 时不注入。
+        step_traces: step 执行轨迹列表（Task 8）。每项为
+            :class:`StepTrace` 实例。旧路径无 step_traces 时为空列表。
+            通过 ``add_step_trace`` 追加。
+        run_id: 执行批次 ID（可选），关联该次触发的所有工具调用。
+            非 cron 会话为 ``None``。
+        workflow_name: workflow 名称（用于报告展示）。为 ``None`` 时
+            调用方可用 schedule.name 替代。
     """
 
     success: bool = True
@@ -168,11 +192,23 @@ class WorkflowResult:
     outputs: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     metrics_for_injection: Dict[str, Any] = field(default_factory=dict)
+    step_traces: List[Any] = field(default_factory=list)
+    run_id: Optional[str] = None
+    workflow_name: Optional[str] = None
 
     def add_error(self, msg: str) -> None:
         """记录非致命错误并标记 ``success=False``。"""
         self.errors.append(msg)
         self.success = False
+
+    def add_step_trace(self, trace: Any) -> None:
+        """追加一条 step 执行轨迹（Task 8.1）。
+
+        参数:
+            trace: :class:`StepTrace` 实例（避免循环导入，类型注解为 Any）。
+        """
+        if trace is not None:
+            self.step_traces.append(trace)
 
     def to_injection_text(self) -> str:
         """将 ``metrics_for_injection`` 序列化为 markdown 段。
@@ -284,7 +320,13 @@ class WorkflowTemplate(abc.ABC):
                 tools=tools,
                 system=system,
             )
-        except Exception:
+        except Exception as e:
+            # D5 修复：LLM 调用失败时写入 context.error_channel
+            # （由 WorkflowEngine.execute 末尾合并到 WorkflowResult.errors）
+            try:
+                context.append_error(f"LLM 调用失败: {type(e).__name__}: {e}")
+            except Exception:
+                pass
             return "", []
 
         response_text = ""

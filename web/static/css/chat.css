@@ -318,151 +318,14 @@
   font-weight: 600;
 }
 
-/* ========== 调度面板 ========== */
-.schedule-panel {
-  position: absolute;
-  top: 52px; right: 16px;
-  width: 420px;
-  max-height: calc(100vh - 72px);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-  z-index: 100;
-  display: none;
-  flex-direction: column;
-  overflow: hidden;
-}
-.schedule-panel.show { display: flex; animation: fadeIn 0.2s ease; }
-.schedule-panel.closing { animation: fadeOut 0.2s ease; }
-
-.schedule-section { border-bottom: 1px solid var(--border); }
-.schedule-section:last-child { border-bottom: none; }
-.schedule-section-header {
-  padding: 10px 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-.schedule-section-title { font-weight: 600; color: var(--text-primary); }
-.schedule-section-count {
-  padding: 1px 6px;
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-  border-radius: 8px;
-  font-size: 10px;
-}
-.schedule-section-toggle { color: var(--text-muted); cursor: pointer; font-size: 10px; }
-.schedule-section.collapsible .schedule-section-header { cursor: pointer; }
-.schedule-section.collapsible.collapsed .schedule-section-content,
-.schedule-section.collapsible.collapsed .has-scroll-mask { display: none; }
-
-.has-scroll-mask { max-height: 300px; overflow-y: auto; padding: 0 12px 8px; }
-.schedule-empty, .proposal-empty {
-  padding: 16px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-/* 调度会话列表 */
-.schedule-runs-list { padding: 0 12px 8px; }
-.schedule-run-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  background: var(--bg-primary);
-}
-.schedule-run-item:hover { border-color: var(--accent); }
-.schedule-run-name { flex: 1; min-width: 0; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.schedule-run-time { color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
-.schedule-run-status {
-  padding: 2px 6px; border-radius: 8px; font-size: 10px; flex-shrink: 0;
-}
-.schedule-run-status.running { background: var(--accent-soft); color: var(--accent); }
-.schedule-run-status.done { background: var(--success-soft); color: var(--success); }
-.schedule-run-status.failed { background: var(--danger-soft); color: var(--danger); }
-
-/* 提议卡片 */
-.proposal-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px;
-  margin-bottom: 8px;
-  background: var(--bg-primary);
-}
-.proposal-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.proposal-card-name { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.proposal-card-desc { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
-.proposal-card-actions { display: flex; gap: 6px; }
-
-/* 调度项卡片 */
-.schedule-item-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 6px;
-  background: var(--bg-primary);
-  cursor: pointer;
-}
-.schedule-item-card:hover { border-color: var(--accent); }
-.schedule-item-info { flex: 1; min-width: 0; }
-.schedule-item-name { font-size: 12px; color: var(--text-primary); }
-.schedule-item-cron { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
-.schedule-item-toggle { width: 36px; height: 20px; border-radius: 10px; background: var(--bg-tertiary); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
-.schedule-item-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-muted); transition: transform 0.2s, background 0.2s; }
-.schedule-item-toggle.is-on { background: var(--accent-soft); }
-.schedule-item-toggle.is-on::after { transform: translateX(16px); background: var(--accent); }
-
-/* 调度记忆 */
-.schedule-memories-list { padding: 0 12px 8px; }
-
-/* 审计列表 */
-.schedule-audit-list { padding: 0 12px 8px; }
-.audit-item {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 6px;
-  font-size: 11px;
-  background: var(--bg-primary);
-}
-.audit-item-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.audit-item-tool { font-family: var(--font-mono); color: var(--text-primary); }
-.audit-item-decision { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
-.audit-item-decision.allow { background: var(--success-soft); color: var(--success); }
-.audit-item-decision.deny { background: var(--danger-soft); color: var(--danger); }
-.audit-item-decision.confirm { background: var(--accent-soft); color: var(--accent); }
-.audit-item-decision.auto_allow { background: var(--bg-tertiary); color: var(--text-muted); }
-.audit-item-decision.auto_deny { background: var(--bg-tertiary); color: var(--text-muted); }
-
-/* cron_tool 卡片 */
-.cron-tool-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px;
-  margin-bottom: 8px;
-  background: var(--bg-primary);
-}
-.cron-tool-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.cron-tool-card-name { flex: 1; font-size: 12px; font-weight: 600; }
-.cron-tool-card-desc { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
-.cron-tool-card-actions { display: flex; gap: 6px; }
-
-/* ========== 消息区 ========== */
+/* ========== 消息区 ==========
+   关键：min-height:0 让 flex column 子项能正确收缩，否则内容撑开后
+   overflow-y:auto 失效，外层 overflow:hidden 裁切导致“滑轮划不动/页面变短” */
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -490,7 +353,7 @@
 }
 .welcome-screen .hints { font-size: 12px; }
 
-.message { max-width: 75%; animation: fadeInUp 0.25s ease; }
+.message { max-width: 75%; flex-shrink: 0; animation: fadeInUp 0.25s ease; }
 .message.user { align-self: flex-end; }
 .message.assistant { align-self: flex-start; }
 
@@ -850,41 +713,119 @@ pre:hover .copy-btn { opacity: 1; }
   border-radius: var(--radius-sm);
 }
 
-/* ========== 提议详情弹窗 ========== */
-.proposal-detail-modal, .cron-tool-detail-modal { max-width: 600px; }
-.proposal-detail-section { margin-bottom: 12px; }
-.proposal-detail-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-.proposal-detail-value {
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  background: var(--bg-primary);
-}
-.proposal-detail-edit-row { margin-bottom: 8px; }
-.proposal-detail-edit-row label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 2px; }
-.proposal-detail-edit-row input {
-  width: 100%;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-family: inherit;
-  box-sizing: border-box;
-}
-.proposal-detail-edit-row input:focus { outline: none; border-color: var(--accent); }
-.proposal-detail-footer-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
-
 /* ========== 输出过滤闪烁 ========== */
 .output-filtered-flash { animation: fadeIn 0.6s ease; }
 
 /* ========== 响应式 ========== */
+/* 手机档 768：sidebar 浮层化 + 顶栏折叠 + 输入区紧凑 */
 @media (max-width: 768px) {
-  .sidebar { position: absolute; z-index: 50; height: 100%; }
-  .sidebar.collapsed { margin-left: -280px; }
-  .message { max-width: 90%; }
-  .schedule-panel { left: 8px; right: 8px; width: auto; top: 56px; max-height: calc(100vh - 64px); }
-  .schedule-header-label { display: none; }
+  /* 修复 sidebar 浮层定位上下文（潜在 bug：父级需 position:relative） */
+  .app {
+    position: relative;
+  }
+
+  /* sidebar 浮层化 + 遮罩 */
+  .sidebar {
+    position: absolute;
+    z-index: 50;
+    height: 100%;
+    box-shadow: var(--shadow-lg);
+    /* 移动端默认收起（JS 初始化时也会加 collapsed 类，双保险） */
+    margin-left: -280px;
+  }
+  /* 展开状态：collapsed 类被移除时显示（覆盖上面的 -280px） */
+  .sidebar:not(.collapsed) {
+    margin-left: 0;
+  }
+  .sidebar-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-overlay, rgba(0, 0, 0, 0.4));
+    z-index: 40;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition);
+  }
+  .sidebar-overlay.show {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* 顶栏：单行紧凑，不再换行 */
+  .main-header {
+    flex-wrap: nowrap;
+    height: 44px;
+    gap: 6px;
+    padding: 0 10px;
+  }
+  .menu-toggle {
+    order: 0;
+    flex-shrink: 0;
+  }
+  .session-title {
+    font-size: 11px;
+    order: 1;
+    flex: 1;
+    min-width: 0;
+    flex-basis: auto;
+  }
+  .status-dot {
+    order: 2;                     /* 保持在标题右侧 */
+    flex-shrink: 0;
+  }
+  .topbar-actions {
+    order: 3;                     /* 拉到最右 */
+    margin-left: 0;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .schedule-header-btn {
+    order: 3;                     /* 与 topbar-actions 同组，靠右 */
+    display: flex;
+    padding: 4px 6px;
+  }
+  .schedule-header-btn .schedule-header-label {
+    display: none;                /* 只显示图标 */
+  }
+
+  /* 手机端只隐藏强调色选择器 */
+  .topbar-actions .accent-picker {
+    display: none;
+  }
+
+  /* 消息气泡更宽 */
+  .message {
+    max-width: 90%;
+  }
+  /* 输入区紧凑 */
+  .input-area {
+    padding: var(--space-2) var(--space-3);
+  }
+  .input-area-row {
+    gap: var(--space-2);
+  }
+  .input-wrapper textarea {
+    font-size: 13px;
+  }
+
+  /* 欢迎屏字号缩小 */
+  .welcome-screen .logo {
+    font-size: 36px;
+  }
+  .welcome-screen .subtitle {
+    font-size: 16px;
+  }
+}
+
+/* 极窄屏 480：小屏手机 */
+@media (max-width: 480px) {
+  .message {
+    max-width: 95%;
+  }
+  .input-area-row {
+    gap: var(--space-1);
+  }
+  .main-header {
+    padding: var(--space-2);
+  }
 }

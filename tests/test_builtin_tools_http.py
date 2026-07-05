@@ -255,7 +255,7 @@ class TestTruncationAndMetadata(unittest.TestCase):
 
     @patch("src.agent.builtin_tools.httpx.Client")
     def test_long_body_truncated(self, mock_client_cls):
-        long_body = "x" * 15000
+        long_body = "x" * 60000
         self._mock(mock_client_cls, 200, long_body, "text/plain")
         result = http_request("https://example.com/large")
         self.assertIn("截断", result)

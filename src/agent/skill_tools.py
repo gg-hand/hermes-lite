@@ -23,6 +23,17 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# SkillMeta / Skill 用于 _handle_list_skills 中的 isinstance 类型检查
+# （防御 MagicMock 测试场景下 _metas / _skills 返回 MagicMock 而非真实实例）
+try:
+    from ..skill.loader import SkillMeta, Skill  # type: ignore
+except ImportError:  # pragma: no cover - 直接运行模块时回退
+    try:
+        from skill.loader import SkillMeta, Skill  # type: ignore
+    except ImportError:  # pragma: no cover
+        SkillMeta = None  # type: ignore
+        Skill = None  # type: ignore
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -115,57 +126,83 @@ def _validate_skill_name(name: str) -> str:
 
 
 def _handle_skill_template(tool_input: dict) -> str:
-    """Handler 1：生成 Skill 模板文件（各字段说明 + tools.py）。
+    """Handler 1：生成 Skill 模板文件（各字段说明 + scripts/ + SKILL.md）。
 
     propose_skill 的 schema 已改为结构化字段（description/version/requires/
-    skill_body），LLM 不再需要自己组装完整的 SKILL.md。本工具返回各字段
-    用途说明和 tools.py 模板。
+    skill_body），且新范式以 ``scripts_files`` 路径为准（SKILL.md frontmatter
+    + scripts/main.py + 调用示例）。本工具返回各字段用途说明、scripts/main.py
+    模板与 SKILL.md 模板。
 
     参数:
         tool_input: 工具输入（当前未使用，预留）。
 
     返回:
-        含 ``fields``（各字段说明）与 ``tools_py``（模板）的 JSON 字符串。
+        含 ``fields``（各字段说明）、``scripts_template``（scripts/main.py
+        模板）与 ``skill_md_template``（SKILL.md 模板）的 JSON 字符串。
     """
     fields = {
-        "name": "my_skill",
-        "description": "A sample skill — 简短描述，必填",
-        "version": "0.1.0 — 语义化版本，默认 1.0.0",
-        "requires": "[] — 依赖的其他 Skill 名称列表",
-        "skill_body": "# my_skill\n\nDescribe what this skill does.\n  — 正文 markdown，可选",
+        "name": "Skill 名称（小写，下划线分隔）",
+        "description": "一句话描述 Skill 用途",
+        "version": "语义化版本，默认 0.1.0",
+        "requires": "依赖的 Python 包名列表",
+        "skill_body": "SKILL.md 的 body 部分内容（激活后注入 LLM 上下文）",
     }
 
-    tools_py_template = (
-        '"""Skill tools for my_skill."""\n'
-        "\n"
-        "from typing import Any, Dict\n"
-        "\n"
-        "TOOLS = [\n"
-        "    {\n"
-        '        "name": "my_tool",\n'
-        '        "description": "Tool description",\n'
-        '        "handler": "my_handler",\n'
-        '        "input_schema": {\n'
-        '            "type": "object",\n'
-        '            "properties": {\n'
-        '                "param": {\n'
-        '                    "type": "string",\n'
-        '                    "description": "Parameter description",\n'
-        "                },\n"
-        "            },\n"
-        '            "required": ["param"],\n'
-        "        },\n"
-        "    },\n"
-        "]\n"
-        "\n"
-        "\n"
-        'def my_handler(param: str) -> str:\n'
-        '    """Handle my_tool."""\n'
-        "    return f\"Hello, {param}!\"\n"
-    )
+    scripts_template = '''#!/usr/bin/env python3
+"""Skill scripts 模板 - 通过 skill__resource 读取后由 bash_exec 调用"""
+import sys
+import json
+
+
+def my_handler(arg1: str, arg2: int = 0) -> dict:
+    """示例 handler：处理输入并返回结果"""
+    # TODO: 实现具体逻辑
+    return {"status": "ok", "input": arg1, "count": arg2}
+
+
+def _main(argv):
+    """CLI 入口：解析 JSON 参数并调用 handler"""
+    if len(argv) < 2:
+        print(json.dumps({"error": "missing json argument"}))
+        return 1
+    args = json.loads(argv[1])
+    result = my_handler(**args)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv))
+'''
+
+    skill_md_template = '''---
+name: my_skill
+description: 一句话描述 Skill 用途
+version: 0.1.0
+requires:
+  - requests
+---
+
+# My Skill
+
+本 Skill 用于处理 XX 任务。
+
+## 调用方式
+
+通过 bash_exec 执行：
+```bash
+python scripts/main.py '{"arg1": "hello", "arg2": 1}'
+```
+
+或通过 skill__resource 读取 scripts/main.py 内容后由 LLM 自行调用。
+'''
 
     return json.dumps(
-        {"fields": fields, "tools_py": tools_py_template},
+        {
+            "fields": fields,
+            "scripts_template": scripts_template,
+            "skill_md_template": skill_md_template,
+        },
         ensure_ascii=False,
     )
 
@@ -174,22 +211,23 @@ def _handle_propose_skill(
     tool_input: dict,
     registry: Any,
     skill_loader: Any,
+    orchestrator: Any = None,
 ) -> str:
     """Handler 2：新增一个本地 Skill 到 ``skills/`` 目录。
 
-    流程：
-    1. 校验技能名称、frontmatter YAML 解析、名称一致性。
-    2. 检查技能是否已存在。
-    3. 对 ``tools.py`` 做语法检查（``compile``）。
-    4. 创建目录并写入文件；失败时 ``shutil.rmtree`` 回滚。
-    5. 调用 ``skill_loader.unload`` + ``skill_loader.load`` 重新发现，
-       然后 ``load_skill_to_registry`` 注册到 Deferred Tier。
+    双路径支持：
+    - **新路径**（``scripts_files`` 非空）：写入 ``scripts/`` 多文件 +
+      ``register_skill_stub`` 注册激活按钮到 Core Tier（对齐 agentskills.io）。
+    - **旧路径**（``tools_py`` 非空，``scripts_files`` 为空）：写入 ``tools.py`` +
+      ``load_skill_to_registry`` 通过 importlib 注册业务工具到 Deferred Tier。
+    - **两者都空**：仅创建 SKILL.md + 注册激活按钮（若 orchestrator 可用）。
 
     参数:
         tool_input: 含 ``name`` / ``description`` / ``version`` / ``requires`` /
-            ``skill_body`` / ``tools_py`` 字段的 dict。
+            ``skill_body`` / ``scripts_files`` / ``tools_py`` 字段的 dict。
         registry: ``ToolRegistry`` 实例（通过 closure 捕获）。
         skill_loader: ``SkillLoader`` 实例（通过 closure 捕获）。
+        orchestrator: ``Orchestrator`` 实例（可选，供注册 activate handler）。
 
     返回:
         操作结果 JSON 字符串。成功时含 ``status="activated"`` 与 ``tools`` 列表。
@@ -200,6 +238,7 @@ def _handle_propose_skill(
     requires = tool_input.get("requires", []) or []
     skill_body = (tool_input.get("skill_body") or "").strip()
     tools_py_content = (tool_input.get("tools_py") or "").strip()
+    scripts_files = tool_input.get("scripts_files", {}) or {}
 
     # 1. 校验技能名称
     err = _validate_skill_name(name)
@@ -251,8 +290,8 @@ def _handle_propose_skill(
                 ensure_ascii=False,
             )
 
-    # 5. 对 tools.py 做语法检查
-    if tools_py_content:
+    # 5. 对 tools.py 做语法检查（旧路径）
+    if tools_py_content and not scripts_files:
         try:
             compile(tools_py_content, f"<skills/{name}/tools.py>", "exec")
         except SyntaxError as e:
@@ -280,7 +319,23 @@ def _handle_propose_skill(
     reason = ""
     try:
         (target_dir / "SKILL.md").write_text(skill_md_content, encoding="utf-8")
-        if tools_py_content:
+
+        # 新路径：写入 scripts/ 多文件
+        if scripts_files:
+            scripts_dir = target_dir / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            for rel_path, content in scripts_files.items():
+                # 防路径穿越
+                if ".." in rel_path or Path(rel_path).is_absolute():
+                    rollback = True
+                    reason = f"scripts_files 路径非法: {rel_path}"
+                    break
+                file_path = scripts_dir / rel_path
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(content, encoding="utf-8")
+
+        # 旧路径：写入 tools.py（仅当未提供 scripts_files 时）
+        elif tools_py_content:
             (target_dir / "tools.py").write_text(tools_py_content, encoding="utf-8")
     except Exception as e:
         rollback = True
@@ -293,25 +348,49 @@ def _handle_propose_skill(
             ensure_ascii=False,
         )
 
-    # 7. 重新加载并注册到 registry
+    # 7. 注册到 registry（双路径）
     tools_list: List[Dict[str, Any]] = []
     try:
         if skill_loader is not None:
             skill_loader.unload(name)
-            skill = skill_loader.load(name)
-            if skill is not None:
-                from ..skill.loader import load_skill_to_registry
+            # 重新发现以更新 meta 缓存
+            skill_file = target_dir / "SKILL.md"
+            if hasattr(skill_loader, "_parse_meta"):
+                meta = skill_loader._parse_meta(skill_file)
+                if meta is not None:
+                    skill_loader._metas[name] = meta
 
-                load_skill_to_registry(registry, skill)
-                tools_list = [
-                    {
-                        "name": f"skill__{name}__{t['name']}",
-                        "description": t.get("description", ""),
-                        "input_schema": t.get("input_schema", {}),
-                    }
-                    for t in skill.tools
-                    if t.get("name")
-                ]
+                    # 新路径：注册 skill__{name} 激活按钮到 Core Tier
+                    if orchestrator is not None and register_skill_stub is not None:
+                        try:
+                            from ..skill.loader import register_skill_stub as _register_stub
+                            handler = _make_skill_activate_handler(
+                                skill_loader, orchestrator, name
+                            )
+                            _register_stub(registry, meta, handler)
+                            tools_list.append({
+                                "name": f"skill__{name}",
+                                "description": f"[Skill] 激活 {name}",
+                            })
+                        except Exception as e:
+                            logger.error("注册 skill stub %s 失败: %s", name, e)
+
+            # 旧路径：通过 importlib 加载 tools.py 并注册业务工具
+            if not scripts_files and tools_py_content:
+                skill = skill_loader.load(name)
+                if skill is not None and skill.tools:
+                    from ..skill.loader import load_skill_to_registry
+
+                    load_skill_to_registry(registry, skill)
+                    tools_list.extend([
+                        {
+                            "name": f"skill__{name}__{t['name']}",
+                            "description": t.get("description", ""),
+                            "input_schema": t.get("input_schema", {}),
+                        }
+                        for t in skill.tools
+                        if t.get("name")
+                    ])
     except Exception as e:
         # 注册失败不回滚文件（文件已写入，允许用户修复后重试 reload）
         logger.error("注册技能 %s 失败: %s", name, e)
@@ -333,21 +412,26 @@ def _handle_reload_skill(
     tool_input: dict,
     registry: Any,
     skill_loader: Any,
+    orchestrator: Any = None,
 ) -> str:
-    """Handler 3：重新加载指定 Skill 到 Deferred Tier。
+    """Handler 3：重新加载指定 Skill（双路径注册）。
 
     流程：
-    1. 从 registry 卸载该 Skill 所有工具（前缀 ``skill__{name}__``）。
+    1. 卸载旧工具：``skill__{name}`` 激活按钮（精确名）+ ``skill__{name}__``
+       旧业务工具（前缀）。
     2. 清除 skill_loader 缓存后重新加载（``unload`` + ``load``）。
-    3. 注册到 registry Deferred Tier。
+    3. 双路径注册：
+       - 新路径（``orchestrator`` 可用）：``register_skill_stub`` 注册激活按钮到 Core Tier。
+       - 旧路径（``skill.tools`` 非空）：``load_skill_to_registry`` 注册业务工具到 Deferred Tier。
 
     参数:
         tool_input: 含 ``name`` 字段的 dict。
         registry: ``ToolRegistry`` 实例（通过 closure 捕获）。
         skill_loader: ``SkillLoader`` 实例（通过 closure 捕获）。
+        orchestrator: ``Orchestrator`` 实例（可选，供注册 activate handler）。
 
     返回:
-        JSON 字符串，含 ``status`` 字段（``"reloaded"`` 或 ``"error"``）。
+        JSON 字符串，含 ``status`` 字段（``"reloaded"`` 或 ``"error"``）+ ``tools`` 列表。
     """
     name = (tool_input.get("name") or "").strip()
     err = _validate_skill_name(name)
@@ -360,9 +444,12 @@ def _handle_reload_skill(
             ensure_ascii=False,
         )
 
-    # 1. 卸载旧工具
-    prefix = f"skill__{name}__"
-    _unregister_by_prefix(registry, prefix)
+    # 1. 卸载旧工具：激活按钮（精确名）+ 旧业务工具（前缀）
+    try:
+        registry.unregister(f"skill__{name}")
+    except Exception:
+        pass  # 未注册时忽略
+    _unregister_by_prefix(registry, f"skill__{name}__")
 
     # 2. 清除缓存并重新加载
     try:
@@ -383,32 +470,64 @@ def _handle_reload_skill(
             ensure_ascii=False,
         )
 
-    # 3. 注册到 Deferred Tier
-    try:
-        from ..skill.loader import load_skill_to_registry
+    # 3. 双路径注册
+    tools_registered: List[str] = []
 
-        load_skill_to_registry(registry, skill)
-    except Exception as e:
-        logger.error("注册技能 %s 失败: %s", name, e)
-        return json.dumps(
-            {"status": "error", "reason": f"注册失败: {e}"},
-            ensure_ascii=False,
-        )
+    # 新路径：注册 skill__{name} 激活按钮到 Core Tier
+    if orchestrator is not None:
+        try:
+            from ..skill.loader import register_skill_stub as _register_stub
 
-    return json.dumps({"status": "reloaded"}, ensure_ascii=False)
+            meta = (
+                skill_loader._metas.get(name)
+                if hasattr(skill_loader, "_metas") else None
+            )
+            if meta is None and hasattr(skill_loader, "_parse_meta"):
+                skill_file = SKILL_BASE_DIR / name / "SKILL.md"
+                if skill_file.exists():
+                    meta = skill_loader._parse_meta(skill_file)
+            if meta is not None:
+                handler = _make_skill_activate_handler(
+                    skill_loader, orchestrator, name
+                )
+                _register_stub(registry, meta, handler)
+                tools_registered.append(f"skill__{name}")
+        except Exception as e:
+            logger.error("注册 skill stub %s 失败: %s", name, e)
+
+    # 旧路径：若 skill 有 tools，加载业务工具到 Deferred Tier（向后兼容）
+    if skill is not None and skill.tools:
+        try:
+            from ..skill.loader import load_skill_to_registry
+
+            load_skill_to_registry(registry, skill)
+            tools_registered.extend(
+                f"skill__{name}__{t.get('name', '')}"
+                for t in skill.tools if t.get("name")
+            )
+        except Exception as e:
+            logger.error("注册 skill 业务工具 %s 失败: %s", name, e)
+
+    return json.dumps(
+        {"status": "reloaded", "tools": tools_registered},
+        ensure_ascii=False,
+    )
 
 
 def _handle_toggle_skill(
     tool_input: dict,
     registry: Any,
     skill_loader: Any,
+    orchestrator: Any = None,
 ) -> str:
-    """Handler 4：启用/禁用指定 Skill。
+    """Handler 4：启用/禁用指定 Skill（软禁用语义 + 双路径注册）。
 
-    禁用：从 registry Deferred Tier 移除该 Skill 所有工具，并记入状态文件
-    ``disabled`` 列表。
-    启用：从状态文件 ``disabled`` 列表移除，通过 ``skill_loader`` 重新加载
-    并注册到 registry。
+    禁用：通过 ``registry.disable_skill(name)`` 软禁用（schema 标 ``enabled: False``，
+    执行抛 ``ToolNotFoundError``），保留工具在 registry 中保持 schema 稳定，
+    并记入状态文件 ``disabled`` 列表。
+    启用：从状态文件 ``disabled`` 列表移除，调 ``registry.enable_skill(name)``
+    清除软禁用标记，并通过 ``skill_loader`` 重新加载走双路径注册
+    （新路径 register_skill_stub + 旧路径 load_skill_to_registry）。
 
     锁定列表中的技能不可切换。
 
@@ -417,6 +536,7 @@ def _handle_toggle_skill(
             的 dict。
         registry: ``ToolRegistry`` 实例（通过 closure 捕获）。
         skill_loader: ``SkillLoader`` 实例（通过 closure 捕获）。
+        orchestrator: ``Orchestrator`` 实例（可选，供注册 activate handler）。
 
     返回:
         JSON 字符串，含 ``status`` 字段
@@ -446,9 +566,10 @@ def _handle_toggle_skill(
         )
 
     if action == "disable":
-        # 禁用：从 registry 移除工具 + 记入禁用清单
-        prefix = f"skill__{name}__"
-        _unregister_by_prefix(registry, prefix)
+        # 软禁用：保留工具在 registry 中保持 schema 稳定，
+        # schema 标 enabled: False，执行时抛 ToolNotFoundError。
+        # 工具不再从 registry 中物理删除。
+        registry.disable_skill(name)
 
         disabled = state.get("disabled", [])
         if name not in disabled:
@@ -465,15 +586,41 @@ def _handle_toggle_skill(
         state["disabled"] = disabled
         _save_skill_state(state)
 
-        # 重新加载并注册（通过 skill_loader）
+        # 清除软禁用标记（使 schema 中 enabled: False 移除）
+        registry.enable_skill(name)
+
+        # 重新加载并注册（双路径）
         if skill_loader is not None:
             try:
                 skill_loader.unload(name)
                 skill = skill_loader.load(name)
                 if skill is not None:
-                    from ..skill.loader import load_skill_to_registry
+                    # 新路径：注册 skill__{name} 激活按钮到 Core Tier
+                    if orchestrator is not None:
+                        try:
+                            from ..skill.loader import register_skill_stub as _register_stub
 
-                    load_skill_to_registry(registry, skill)
+                            meta = (
+                                skill_loader._metas.get(name)
+                                if hasattr(skill_loader, "_metas") else None
+                            )
+                            if meta is None and hasattr(skill_loader, "_parse_meta"):
+                                skill_file = SKILL_BASE_DIR / name / "SKILL.md"
+                                if skill_file.exists():
+                                    meta = skill_loader._parse_meta(skill_file)
+                            if meta is not None:
+                                handler = _make_skill_activate_handler(
+                                    skill_loader, orchestrator, name
+                                )
+                                _register_stub(registry, meta, handler)
+                        except Exception as e:
+                            logger.error("启用 skill stub %s 失败: %s", name, e)
+
+                    # 旧路径：注册业务工具到 Deferred Tier
+                    if skill.tools:
+                        from ..skill.loader import load_skill_to_registry
+
+                        load_skill_to_registry(registry, skill)
             except Exception as e:
                 logger.error("启用技能 %s 后重新加载失败: %s", name, e)
                 return json.dumps(
@@ -497,11 +644,15 @@ def _handle_list_skills(
     - ``disabled``：状态文件中的已禁用列表。
     - ``locked``：状态文件中的锁定列表。
 
-    传 ``name`` 时返回该技能的详细工具列表。
+    传 ``name`` 时返回该技能的元数据详情（``SkillMeta``）+ 软禁用/stub 状态。
+    主信息改为 meta（``name``/``version``/``description``/``body_preview``/
+    ``resources``/``disabled``/``stub_registered``），不再调 ``skill_loader.load()``
+    读空的 ``tools.py``。若 ``_skills`` 缓存中已有 Skill 实例，则附加 ``tools``
+    字段作为补充（向后兼容）。
 
     参数:
         tool_input: 可含 ``name`` 字段的 dict。
-        registry: ``ToolRegistry`` 实例（忽略，预留）。
+        registry: ``ToolRegistry`` 实例（用于查询软禁用/stub 状态）。
         skill_loader: ``SkillLoader`` 实例（通过 closure 捕获）。
 
     返回:
@@ -517,38 +668,83 @@ def _handle_list_skills(
                 {"status": "error", "reason": "skill_loader 不可用"},
                 ensure_ascii=False,
             )
-        skill = None
-        if hasattr(skill_loader, "_skills"):
-            skill = skill_loader._skills.get(skill_name)
-        if skill is None:
+
+        # 主信息：从 _metas 缓存或 discover() 取 SkillMeta
+        meta = None
+        if hasattr(skill_loader, "_metas"):
+            cached = skill_loader._metas.get(skill_name)
+            # isinstance 检查防御 MagicMock（测试场景下 _metas 可能不是真实 dict）
+            if SkillMeta is not None and isinstance(cached, SkillMeta):
+                meta = cached
+        if meta is None:
             try:
-                skill = skill_loader.load(skill_name)
+                for m in skill_loader.discover():
+                    if m.name == skill_name:
+                        meta = m
+                        break
             except Exception:
                 pass
-        if skill is None:
+        # 退化路径：若 _parse_meta 可用，尝试直接解析磁盘上的 SKILL.md
+        if meta is None and hasattr(skill_loader, "_parse_meta"):
+            try:
+                skill_file = SKILL_BASE_DIR / skill_name / "SKILL.md"
+                if skill_file.exists():
+                    parsed = skill_loader._parse_meta(skill_file)
+                    if SkillMeta is not None and isinstance(parsed, SkillMeta):
+                        meta = parsed
+            except Exception:
+                pass
+
+        # 兼容性：若 _skills 缓存命中 Skill 实例，附带 tools/system_prompt 字段
+        cached_skill = None
+        if hasattr(skill_loader, "_skills"):
+            cached_skill = skill_loader._skills.get(skill_name)
+            # 防御 MagicMock：确保是真实 Skill 实例
+            if Skill is not None and not isinstance(cached_skill, Skill):
+                cached_skill = None
+
+        # meta 与 cached_skill 都为空时返回 error
+        if meta is None and cached_skill is None:
             return json.dumps(
                 {"status": "error", "reason": f"技能 {skill_name!r} 不存在"},
                 ensure_ascii=False,
             )
 
-        tools_list = []
-        for t in skill.tools:
-            tname = t.get("name", "")
-            tools_list.append({
-                "name": f"skill__{skill.name}__{tname}" if tname else "",
-                "description": t.get("description", ""),
-                "input_schema": t.get("input_schema", {}),
-            })
+        # 组装返回结果（主信息来自 meta，cached_skill 仅作补充）
+        result: Dict[str, Any] = {
+            "name": (meta.name if meta is not None else cached_skill.name),
+            "version": (meta.version if meta is not None else "0.1.0"),
+            "description": (
+                meta.description if meta is not None
+                else getattr(cached_skill, "description", "")
+            ),
+            "body_preview": (meta.body or "")[:200] if meta is not None else "",
+            "resources": (meta.resources or []) if meta is not None else [],
+            "disabled": (
+                registry.is_skill_disabled(skill_name)
+                if hasattr(registry, "is_skill_disabled") else
+                skill_name in state.get("disabled", [])
+            ),
+            "stub_registered": (
+                bool(registry.get_full_schema(f"skill__{skill_name}"))
+                if hasattr(registry, "get_full_schema") else False
+            ),
+        }
 
-        return json.dumps(
-            {
-                "name": skill.name,
-                "description": getattr(skill, "description", ""),
-                "system_prompt": skill.system_prompt,
-                "tools": tools_list,
-            },
-            ensure_ascii=False,
-        )
+        # 兼容性：若 cached_skill 有 tools/system_prompt，附加到返回中
+        if cached_skill is not None:
+            tools_list = []
+            for t in cached_skill.tools:
+                tname = t.get("name", "")
+                tools_list.append({
+                    "name": f"skill__{cached_skill.name}__{tname}" if tname else "",
+                    "description": t.get("description", ""),
+                    "input_schema": t.get("input_schema", {}),
+                })
+            result["tools"] = tools_list
+            result["system_prompt"] = cached_skill.system_prompt
+
+        return json.dumps(result, ensure_ascii=False)
 
     # 概览模式
     loaded_list: List[Dict[str, Any]] = []
@@ -624,40 +820,108 @@ def _unregister_by_prefix(registry: Any, prefix: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Skill 激活 handler + 资源 handler 工厂（P1-2）
+# ---------------------------------------------------------------------------
+
+
+def _make_skill_activate_handler(skill_loader: Any, orchestrator: Any, skill_name: str):
+    """为指定 skill 生成激活 handler（closure 捕获 skill_name）。
+
+    LLM 调用 ``skill__{name}()`` 后触发：
+    1. 从 ``orchestrator._current_session_id`` 获取当前会话 ID
+       （在 ``run``/``run_stream`` 入口已设置）
+    2. 调用 ``orchestrator.activate_skill(skill_name, session_id=...)``
+       标记 skill 为已激活（下一轮注入 body 到 messages[0] 末位）
+    3. 返回激活成功信息 + body 预览（前 100 字）
+
+    参数:
+        skill_loader: ``SkillLoader`` 实例（用于检查存在性 + 加载 body 预览）。
+        orchestrator: ``Orchestrator`` 实例（用于 activate_skill + session_id）。
+        skill_name: Skill 名称（closure 捕获，每个 skill 独立 handler）。
+
+    返回:
+        handler 函数，签名 ``(**kwargs) -> str``。
+    """
+    def handler(**kwargs) -> str:
+        if not skill_loader.skill_exists(skill_name):
+            return f"Skill '{skill_name}' 不存在"
+        session_id = getattr(orchestrator, "_current_session_id", None) or "default"
+        try:
+            orchestrator.activate_skill(skill_name, session_id=session_id)
+        except Exception as e:
+            return f"激活 Skill '{skill_name}' 失败: {e}"
+        body_preview = skill_loader.load_body(skill_name)[:100]
+        return (
+            f"Skill '{skill_name}' 已激活，body 将在下一轮注入上下文。"
+            f"预览: {body_preview}..."
+        )
+    return handler
+
+
+def _make_skill_resource_handler(skill_loader: Any):
+    """生成 ``skill__resource`` 工具的 handler（读取 L3 资源）。
+
+    参数:
+        skill_loader: ``SkillLoader`` 实例（调用 ``load_resource``）。
+
+    返回:
+        handler 函数，签名 ``(**kwargs) -> str``。
+    """
+    def handler(**kwargs) -> str:
+        name = kwargs.get("name", "")
+        rel_path = kwargs.get("rel_path", "")
+        if not name or not rel_path:
+            return "参数 name 和 rel_path 必填"
+        # 防路径穿越（load_resource 内部也做了，这里前置检查给出明确错误）
+        if ".." in rel_path or Path(rel_path).is_absolute():
+            return f"rel_path 不允许包含 .. 或绝对路径: {rel_path}"
+        try:
+            content = skill_loader.load_resource(name, rel_path)
+            return content
+        except Exception as e:
+            return f"读取 skill 资源失败: {e}"
+    return handler
+
+
+# ---------------------------------------------------------------------------
 # 注册函数
 # ---------------------------------------------------------------------------
 
 
-def register_skill_tools(registry: Any, skill_loader: Any) -> None:
-    """注册 5 个 Skill 管理工具到 ToolRegistry 的 Core Tier。
+def register_skill_tools(registry: Any, skill_loader: Any, orchestrator: Any = None) -> None:
+    """注册 6 个 Skill 管理工具到 ToolRegistry 的 Core Tier。
 
     所有工具通过 ``register_core()`` 注册，保证始终全量注入
     （字节级稳定，KV cache 100% 命中）。
 
-    工具清单：
-    1. ``skill_template`` — 生成 SKILL.md 与 tools.py 模板。
-    2. ``propose_skill`` — 新增本地 Skill 到 ``skills/`` 目录。
-    3. ``reload_skill`` — 重新加载指定 Skill。
-    4. ``toggle_skill`` — 启用/禁用指定 Skill。
-    5. ``list_skills`` — 列出可用技能或查询详情。
+    工具清单（双下划线命名规范）：
+    1. ``skill__template`` — 生成 SKILL.md 与 scripts/ 模板。
+    2. ``skill__propose`` — 新增本地 Skill 到 ``skills/`` 目录。
+    3. ``skill__reload`` — 重新加载指定 Skill。
+    4. ``skill__toggle`` — 启用/禁用指定 Skill。
+    5. ``skill__list`` — 列出可用技能或查询详情。
+    6. ``skill__resource`` — 读取 Skill 的 scripts/ 资源文件内容。
 
     参数:
         registry: ``ToolRegistry`` 实例。
         skill_loader: ``SkillLoader`` 实例。
+        orchestrator: ``Orchestrator`` 实例（可选，供 propose/reload/toggle
+            创建 activate handler 注册 skill stub 到 Core Tier）。为 None 时
+            这些 handler 退化为仅走旧 load_skill_to_registry 路径。
     """
     # ------------------------------------------------------------------
-    # 1. skill_template
+    # 1. skill__template
     # ------------------------------------------------------------------
     def _template(**kwargs) -> str:
-        """生成 SKILL.md 与 tools.py 模板内容。"""
+        """生成 SKILL.md 与 scripts/ 模板内容。"""
         return _handle_skill_template({})
 
-    registry.register_deferred(
-        name="skill_template",
+    registry.register_core(
+        name="skill__template",
         description=(
             "生成 Skill 模板：返回各结构化字段说明（name/description/"
-            "version/requires/skill_body）与 tools.py 代码模板，供 "
-            "propose_skill 工具参考使用。"
+            "version/requires/skill_body）与 scripts/ 代码模板，供 "
+            "skill__propose 工具参考使用。"
         ),
         input_schema={
             "type": "object",
@@ -668,16 +932,18 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2. propose_skill
+    # 2. skill__propose
     # ------------------------------------------------------------------
     def _propose(**kwargs) -> str:
         """新增一个本地 Skill 到 skills/ 目录并激活。"""
-        return _handle_propose_skill(kwargs, registry, skill_loader)
+        return _handle_propose_skill(kwargs, registry, skill_loader, orchestrator)
 
-    registry.register_deferred(
-        name="skill_propose",
+    registry.register_core(
+        name="skill__propose",
         description=(
-            "新增一个本地 Skill 到 skills/ 目录：传入结构化字段（name/description/version/requires/skill_body），系统自动组装 SKILL.md；可选传入 tools_py，语法检查通过后注册到 Deferred Tier 并激活。"
+            "新增一个本地 Skill 到 skills/ 目录：传入结构化字段（name/description/version/requires/skill_body），"
+            "系统自动组装 SKILL.md。可选传入 scripts_files（新路径，写入 scripts/ 并注册激活按钮）"
+            "或 tools_py（旧路径，写入 tools.py 并通过 importlib 注册）。"
         ),
         input_schema={
             "type": "object",
@@ -701,7 +967,7 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
                 "requires": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "依赖的其他 Skill 名称列表，默认 []。",
+                    "description": "依赖的其他 Python 包名列表，默认 []。",
                     "default": [],
                 },
                 "skill_body": {
@@ -711,11 +977,20 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
                         "可选，不含时仅生成 frontmatter。"
                     ),
                 },
+                "scripts_files": {
+                    "type": "object",
+                    "description": (
+                        "scripts/ 下要创建的文件映射 {相对路径: 内容}。"
+                        "如 {\"calculator.py\": \"...\"}。提供此字段时走新路径"
+                        "（写入 scripts/ + 注册 skill__{name} 激活按钮到 Core Tier）。"
+                    ),
+                    "default": {},
+                },
                 "tools_py": {
                     "type": "string",
                     "description": (
-                        "tools.py 完整内容（Python 源码，定义 TOOLS 列表与 "
-                        "handler 函数）。可选，不含时仅创建 SKILL.md。"
+                        "tools.py 完整内容（旧路径，Python 源码，定义 TOOLS 列表与 "
+                        "handler 函数）。可选，提供 scripts_files 时此字段忽略。"
                     ),
                     "default": "",
                 },
@@ -726,17 +1001,19 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 3. reload_skill
+    # 3. skill__reload
     # ------------------------------------------------------------------
     def _reload(**kwargs) -> str:
         """重新加载指定 Skill。"""
-        return _handle_reload_skill(kwargs, registry, skill_loader)
+        return _handle_reload_skill(kwargs, registry, skill_loader, orchestrator)
 
-    registry.register_deferred(
-        name="skill_reload",
+    registry.register_core(
+        name="skill__reload",
         description=(
-            "重新加载指定 Skill：从 registry 卸载旧工具，清除缓存后重新读取"
-            " skills/ 目录下的文件并注册到 Deferred Tier。用于代码修改后热更新。"
+            "重新加载指定 Skill：从 registry 卸载旧工具（skill__{name} 激活按钮 + "
+            "skill__{name}__ 旧业务工具），清除缓存后重新读取 skills/ 目录下的文件。"
+            "若 orchestrator 可用，注册 skill__{name} 激活按钮到 Core Tier；"
+            "若 skill 有 tools.py，同时走旧路径注册业务工具。用于代码修改后热更新。"
         ),
         input_schema={
             "type": "object",
@@ -752,17 +1029,18 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 4. toggle_skill
+    # 4. skill__toggle
     # ------------------------------------------------------------------
     def _toggle(**kwargs) -> str:
         """启用或禁用指定 Skill。"""
-        return _handle_toggle_skill(kwargs, registry, skill_loader)
+        return _handle_toggle_skill(kwargs, registry, skill_loader, orchestrator)
 
-    registry.register_deferred(
-        name="skill_toggle",
+    registry.register_core(
+        name="skill__toggle",
         description=(
-            "启用或禁用指定 Skill。禁用时从注册中心移除所有工具并记入禁用清单；"
-            "启用时从禁用清单移除并重新加载注册。锁定列表中的技能不可操作。"
+            "启用或禁用指定 Skill。禁用时从注册中心移除所有工具（skill__{name} + "
+            "skill__{name}__）并记入禁用清单；启用时从禁用清单移除并重新加载注册。"
+            "锁定列表中的技能不可操作。"
         ),
         input_schema={
             "type": "object",
@@ -783,14 +1061,14 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 5. list_skills
+    # 5. skill__list
     # ------------------------------------------------------------------
     def _list(**kwargs) -> str:
         """列出可用技能或查询单技能详情。"""
         return _handle_list_skills(kwargs, registry, skill_loader)
 
-    registry.register_deferred(
-        name="skill_list",
+    registry.register_core(
+        name="skill__list",
         description=(
             "列出可用技能或查询单技能详情。不含 name 参数时返回概览"
             "（已加载技能、磁盘上发现的技能、禁用列表、锁定列表）；"
@@ -810,4 +1088,32 @@ def register_skill_tools(registry: Any, skill_loader: Any) -> None:
             "required": [],
         },
         handler=_list,
+    )
+
+    # ------------------------------------------------------------------
+    # 6. skill__resource — 读取 Skill 的 scripts/ 资源文件
+    # ------------------------------------------------------------------
+    def _resource(**kwargs) -> str:
+        """读取 Skill 的 scripts/ 资源文件内容。"""
+        return _make_skill_resource_handler(skill_loader)(**kwargs)
+
+    registry.register_core(
+        name="skill__resource",
+        description=(
+            "读取 Skill 的 scripts/ 资源文件内容。"
+            "参数 name(skill 名) + rel_path(scripts/ 下相对路径，"
+            "不允许含 .. 或绝对路径)。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill 名称"},
+                "rel_path": {
+                    "type": "string",
+                    "description": "scripts/ 下相对路径（如 calculator.py）",
+                },
+            },
+            "required": ["name", "rel_path"],
+        },
+        handler=_resource,
     )

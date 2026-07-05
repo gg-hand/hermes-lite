@@ -217,3 +217,20 @@ select:focus-visible {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---------- 响应式：手机端全局优化 ---------- */
+@media (max-width: 768px) {
+  /* 滚动条变细，避免占用过多横向空间 */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  * {
+    scrollbar-width: thin;
+  }
+  /* 防止 iOS Safari 在横向滚动时出现整页弹动 */
+  body {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}

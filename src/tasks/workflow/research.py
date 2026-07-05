@@ -91,17 +91,56 @@ class ResearchTemplate(WorkflowTemplate):
             try:
                 # 请求级工具过滤（缓存约束：不修改全局 tool_registry）
                 self._apply_tool_whitelist(react_loop, tool_whitelist)
-                # Phase 9 Task 7.4: react_loop.run 返回值由二元组改为三元组，
-                # 第三项 is_complete 在 workflow 路径不参与自动续接（workflow
-                # 由调度器驱动，单次执行即结束），仅解包忽略。
-                response_text, messages_used, _is_complete = asyncio.run(
-                    react_loop.run(
-                        user_input=user_input,
-                        history=[],
-                        system=system_prompt,
-                        session_id=context.session_id,
+                # react_loop.run 返回四元组 (text, messages, is_complete, termination_reason)
+                # workflow 路径不参与自动续接（调度器驱动，单次执行即结束），
+                # is_complete 与 termination_reason 仅解包用于 metrics 上报。
+                # D7 修复：try asyncio.run + except RuntimeError 兜底
+                # run_coroutine_threadsafe，避免在已有事件循环的线程中抛错。
+                try:
+                    response_text, messages_used, _is_complete, _termination_reason = asyncio.run(
+                        react_loop.run(
+                            user_input=user_input,
+                            history=[],
+                            system=system_prompt,
+                            session_id=context.session_id,
+                        )
                     )
-                )
+                except RuntimeError as _run_err:
+                    # asyncio.run 在已有事件循环的线程中抛 RuntimeError
+                    logger.info(
+                        "asyncio.run 不可用（已有事件循环），降级到 "
+                        "run_coroutine_threadsafe: %s",
+                        _run_err,
+                    )
+                    try:
+                        loop = asyncio.get_event_loop_policy().get_event_loop()
+                    except Exception as _loop_err:
+                        raise RuntimeError(
+                            f"获取事件循环失败: {_loop_err}"
+                        ) from _loop_err
+                    if loop is None or not loop.is_running():
+                        raise RuntimeError(
+                            f"事件循环不可用，无法执行 react_loop: {_run_err}"
+                        )
+                    future = asyncio.run_coroutine_threadsafe(
+                        react_loop.run(
+                            user_input=user_input,
+                            history=[],
+                            system=system_prompt,
+                            session_id=context.session_id,
+                        ),
+                        loop,
+                    )
+                    response_text, messages_used, _is_complete, _termination_reason = (
+                        future.result()
+                    )
+                # 反馈监控：上报终止原因（react_loop.metrics 为 None 时跳过）
+                _metrics = getattr(react_loop, "metrics", None)
+                if _metrics is not None:
+                    try:
+                        _metrics.observe_termination(_termination_reason)
+                    except Exception:
+                        pass
                 result.assistant_response = response_text
                 # 从 messages_used 提取工具调用列表
                 result.tool_calls = self._extract_tool_calls(messages_used)
@@ -241,7 +280,10 @@ class ResearchTemplate(WorkflowTemplate):
             c if c.isalnum() or c in "-_" else "_" for c in topic[:30]
         )
         date_str = context.current_time.strftime("%Y%m%d")
-        filename = f"research_{safe_topic}_{date_str}.md"
+        # D4 修复：追加 run_id[:8] 后缀避免同日多次触发覆盖
+        run_id = getattr(context, "run_id", None) or "unknown"
+        run_id_suffix = run_id[:8] if isinstance(run_id, str) else "unknown"
+        filename = f"research_{safe_topic}_{date_str}_{run_id_suffix}.md"
         report_path = os.path.join(context.report_dir, filename)
 
         summary_lines = [

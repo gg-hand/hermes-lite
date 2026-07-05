@@ -131,8 +131,24 @@ function highlightJSON(jsonStr) {
 }
 
 // ========== 滚动 ==========
-function scrollMessagesToBottom() {
+// 距底部阈值（px）：用户向上浏览超过此距离则视为“在看历史”，不自动跟随
+const SCROLL_NEAR_BOTTOM_THRESHOLD = 80;
+
+/** 判断用户当前是否接近底部（即“在看最新内容”） */
+function isMessagesNearBottom() {
+  if (!messagesEl) return true;
+  const { scrollTop, scrollHeight, clientHeight } = messagesEl;
+  return scrollHeight - scrollTop - clientHeight <= SCROLL_NEAR_BOTTOM_THRESHOLD;
+}
+
+/**
+ * 滚动到消息区底部。
+ * @param {boolean} force - true 强制滚动到底部；false（默认）仅在用户已在底部附近时跟随，
+ *                          避免用户向上浏览历史时被强制拉回打断
+ */
+function scrollMessagesToBottom(force = false) {
   if (!messagesEl) return;
+  if (!force && !isMessagesNearBottom()) return;
   messagesEl.scrollTop = messagesEl.scrollHeight;
   requestAnimationFrame(() => {
     if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -200,6 +216,7 @@ window.HermesUtils = {
   safeParseJSON,
   highlightJSON,
   scrollMessagesToBottom,
+  isMessagesNearBottom,
   enhanceCodeBlocks,
   handleCodeCopyClick,
   openModal,

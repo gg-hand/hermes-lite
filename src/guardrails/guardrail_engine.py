@@ -28,7 +28,13 @@
   无需 None 判断。
 - **不实现 update_config**：复用 ``server.py`` 的重新构造机制
   （配置变更时重新构造 ``Orchestrator`` 与 ``GuardrailEngine``），
-  避免运行时半更新导致的状态不一致。
+  避免运行时半更新导致的状态不一致。**例外**：三个 ``enabled`` 布尔
+  字段（``input_scan_enabled`` / ``sanitizer_enabled`` /
+  ``output_filter_enabled``）通过 property setter 支持热更新，仅翻转
+  布尔不重建 InjectionGuard/OutputFilter 内部实例，由
+  ``server.py._apply_runtime_config`` 经 ``setattr`` 调用。其他结构性
+  字段（``action`` / ``trusted_tools`` / ``max_output_length`` 等）变更
+  仍需重启重建实例。
 
 config 结构（``from_config`` 入参为完整 config dict）::
 
@@ -386,15 +392,39 @@ class GuardrailEngine:
         """输入扫描是否启用。"""
         return self._input_scan_enabled
 
+    @input_scan_enabled.setter
+    def input_scan_enabled(self, value: bool) -> None:
+        """热更新入口：翻转输入扫描开关即时生效。"""
+        old = self._input_scan_enabled
+        self._input_scan_enabled = bool(value)
+        if old != self._input_scan_enabled:
+            logger.info("GuardrailEngine.input_scan_enabled %s → %s", old, self._input_scan_enabled)
+
     @property
     def sanitizer_enabled(self) -> bool:
         """工具返回值脱敏是否启用。"""
         return self._sanitizer_enabled
 
+    @sanitizer_enabled.setter
+    def sanitizer_enabled(self, value: bool) -> None:
+        """热更新入口：翻转工具返回值脱敏开关即时生效。"""
+        old = self._sanitizer_enabled
+        self._sanitizer_enabled = bool(value)
+        if old != self._sanitizer_enabled:
+            logger.info("GuardrailEngine.sanitizer_enabled %s → %s", old, self._sanitizer_enabled)
+
     @property
     def output_filter_enabled(self) -> bool:
         """输出过滤是否启用。"""
         return self._output_filter_enabled
+
+    @output_filter_enabled.setter
+    def output_filter_enabled(self, value: bool) -> None:
+        """热更新入口：翻转输出过滤开关即时生效。"""
+        old = self._output_filter_enabled
+        self._output_filter_enabled = bool(value)
+        if old != self._output_filter_enabled:
+            logger.info("GuardrailEngine.output_filter_enabled %s → %s", old, self._output_filter_enabled)
 
     @property
     def injection_guard(self) -> InjectionGuard:

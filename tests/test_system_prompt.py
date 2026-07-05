@@ -90,25 +90,26 @@ class TestSectionOrdering(unittest.TestCase):
         )
 
     def test_rejection_section_after_tool_section(self) -> None:
-        """'## 工具被拒后的行为' 应位于 '## 工具调用规范' 之后。"""
+        """'## 工具被拦截或失败后的行为' 应位于 '## 工具调用规范' 之后。"""
         tool_idx = SYSTEM_PROMPT.find("## 工具调用规范")
-        reject_idx = SYSTEM_PROMPT.find("## 工具被拒后的行为")
+        reject_idx = SYSTEM_PROMPT.find("## 工具被拦截或失败后的行为")
         self.assertGreater(tool_idx, 0, "应存在 '## 工具调用规范' 段落")
-        self.assertGreater(reject_idx, 0, "应存在 '## 工具被拒后的行为' 段落")
+        self.assertGreater(reject_idx, 0, "应存在 '## 工具被拦截或失败后的行为' 段落")
         self.assertGreater(
-            reject_idx, tool_idx, "'## 工具被拒后的行为' 应在 '## 工具调用规范' 之后"
+            reject_idx, tool_idx, "'## 工具被拦截或失败后的行为' 应在 '## 工具调用规范' 之后"
         )
 
 
 class TestToolRejectionSection(unittest.TestCase):
-    """验证 '## 工具被拒后的行为' 段落存在且包含 spec 要求的关键说明文字。"""
+    """验证 '## 工具被拦截或失败后的行为' 段落存在且包含 spec 要求的关键说明文字。"""
 
     def test_section_title_present(self) -> None:
-        self.assertIn("## 工具被拒后的行为", SYSTEM_PROMPT)
+        self.assertIn("## 工具被拦截或失败后的行为", SYSTEM_PROMPT)
 
-    def test_rejected_marker_keyword(self) -> None:
-        """应说明触发条件：tool_result 含 '[用户已拒绝]'。"""
-        self.assertIn("[用户已拒绝]", SYSTEM_PROMPT)
+    def test_intercepted_marker_keyword(self) -> None:
+        """应说明 tool_result 含 [拦截] / [失败] 详情块。"""
+        self.assertIn("[拦截]", SYSTEM_PROMPT)
+        self.assertIn("[失败]", SYSTEM_PROMPT)
 
     def test_no_retry_same_tool(self) -> None:
         self.assertIn("不要重试同一个工具", SYSTEM_PROMPT)

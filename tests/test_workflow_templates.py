@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
@@ -166,9 +167,9 @@ class MockReactLoop:
                 "session_id": session_id,
             }
         )
-        # Phase 9 Task 7.4: ReactLoop.run 返回三元组 (response, messages, is_complete)
+        # ReactLoop.run 返回四元组 (response, messages, is_complete, termination_reason)
         # 注：async 化后（spec Task 4），research.py 用 asyncio.run(react_loop.run(...)) 包裹
-        return self._response_text, self._tool_messages, True
+        return self._response_text, self._tool_messages, True, "normal"
 
 
 # ---------------------------------------------------------------------------
@@ -1297,6 +1298,408 @@ class TestCacheConstraints(unittest.TestCase):
             prompt = template.build_system_prompt()
             self.assertNotIn("{now}", prompt)
             self.assertNotIn("{last_run_time}", prompt)
+
+
+# ---------------------------------------------------------------------------
+# Task 7.5: 缺陷修复验证（D2/D4/D5/D7）
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowDefectD2TemplateNotFound(unittest.TestCase):
+    """D2 修复：scheduler._execute_workflow 模板未找到返回 success=False。
+
+    验证 CronScheduler._execute_workflow 在以下 5 个失败路径中
+    永不返回 None，而是返回 WorkflowResult(success=False, errors=[...])：
+    - BUILTIN_TEMPLATES 为空
+    - 缺 template 字段
+    - 模板未找到
+    - WorkflowContext 构造失败
+    - NotImplementedError
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _new_scheduler(self):
+        from src.tasks.scheduler import CronScheduler
+        return CronScheduler(schedules_file=self.sched_file)
+
+    def test_d2_unknown_template_returns_failure_result(self):
+        """D2-路径3：引用未知模板名返回 success=False + 错误描述。"""
+        from src.tasks.scheduler import CronScheduler, Schedule
+        from src.tasks.workflow import WorkflowResult
+
+        scheduler = self._new_scheduler()
+        schedule = Schedule(
+            id="s1",
+            name="测试",
+            cron="* * * * *",
+            task="t",
+            workflow={"template": "nonexistent_template_xyz"},
+        )
+        result = scheduler._execute_workflow(
+            orchestrator=None,
+            schedule=schedule,
+            task_text="t",
+            started_at_dt=datetime(2026, 7, 5, 14, 30),
+            last_run_dt=None,
+        )
+        self.assertIsNotNone(result, "D2 修复后不应返回 None")
+        self.assertFalse(result.success)
+        self.assertTrue(
+            any("nonexistent_template_xyz" in e for e in result.errors),
+            f"errors 应包含未知模板名: {result.errors}",
+        )
+
+    def test_d2_missing_template_field_returns_failure_result(self):
+        """D2-路径2：缺 template 字段返回 success=False。"""
+        from src.tasks.scheduler import Schedule
+
+        scheduler = self._new_scheduler()
+        schedule = Schedule(
+            id="s2",
+            name="测试",
+            cron="* * * * *",
+            task="t",
+            workflow={"watch_path": "/tmp"},  # 缺 template
+        )
+        result = scheduler._execute_workflow(
+            orchestrator=None,
+            schedule=schedule,
+            task_text="t",
+            started_at_dt=datetime(2026, 7, 5, 14, 30),
+            last_run_dt=None,
+        )
+        self.assertIsNotNone(result)
+        self.assertFalse(result.success)
+        self.assertTrue(
+            any("template" in e for e in result.errors),
+            f"errors 应说明缺 template 字段: {result.errors}",
+        )
+
+
+class TestWorkflowDefectD4RunIdSuffix(unittest.TestCase):
+    """D4 修复：报告文件名追加 run_id[:8] 后缀避免同日多次触发覆盖。
+
+    验证 directory_watch / summary / research / cleanup_suggest / custom
+    五个模板的 _write_report 方法生成的文件名含 run_id 前 8 位后缀。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.report_dir = os.path.join(self.tmpdir, "reports")
+        os.makedirs(self.report_dir)
+        self.watch_path = os.path.join(self.tmpdir, "watched")
+        os.makedirs(self.watch_path)
+        Path(self.watch_path, "a.txt").write_text("hello", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        sched_dir = os.path.join("data", "schedules", "s1")
+        if os.path.isdir(sched_dir):
+            shutil.rmtree(sched_dir, ignore_errors=True)
+
+    def _make_context(self, run_id=None, llm_client=None):
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            llm_client=llm_client or MockLLMClient(response_text="分析结果"),
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+        if run_id is not None:
+            # run_id 通过 setattr 注入（WorkflowContext 未声明此字段）
+            setattr(ctx, "run_id", run_id)
+        return ctx
+
+    def test_d4_directory_watch_filename_contains_run_id_suffix(self):
+        """directory_watch 报告文件名含 run_id[:8]。"""
+        template = DirectoryWatchTemplate()
+        ctx = self._make_context(run_id="abcdef1234567890")
+        result = template.execute({"watch_path": self.watch_path}, ctx)
+        self.assertTrue(result.success, f"errors={result.errors}")
+        report_files = [
+            o["path"] for o in result.outputs if o["type"] == "report"
+        ]
+        self.assertEqual(len(report_files), 1)
+        fname = os.path.basename(report_files[0])
+        self.assertIn("abcdef12", fname, f"文件名应含 run_id[:8]: {fname}")
+
+    def test_d4_same_day_multiple_runs_no_overwrite(self):
+        """同日两次触发（不同 run_id）生成不同文件，互不覆盖。"""
+        template = DirectoryWatchTemplate()
+        # 第一次执行
+        ctx1 = self._make_context(run_id="run1aaa1234567890")
+        result1 = template.execute({"watch_path": self.watch_path}, ctx1)
+        self.assertTrue(result1.success, f"errors={result1.errors}")
+        report1 = [o["path"] for o in result1.outputs if o["type"] == "report"][0]
+
+        # 第二次执行（不同 run_id）
+        ctx2 = self._make_context(run_id="run2bbb9876543210")
+        result2 = template.execute({"watch_path": self.watch_path}, ctx2)
+        self.assertTrue(result2.success, f"errors={result2.errors}")
+        report2 = [o["path"] for o in result2.outputs if o["type"] == "report"][0]
+
+        # 两个文件路径不同
+        self.assertNotEqual(report1, report2)
+        # 两个文件都存在（未被覆盖）
+        self.assertTrue(os.path.exists(report1), f"第一次报告应存在: {report1}")
+        self.assertTrue(os.path.exists(report2), f"第二次报告应存在: {report2}")
+
+    def test_d4_research_filename_contains_run_id_suffix(self):
+        """research 报告文件名含 run_id[:8]。"""
+        react = MockReactLoop(response_text="研究结果")
+        template = ResearchTemplate()
+        # 使用 distinctive run_id：前 8 位为 "r1abcd12" 避免与 "research" 前缀重叠
+        ctx = self._make_context(run_id="r1abcd1299999999", llm_client=MockLLMClient())
+        setattr(ctx, "react_loop", react)
+        result = template.execute({"topic": "AI 趋势"}, ctx)
+        self.assertTrue(result.success, f"errors={result.errors}")
+        report_files = [
+            o["path"] for o in result.outputs if o["type"] == "report"
+        ]
+        self.assertEqual(len(report_files), 1)
+        fname = os.path.basename(report_files[0])
+        self.assertIn("r1abcd12", fname, f"文件名应含 run_id[:8]: {fname}")
+
+    def test_d4_summary_filename_contains_run_id_suffix(self):
+        """summary 报告文件名含 run_id[:8]。"""
+        messages = [{"role": "user", "content": "测试", "tool_name": ""}]
+        logger = MockSessionLogger({"sess1": messages})
+        template = SummaryTemplate()
+        # 使用 distinctive run_id：前 8 位为 "s1abcd12" 避免与 "summary" 前缀重叠
+        ctx = self._make_context(run_id="s1abcd1299999999")
+        setattr(ctx, "session_logger", logger)
+        result = template.execute({"session_id": "sess1"}, ctx)
+        self.assertTrue(result.success, f"errors={result.errors}")
+        report_files = [
+            o["path"] for o in result.outputs if o["type"] == "report"
+        ]
+        self.assertEqual(len(report_files), 1)
+        fname = os.path.basename(report_files[0])
+        self.assertIn("s1abcd12", fname, f"文件名应含 run_id[:8]: {fname}")
+
+
+class TestWorkflowDefectD5ErrorChannel(unittest.TestCase):
+    """D5 修复：LLM 异常记录到 error_channel + WorkflowEngine 合并到 result.errors。
+
+    验证：
+    - _call_llm_single_turn 在 LLM 客户端抛异常时写入 context.error_channel
+    - WorkflowEngine.execute 末尾合并 error_channel 内容到 WorkflowResult.errors
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.report_dir = os.path.join(self.tmpdir, "reports")
+        os.makedirs(self.report_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_d5_llm_exception_recorded_to_error_channel(self):
+        """D5-1：LLM 客户端抛异常时写入 context.error_channel。"""
+        class FailingLLMClient:
+            """模拟 chat_main_sync 抛异常的 LLM 客户端。"""
+            def chat_main(self, **kwargs):
+                raise RuntimeError("LLM 服务不可用")
+            def chat_main_sync(self, **kwargs):
+                raise RuntimeError("LLM 服务不可用")
+
+        template = DirectoryWatchTemplate()
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            llm_client=FailingLLMClient(),
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+        watch_path = os.path.join(self.tmpdir, "watched")
+        os.makedirs(watch_path)
+        Path(watch_path, "a.txt").write_text("hello", encoding="utf-8")
+        result = template.execute({"watch_path": watch_path}, ctx)
+        # error_channel 含 LLM 异常记录
+        self.assertTrue(
+            any("LLM 调用失败" in msg for msg in ctx.error_channel),
+            f"error_channel 应含 LLM 异常: {ctx.error_channel}",
+        )
+        # 模板仍返回结果（降级路径）
+        self.assertIsNotNone(result)
+
+    def test_d5_error_channel_merged_to_workflow_result_errors(self):
+        """D5-2：WorkflowEngine.execute 合并 error_channel 到 result.errors。"""
+        from src.tasks.workflow.engine import WorkflowEngine
+        from src.tasks.workflow.spec import StepSpec, WorkflowSpec
+
+        # 构造简易 spec（单 step）
+        spec = WorkflowSpec(
+            name="d5_test",
+            steps=[StepSpec(id="s1", type="llm", config={"prompt": "x"})],
+        )
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+        # 模拟 error_channel 已有内容（由 _call_llm_single_turn 写入）
+        ctx.error_channel = ["LLM 调用失败: timeout", "context overload"]
+
+        engine = WorkflowEngine()
+        result = engine.execute(spec, ctx)
+        # error_channel 内容合并到 result.errors
+        self.assertIn("LLM 调用失败: timeout", result.errors)
+        self.assertIn("context overload", result.errors)
+
+
+class TestWorkflowDefectD7EventLoopSafe(unittest.TestCase):
+    """D7 修复：ResearchTemplate 在事件循环内不抛 RuntimeError。
+
+    验证：
+    - 当 asyncio.run 抛 RuntimeError（已有事件循环）时，
+      降级到 run_coroutine_threadsafe 路径
+    - 降级失败时通过外层 except 走单轮 LLM 调用
+    - 不向上层抛 RuntimeError
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.report_dir = os.path.join(self.tmpdir, "reports")
+        os.makedirs(self.report_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_d7_research_in_background_loop_thread(self):
+        """D7-1：事件循环在后台线程运行时，主线程调用模板不抛 RuntimeError。
+
+        模拟 CronScheduler 实际场景：FastAPI 事件循环在主线程运行，
+        CronScheduler 通过 asyncio.to_thread 在工作线程执行 workflow。
+        工作线程中 asyncio.run 不受主线程事件循环影响。
+        """
+        import threading
+
+        template = ResearchTemplate()
+        react = MockReactLoop(response_text="后台循环研究结果")
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            llm_client=MockLLMClient(response_text="降级结果"),
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+        setattr(ctx, "react_loop", react)
+
+        # 后台线程运行事件循环（模拟主线程的 FastAPI 循环）
+        bg_loop = asyncio.new_event_loop()
+        bg_started = threading.Event()
+
+        def run_bg_loop():
+            asyncio.set_event_loop(bg_loop)
+            bg_started.set()
+            try:
+                bg_loop.run_forever()
+            finally:
+                bg_loop.close()
+
+        bg_thread = threading.Thread(target=run_bg_loop, daemon=True)
+        bg_thread.start()
+        bg_started.wait(timeout=2.0)
+
+        try:
+            # 主线程调用模板（主线程无 running loop，asyncio.run 正常工作）
+            result = template.execute({"topic": "测试"}, ctx)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.assistant_response, "后台循环研究结果")
+        finally:
+            bg_loop.call_soon_threadsafe(bg_loop.stop)
+            bg_thread.join(timeout=2.0)
+
+    def test_d7_research_runtime_error_falls_back_to_single_turn(self):
+        """D7-2：asyncio.run 抛 RuntimeError 时降级到单轮 LLM 调用。
+
+        当无法通过 run_coroutine_threadsafe 执行时（loop 不可用），
+        外层 except 捕获并降级到 _call_llm_single_turn。
+        """
+        template = ResearchTemplate()
+        llm = MockLLMClient(response_text="降级单轮结果")
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            llm_client=llm,
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+
+        # 构造 react_loop：run 协程总是抛 RuntimeError
+        class FailingReactLoop:
+            async def run(self, **kwargs):
+                raise RuntimeError("react 内部失败")
+
+            def metrics(self):
+                return None
+
+        setattr(ctx, "react_loop", FailingReactLoop())
+        result = template.execute({"topic": "测试"}, ctx)
+        # ReactLoop 失败后降级到单轮调用
+        self.assertEqual(result.assistant_response, "降级单轮结果")
+        self.assertTrue(any("ReactLoop" in e for e in result.errors))
+        # LLM 单轮被调用一次
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_d7_research_asyncio_run_runtime_error_caught(self):
+        """D7-3：asyncio.run 抛 RuntimeError 时被 D7 修复捕获，不向上传播。
+
+        通过 mock asyncio.run 抛 RuntimeError，验证模板走 D7 降级路径。
+        若 run_coroutine_threadsafe 也失败，则外层 except 走单轮调用。
+        """
+        template = ResearchTemplate()
+        llm = MockLLMClient(response_text="最终降级结果")
+        ctx = WorkflowContext(
+            session_id="cron:s1",
+            schedule_id="s1",
+            llm_client=llm,
+            report_dir=self.report_dir,
+            current_time=datetime(2026, 7, 5, 14, 30),
+        )
+        react = MockReactLoop(response_text="不应到达此结果")
+        setattr(ctx, "react_loop", react)
+
+        # mock asyncio.run 抛 RuntimeError，模拟「已有事件循环」场景
+        original_run = asyncio.run
+
+        def fake_asyncio_run(coro, **kwargs):
+            # 关闭未 await 的协程，避免 ResourceWarning
+            try:
+                coro.close()
+            except Exception:
+                pass
+            raise RuntimeError("asyncio.run() cannot be called from a running event loop")
+
+        with patch("asyncio.run", side_effect=fake_asyncio_run):
+            # mock get_event_loop 返回 None，强制 D7 路径抛 RuntimeError
+            # 由外层 except 捕获并降级到单轮调用
+            class NoneLoopPolicy:
+                def get_event_loop(self):
+                    return None
+
+            with patch(
+                "asyncio.get_event_loop_policy",
+                return_value=NoneLoopPolicy(),
+            ):
+                result = template.execute({"topic": "测试"}, ctx)
+
+        # 验证：降级到单轮调用，assistant_response 为 LLM 单轮结果
+        self.assertEqual(result.assistant_response, "最终降级结果")
+        self.assertTrue(
+            any("ReactLoop" in e for e in result.errors),
+            f"errors 应含 ReactLoop 失败信息: {result.errors}",
+        )
+        # LLM 单轮被调用
+        self.assertEqual(len(llm.calls), 1)
 
 
 if __name__ == "__main__":

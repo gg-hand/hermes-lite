@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -152,6 +154,9 @@ class MemoryMdManager:
         )
         thread.start()
 
+    # 画像总长度硬上限（防止画像膨胀失控）
+    MAX_PROFILE_TOTAL_CHARS = 8000
+
     def apply_profile_updates(self, updates: List[Dict[str, Any]]) -> None:
         """应用一批画像更新操作（add/replace/delete）到 memory.md。
 
@@ -162,8 +167,15 @@ class MemoryMdManager:
 
         操作语义:
             - add: 在指定 section 末尾追加 content；section 不存在则新建。
+              **第二道去重防线**：若 section 已有内容与待 add 的 content
+              关键词高度重叠（交集非空），跳过本次 add，防止 pending 队列中
+              多条相似 add 重复写入。
             - replace: 替换指定 section 的全部 body；section 不存在则新建。
             - delete: 删除指定 section（含标题行与 body）；section 不存在则跳过。
+
+        **硬上限**：写文件前检查 ``len(new_text)``，超过
+        ``MAX_PROFILE_TOTAL_CHARS``（8000 字符）时拒绝 add 操作（不抛异常，
+        记录警告日志，避免阻断 consolidate）。
 
         参数:
             updates: 更新操作列表，每项含:
@@ -173,8 +185,78 @@ class MemoryMdManager:
         """
         with self._lock:
             current_text = self._read_unchecked()
-            new_text = self._apply_updates_to_text(current_text, updates)
+            # 第二道去重防线：过滤掉 section 已有相似内容的 add 操作
+            deduped_updates = self._dedupe_add_updates(current_text, updates)
+            new_text = self._apply_updates_to_text(current_text, deduped_updates)
+            # 硬上限检查：超限时拒绝 add（仅记录日志，不抛异常）
+            if len(new_text) > self.MAX_PROFILE_TOTAL_CHARS:
+                logger.warning(
+                    "画像总长度 %d 超过上限 %d，拒绝本次 add 操作",
+                    len(new_text), self.MAX_PROFILE_TOTAL_CHARS,
+                )
+                # 过滤掉 add 操作，仅应用 replace/delete
+                safe_updates = [
+                    u for u in deduped_updates if u.get("action") != "add"
+                ]
+                new_text = self._apply_updates_to_text(current_text, safe_updates)
             self._write_raw_text(new_text)
+
+    def _dedupe_add_updates(
+        self, current_text: str, updates: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """第二道去重防线：过滤 section 已有相似内容的 add 操作。
+
+        信号池的入池前查重是第一道防线（Jaccard ≥0.7 跳过入池），
+        但 pending 队列中可能积累多条相似 add（不同信号达阈值触发）。
+        本方法在 apply 前再过滤一次：若 add 的 content 关键词与目标 section
+        现有内容有关键词交集，跳过本次 add。
+
+        参数:
+            current_text: 当前 memory.md 全文。
+            updates: 待应用的更新操作列表。
+
+        返回:
+            过滤后的更新操作列表（add 操作可能被移除）。
+        """
+        if not current_text:
+            return list(updates)
+
+        lines = current_text.split("\n") if current_text else []
+        deduped: List[Dict[str, Any]] = []
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            action = str(update.get("action", "")).strip()
+            if action != "add":
+                deduped.append(update)
+                continue
+            section = str(update.get("section", "")).strip()
+            content = str(update.get("content", ""))
+            if not section or not content:
+                deduped.append(update)
+                continue
+            # 提取目标 section 现有内容
+            start, end = self._find_section_range(lines, section)
+            if start < 0:
+                # section 不存在，必新建，无需去重
+                deduped.append(update)
+                continue
+            existing_body = "\n".join(lines[start + 1:end])
+            if not existing_body.strip():
+                # section 存在但 body 为空，无需去重
+                deduped.append(update)
+                continue
+            # 关键词交集去重（与 _merge_items 一致的策略）
+            existing_kw = _extract_keywords(existing_body)
+            new_kw = _extract_keywords(content)
+            if existing_kw & new_kw:
+                logger.info(
+                    "apply 去重：add '%s' 与 section '%s' 现有内容关键词重叠，跳过",
+                    content[:50], section,
+                )
+                continue
+            deduped.append(update)
+        return deduped
 
     @staticmethod
     def _find_section_range(
@@ -333,6 +415,34 @@ class MemoryMdManager:
             lines.pop(start)
         return lines
 
+    def _backup_before_write(self) -> Optional[str]:
+        """写入前备份当前 memory.md（规范 9.3.1）。
+
+        备份到 ``data/memory_backups/memory_YYYYMMDD_HHMMSS.md``，
+        保留最近 5 个版本，超出时删除最旧的。
+
+        返回:
+            备份文件路径字符串，备份失败或源文件不存在时返回 None。
+        """
+        try:
+            if not self.file_path.exists():
+                return None
+            backup_dir = self.file_path.parent / "memory_backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"memory_{timestamp}.md"
+            shutil.copy2(str(self.file_path), str(backup_path))
+            # 清理旧备份，仅保留最近 5 个
+            backups = sorted(backup_dir.glob("memory_*.md"))
+            if len(backups) > 5:
+                for old in backups[:-5]:
+                    old.unlink(missing_ok=True)
+            logger.debug("memory.md 已备份到 %s", backup_path)
+            return str(backup_path)
+        except Exception as e:
+            logger.warning("memory.md 备份失败（不阻塞写入）: %s", e)
+            return None
+
     def _write_raw_text(self, text: str) -> None:
         """直接写入原始文本到 memory.md 文件（不加锁，调用方需自行持锁）。
 
@@ -340,9 +450,13 @@ class MemoryMdManager:
         直接将 ``text`` 覆盖写入文件，用于 :meth:`apply_profile_updates`
         这种按 section 粒度的修改。
 
+        写入前自动备份到 ``memory_backups/`` 目录（规范 9.3.1），
+        备份失败不阻塞写入。
+
         参数:
             text: 待写入的完整文本。
         """
+        self._backup_before_write()
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             self.file_path.write_text(text, encoding="utf-8")

@@ -29,6 +29,14 @@ function renderSettingsForm(config) {
   const interrupt = config.interrupt || {};
   const securityEnabled = security.enabled === true || security.enabled === 'true';
   const rulesCount = security.rules && Array.isArray(security.rules) ? security.rules.length : 0;
+  const guardrails = config.guardrails || {};
+  const inputScanCfg = guardrails.input_scan || {};
+  const sanitizerCfg = guardrails.sanitizer || {};
+  const outputFilterCfg = guardrails.output_filter || {};
+  // 缺失 enabled 字段时默认 true（安全默认，defense in depth）
+  const inputScanEnabled = inputScanCfg.enabled !== false;
+  const sanitizerEnabled = sanitizerCfg.enabled !== false;
+  const outputFilterEnabled = outputFilterCfg.enabled !== false;
 
   settingsBodyEl.innerHTML = `
     <div class="form-section">
@@ -124,14 +132,6 @@ function renderSettingsForm(config) {
     <div class="form-section">
       <div class="form-section-title">安全配置</div>
       <div class="form-group">
-        <label>启用审批机制<span class="config-tag restart">需重启</span></label>
-        <select class="form-select" data-cfg="security.enabled" data-type="boolean">
-          <option value="true" ${securityEnabled ? 'selected' : ''}>启用</option>
-          <option value="false" ${!securityEnabled ? 'selected' : ''}>禁用</option>
-        </select>
-        <div class="hint">开启后高风险工具调用需用户审批</div>
-      </div>
-      <div class="form-group">
         <label>审批超时秒数<span class="config-tag hot">即时生效</span></label>
         <input class="form-input" type="number" data-cfg="security.approval_timeout_seconds" value="${security.approval_timeout_seconds || 60}">
         <div class="hint">超时后自动拒绝审批（热更新，无需重启）</div>
@@ -141,6 +141,38 @@ function renderSettingsForm(config) {
         <div class="hint" style="padding:8px 10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);">
           当前规则数：${rulesCount} 条。规则配置需编辑 config.yaml 后重启服务生效，暂不支持页面编辑。
         </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-title">防护系统<span class="config-tag hot">即时生效</span></div>
+      <div class="switch-row">
+        <div>
+          <div class="switch-label">HIL 审批（工具调用确认）</div>
+          <div class="hint">关闭后所有工具调用直接执行，不再弹审批卡片</div>
+        </div>
+        <label class="switch"><input type="checkbox" data-guardrail="security.enabled" ${securityEnabled?'checked':''}><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="switch-label">输入扫描（Prompt 注入检测）</div>
+          <div class="hint">关闭后用户输入中的注入指令不再被检测告警</div>
+        </div>
+        <label class="switch"><input type="checkbox" data-guardrail="guardrails.input_scan.enabled" ${inputScanEnabled?'checked':''}><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="switch-label">工具结果脱敏（外部内容隔离）</div>
+          <div class="hint">关闭后外部工具返回的注入内容将直接进入 LLM 上下文</div>
+        </div>
+        <label class="switch"><input type="checkbox" data-guardrail="guardrails.sanitizer.enabled" ${sanitizerEnabled?'checked':''}><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="switch-label">PII 输出过滤（手机号/身份证/邮箱脱敏）</div>
+          <div class="hint">关闭后 LLM 响应中的 PII 将直接展示给用户</div>
+        </div>
+        <label class="switch"><input type="checkbox" data-guardrail="guardrails.output_filter.enabled" ${outputFilterEnabled?'checked':''}><span class="slider"></span></label>
       </div>
     </div>
 
@@ -311,6 +343,7 @@ function renderSettingsForm(config) {
       </div>
     </div>
   `;
+  bindGuardrailToggles();
 }
 
 // ========== 保存配置 ==========
@@ -351,6 +384,60 @@ async function restartServer() {
   } catch (e) {
     showToast('重启失败: ' + e.message, 'error');
   }
+}
+
+// ========== 防护系统开关（即时生效，独立于 saveConfig 全量保存） ==========
+
+// 关闭风险提示文案
+function buildRiskMsg(path) {
+  const msgs = {
+    'security.enabled': '关闭 HIL 审批后，文件删除、shell 执行等高危操作将直接执行不再弹确认卡片。确认关闭？',
+    'guardrails.input_scan.enabled': '关闭输入扫描后，Prompt 注入攻击将不再被检测告警。确认关闭？',
+    'guardrails.sanitizer.enabled': '关闭工具结果脱敏后，外部工具返回的注入内容将直接进入 LLM 上下文。确认关闭？',
+    'guardrails.output_filter.enabled': '关闭 PII 过滤后，LLM 响应中的手机号/身份证/邮箱等将直接展示给用户。确认关闭？',
+  };
+  return msgs[path] || `确认关闭 ${path}？`;
+}
+
+// 将点分路径转为嵌套 dict，如 nestPath('a.b.c', true) → {a:{b:{c:true}}}
+function nestPath(path, value) {
+  const parts = path.split('.');
+  const root = {};
+  let cur = root;
+  for (let i = 0; i < parts.length - 1; i++) {
+    cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+  return root;
+}
+
+// 开关切换处理：关闭时弹二次确认，确认后局部 PUT /config 即时生效
+async function onGuardrailToggle(el) {
+  const path = el.dataset.guardrail;
+  const enabled = el.checked;
+  // 关闭动作弹二次确认
+  if (!enabled && !confirm(buildRiskMsg(path))) {
+    el.checked = true;  // 用户取消，回滚到开启
+    return;
+  }
+  // 局部 PUT：_deep_merge_config 保证只改这一项，不覆盖其他段
+  const cfg = nestPath(path, enabled);
+  try {
+    await api('/config', { method: 'PUT', body: { config: cfg } });
+    const label = path.split('.').pop();
+    showToast(`${label} 已${enabled ? '开启' : '关闭'}`, 'success');
+  } catch (e) {
+    el.checked = !enabled;  // 失败回滚
+    showToast('更新失败: ' + e.message, 'error');
+  }
+}
+
+// 绑定所有 [data-guardrail] 开关的 change 事件
+function bindGuardrailToggles() {
+  document.querySelectorAll('[data-guardrail]').forEach(el => {
+    el.addEventListener('change', () => onGuardrailToggle(el));
+  });
 }
 
 // 暴露给其他模块

@@ -78,11 +78,13 @@ class TestFileContextInjector(unittest.TestCase):
         self.assertIn("⬤", text)
         self.assertIn("文档摘要", text)
 
-    def test_04_no_done_files(self):
-        fid, _ = self.um.save("pending.txt", b"test", "s1")
-        # status is 'pending', not 'done'
+    def test_04_pending_file_injected_with_marker(self):
+        """pending 状态文件应注入'处理中'标记，而非被过滤掉。"""
+        self.um.save("pending.txt", b"test", "s1")  # save 后默认 etl_status='pending'
         text = self.injector.get_injection_text("s1")
-        self.assertEqual(text, "")
+        self.assertIn("pending.txt", text)
+        self.assertIn("处理中", text)
+        self.assertNotIn("⬤", text)  # 不应显示 OCR 标记
 
     def test_05_empty_session(self):
         text = self.injector.get_injection_text("empty-session")

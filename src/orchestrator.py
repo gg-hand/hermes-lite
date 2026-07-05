@@ -15,6 +15,8 @@ import asyncio
 import json
 import logging
 import threading
+import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 # 兼容相对导入与直接运行两种方式（与 llm/client.py 保持一致）
@@ -22,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 try:
     from .config import load_config
     from .llm.client import LLMClient
-    from .llm.prompts import SYSTEM_PROMPT
+    from .llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT
     from .agent.react_loop import ReactLoop
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
@@ -34,7 +36,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         sys.path.insert(0, _SRC_DIR)
     from config import load_config  # type: ignore
     from llm.client import LLMClient  # type: ignore
-    from llm.prompts import SYSTEM_PROMPT  # type: ignore
+    from llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT  # type: ignore
     from agent.react_loop import ReactLoop  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
@@ -66,6 +68,7 @@ try:
         create_condenser_from_config,
     )
     from .memory.decay import MemoryDecay
+    from .memory.signal_pool import SignalPool
     from .agent.tool_registry import ToolRegistry
     from .agent.builtin_tools import (
         register_builtin_tools,
@@ -87,6 +90,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
             create_condenser_from_config,
         )
         from memory.decay import MemoryDecay  # type: ignore
+        from memory.signal_pool import SignalPool  # type: ignore
         from agent.tool_registry import ToolRegistry  # type: ignore
         from agent.builtin_tools import (  # type: ignore
             register_builtin_tools,
@@ -105,6 +109,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         LLMSummarizingCondenser = None  # type: ignore
         create_condenser_from_config = None  # type: ignore
         MemoryDecay = None  # type: ignore
+        SignalPool = None  # type: ignore
         ToolRegistry = None  # type: ignore
         register_builtin_tools = None  # type: ignore
         register_plan_tools = None  # type: ignore
@@ -298,12 +303,18 @@ class Orchestrator:
                 self.task_manager = None
 
         # Phase 6: TodoListRegistry 装配（会话级 plan 模式数据模型）
-        # 纯内存对象，不依赖任何配置，所有部署都启用 plan 模式。
+        # 启用磁盘持久化：传入 persistence_dir，重启后可懒加载恢复 plan。
         # 失败时降级为 None，跳过 plan 工具注册。
+        # persistence_dir 提前读取（复用给下方 HistoryBuffer，避免重复读）。
+        persistence_dir = history_config.get(
+            "persistence_dir", "data/history"
+        )
         self.todo_registry: Optional[TodoListRegistry] = None
         if TodoListRegistry is not None:
             try:
-                self.todo_registry = TodoListRegistry()
+                self.todo_registry = TodoListRegistry(
+                    persistence_dir=persistence_dir
+                )
             except Exception as e:
                 logger.warning("TodoListRegistry 初始化失败: %s", e)
                 self.todo_registry = None
@@ -311,6 +322,11 @@ class Orchestrator:
         # 当前请求的 session_id，供 plan 工具通过 get_session_id 回调获取。
         # 在 chat / chat_stream 入口设置，工具执行时由 lambda 读取最新值。
         self._current_session_id: Optional[str] = None
+
+        # P1-3: 已激活 Skill 表（session_id → 已激活 skill 名称有序列表）
+        # LLM 调用 skill__{name}() 后，activate_skill 将 name 追加到此表，
+        # 下一轮 _build_enhanced_context 末位注入 body。
+        self._active_skills: Dict[str, List[str]] = {}
 
         # 注册 plan 工具到 ToolRegistry（plan_task / update_todo，Core Tier）
         # get_session_id 回调通过闭包捕获 self，执行时读取 self._current_session_id
@@ -346,7 +362,11 @@ class Orchestrator:
         elif ApprovalManager is not None:
             try:
                 timeout = float(security_cfg.get("approval_timeout_seconds", 300))
-                self.approval_manager = ApprovalManager(timeout=timeout)
+                # Phase 2 反馈监控：fallback 路径也注入 metrics
+                self.approval_manager = ApprovalManager(
+                    timeout=timeout,
+                    metrics=self.metrics,
+                )
             except Exception as e:
                 logger.warning("ApprovalManager 初始化失败: %s", e)
                 self.approval_manager = None
@@ -389,6 +409,7 @@ class Orchestrator:
             policy_engine=self.policy_engine,
             approval_manager=self.approval_manager,
             guardrail_engine=self.guardrail_engine,
+            orchestrator_ref=self,
         )
 
         # Phase 8 Task 5.7: cron 调度路径所需的依赖（lifespan 装配后注入，
@@ -416,12 +437,10 @@ class Orchestrator:
                     if archive_turns_on_evict
                     else None
                 )
-                # JSONL 持久化目录：配置缺失时默认 data/history（相对 cwd），
+                # JSONL 持久化目录：已在 Phase 6 提前读取（persistence_dir），
+                # 复用同一变量传给 HistoryBuffer。
                 # HistoryBuffer 内部 os.makedirs(exist_ok=True) 处理目录创建。
                 # 变更此项需重启服务（见 server.py _RESTART_REQUIRED_KEYS）。
-                persistence_dir = history_config.get(
-                    "persistence_dir", "data/history"
-                )
                 self.history_buffer = HistoryBuffer(
                     max_turns=int(memory_config.get("history_max_turns", 50)),
                     archive_callback=archive_callback,
@@ -430,6 +449,26 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("HistoryBuffer 初始化失败，降级为 None: %s", e)
                 self.history_buffer = None
+
+        # 中断通知暂存：session_id -> notice_text
+        # 不再直接写入 history_buffer，避免连续 user 消息违反 API 约束
+        self._pending_interrupt_notices: Dict[str, str] = {}
+
+        # 规范 2: 跨 run 空回复计数器（进程内持久，跨 run 累积）
+        # 仅 termination_reason=="empty_response" 时累加；
+        # tool_permanent_fail / user_cancel 不计数（避免级联误判）。
+        # count >= 2 时直接返回友好提示，不再调 react_loop；
+        # count == 1 时追加纠偏提示到 system_text（不持久化）。
+        self._consecutive_empty_runs: Dict[str, int] = {}
+
+        # 会话标题缓存：记录已知已有标题的 session_id，避免每次 chat() 都查
+        # SQLite 的 sessions.title 列。进程内 dict，服务重启后重新从 DB 回填。
+        # 仅缓存"已有标题"状态，不缓存标题内容本身（避免与 DB 不一致）。
+        self._titled_sessions: set = set()
+        # 异步生成标题任务强引用容器：asyncio.create_task 返回的 Task 仅被事件
+        # 循环持弱引用，未保存会被 GC 回收导致任务从未执行。任务完成后由
+        # add_done_callback 自动从 set 中移除，避免内存泄漏。
+        self._pending_title_tasks: set = set()
 
         # 4.5 Condenser（可选模块，缺失时降级为 None，history 原样传入）
         # 在 LLM 调用前对 history 做压缩（masking 旧 tool_result / LLM 摘要），
@@ -579,10 +618,43 @@ class Orchestrator:
                 )
                 self.consolidation_engine = None
 
+        # 10.2 信号池（可选，依赖 consolidation_engine 与 memory_md_manager）
+        # L1/L2/L3 三层摘取路径的统一入口：信号入池前查重画像 → 情感增强 →
+        # 相似去重合并 → 计数累加 → 达阈值（7）入 pending 队列写入画像。
+        # signal_pool_path 默认 data/profile_signal_pool.json。
+        self.signal_pool: Optional[SignalPool] = None
+        if (
+            SignalPool is not None
+            and self.consolidation_engine is not None
+            and self.memory_md_manager is not None
+        ):
+            try:
+                from pathlib import Path as _Path
+                pool_path = _Path(
+                    memory_config.get(
+                        "signal_pool_path", "data/profile_signal_pool.json"
+                    )
+                )
+                profile_path = self.memory_md_manager.file_path
+                self.signal_pool = SignalPool(
+                    pool_path=pool_path,
+                    consolidation_engine=self.consolidation_engine,
+                    profile_path=profile_path,
+                )
+                # 反向注入到 consolidation_engine，使 L3 提取的 user_profile
+                # 事实走信号池累积（weight=2）
+                self.consolidation_engine.signal_pool = self.signal_pool
+            except Exception as e:
+                logger.warning(
+                    "SignalPool 初始化失败，降级为 None: %s", e
+                )
+                self.signal_pool = None
+
         # 10.5 注册内置工具（推迟到此处，确保 consolidation_engine 已就绪）
-        # 注入 file_registry / get_session_id / consolidation_engine：
+        # 注入 file_registry / get_session_id / consolidation_engine / signal_pool：
         # - file_registry: write_file / delete_file 走 v2 closure 版本
         # - consolidation_engine: 注册 update_profile 工具（延迟合并写入）
+        # - signal_pool: update_profile 的 add 操作走信号池累积
         # consolidation_engine 为 None 时不注册 update_profile（向后兼容）。
         if self.tool_registry is not None and register_builtin_tools is not None:
             try:
@@ -591,6 +663,7 @@ class Orchestrator:
                     file_registry=self.file_registry,
                     get_session_id=lambda: self._current_session_id,
                     consolidation_engine=self.consolidation_engine,
+                    signal_pool=self.signal_pool,
                 )
             except Exception as e:
                 logger.warning(
@@ -723,6 +796,26 @@ class Orchestrator:
                 logger.warning("从 HistoryBuffer 获取历史失败: %s", e)
                 history = []
 
+        # 1.5 消费暂存的中断通知（规范 3 Task 8.3-8.6）
+        # 不再字符串拼接到 user_input，改为在 _build_enhanced_context 之后
+        # 追加独立 {"role":"system"} 消息到 enhanced_history
+        # TTL 清理：超过 5 分钟未消费的通知自动丢弃（Task 8.6）
+        pending_notice = self._pending_interrupt_notices.pop(session_id, None)
+        pending_notice_content: Optional[str] = None
+        if pending_notice is not None:
+            notice_age = time.time() - pending_notice.get("timestamp", 0)
+            if notice_age > 300:  # 5 分钟 TTL
+                logger.info(
+                    "中断通知已过期（%.0f秒 > 300秒），丢弃: %s",
+                    notice_age, session_id,
+                )
+            else:
+                pending_notice_content = pending_notice.get("content")
+                logger.info("准备注入 InterruptNotice 到 history: %s", session_id)
+
+        # 1.6 安全网：清理历史中的连续 user 消息（兼容旧 JSONL 文件）
+        history = self._sanitize_history_alternation(history)
+
         # 2. 执行 React 循环
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
@@ -730,6 +823,12 @@ class Orchestrator:
         system_text, enhanced_history, tools_override = await self._build_enhanced_context(
             session_id, user_input, history
         )
+        # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history
+        # （react_loop.run 会自动追加 user_input，形成 [..., system(通知), user(新)]）
+        if pending_notice_content is not None:
+            enhanced_history = list(enhanced_history) + [
+                {"role": "system", "content": pending_notice_content}
+            ]
         enhanced_history_len = len(enhanced_history)
 
         # Phase 9 Task 6 接入点 A: 输入扫描（fail-open 软护栏）
@@ -781,8 +880,25 @@ class Orchestrator:
         response_text: str = ""
         messages_used: List[Dict[str, Any]] = []
 
+        # 规范 2: 跨 run 空回复检测（仅 termination_reason=="empty_response" 计数）
+        # count >= 2 → 直接返回友好提示，不再调 react_loop
+        # count == 1 → 追加纠偏提示到 system_text（不持久化，per-call）
+        empty_count = self._consecutive_empty_runs.get(session_id, 0)
+        if empty_count >= 2:
+            logger.warning(
+                "会话 %s 连续 %d 次空回复，直接返回友好提示",
+                session_id, empty_count,
+            )
+            return "抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。"
+        if empty_count == 1:
+            system_text = (system_text or "") + (
+                "\n\n[系统提示] 上一轮 LLM 返回了空回复。请确保本次明确回应用户问题，"
+                "不要返回空内容。"
+            )
+            logger.info("会话 %s 注入空回复纠偏提示到 system_text", session_id)
+
         while total_rounds < MAX_TOTAL_ROUNDS:
-            response_text, messages_used, is_complete = await self.react_loop.run(
+            response_text, messages_used, is_complete, termination_reason = await self.react_loop.run(
                 user_input=current_user_input,
                 history=current_history,
                 system=system_text,
@@ -790,6 +906,9 @@ class Orchestrator:
                 tools_override=tools_override,
                 cancel_event=cancel_event,
             )
+            # 反馈监控：上报终止原因（每次 run() 调用都计数，反映循环级分布）
+            if self.metrics is not None:
+                self.metrics.observe_termination(termination_reason)
             # 累计本轮消耗的轮次（用 max_loops 作为上界估计）
             total_rounds += self.react_loop.max_loops
 
@@ -825,6 +944,22 @@ class Orchestrator:
             logger.warning(
                 "达到总轮次上限 %d，强制终止", MAX_TOTAL_ROUNDS
             )
+
+        # 空回复计数：直接检查 response_text 是否为空
+        # 取消/工具失败不计数（避免级联误判），max_loops 总结为空也不计数
+        is_empty_response = (
+            termination_reason not in ("user_cancel", "tool_permanent_fail")
+            and (not response_text or not response_text.strip())
+        )
+        if is_empty_response:
+            self._consecutive_empty_runs[session_id] = empty_count + 1
+            logger.info(
+                "会话 %s 空回复计数 %d -> %d",
+                session_id, empty_count, empty_count + 1,
+            )
+        elif empty_count > 0:
+            self._consecutive_empty_runs[session_id] = 0
+            logger.info("会话 %s 收到非空回复，重置空回复计数", session_id)
 
         # Phase 9 Task 6 接入点 B: 输出过滤（PII 脱敏）
         # 在 react_loop 循环结束后、session_logger / history_buffer 之前
@@ -894,6 +1029,10 @@ class Orchestrator:
                     await self._trigger_consolidation(session_id)
             except Exception as e:
                 logger.warning("consolidation 信息累加或触发失败: %s", e)
+
+        # 6. 首次对话后异步生成会话标题（fire-and-forget，不阻塞响应返回）
+        # cron 会话跳过（由 CronScheduler 直接设置 schedule.name）
+        self._maybe_generate_title_async(session_id, user_input)
 
         # Phase 9 Task 6 接入点 C: 返回 filtered_response（用户可见脱敏文本）
         return filtered_response
@@ -967,6 +1106,26 @@ class Orchestrator:
                 logger.warning("从 HistoryBuffer 获取历史失败: %s", e)
                 history = []
 
+        # 1.5 消费暂存的中断通知（规范 3 Task 8.3-8.6）
+        # 不再字符串拼接到 user_input，改为在 _build_enhanced_context 之后
+        # 追加独立 {"role":"system"} 消息到 enhanced_history
+        # TTL 清理：超过 5 分钟未消费的通知自动丢弃（Task 8.6）
+        pending_notice = self._pending_interrupt_notices.pop(session_id, None)
+        pending_notice_content: Optional[str] = None
+        if pending_notice is not None:
+            notice_age = time.time() - pending_notice.get("timestamp", 0)
+            if notice_age > 300:  # 5 分钟 TTL
+                logger.info(
+                    "中断通知已过期（%.0f秒 > 300秒），丢弃: %s",
+                    notice_age, session_id,
+                )
+            else:
+                pending_notice_content = pending_notice.get("content")
+                logger.info("准备注入 InterruptNotice 到 history（流式）: %s", session_id)
+
+        # 1.6 安全网：清理历史中的连续 user 消息（兼容旧 JSONL 文件）
+        history = self._sanitize_history_alternation(history)
+
         # 2. 流式执行 React 循环，透传事件并收集待持久化的消息
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
@@ -974,6 +1133,11 @@ class Orchestrator:
         system_text, enhanced_history, tools_override = await self._build_enhanced_context(
             session_id, user_input, history
         )
+        # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history（流式路径）
+        if pending_notice_content is not None:
+            enhanced_history = list(enhanced_history) + [
+                {"role": "system", "content": pending_notice_content}
+            ]
         enhanced_history_len = len(enhanced_history)
 
         # Phase 9 Task 6 接入点 D: 输入扫描（流式路径）
@@ -1039,6 +1203,36 @@ class Orchestrator:
         # 工具调用 ID 自增计数器（ReactLoop 当前未在 tool 事件中透传 tool_use_id，
         # 这里用自增 ID 保证 tool_use 与 tool_result 能配对）
         last_tool_use_id_counter: int = 0
+
+        # 规范 2: 跨 run 空回复检测（流式路径）
+        # count >= 2 → yield error + done 后 return，不进入 run_stream
+        # count == 1 → 追加纠偏提示到 system_text（不持久化，per-call）
+        empty_count = self._consecutive_empty_runs.get(session_id, 0)
+        if empty_count >= 2:
+            logger.warning(
+                "会话 %s 连续 %d 次空回复（流式），直接返回友好提示",
+                session_id, empty_count,
+            )
+            yield {
+                "type": "error",
+                "message": "抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。",
+            }
+            yield {
+                "type": "done",
+                "response": "抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。",
+                "messages": [],
+                "is_complete": True,
+            }
+            return
+        if empty_count == 1:
+            system_text = (system_text or "") + (
+                "\n\n[系统提示] 上一轮 LLM 返回了空回复。请确保本次明确回应用户问题，"
+                "不要返回空内容。"
+            )
+            logger.info("会话 %s 注入空回复纠偏提示到 system_text（流式）", session_id)
+
+        # 规范 2: 捕获 done 事件的 termination_reason，用于 finally 块计数
+        stream_termination_reason: str = "normal"
         try:
             async for event in self.react_loop.run_stream(
                 user_input=user_input,
@@ -1161,6 +1355,14 @@ class Orchestrator:
                             "流式 React 循环未自然完成（is_complete=False），"
                             "流式路径暂不支持自动续接，需用户手动继续"
                         )
+                    # 规范 2: 捕获 termination_reason，用于 finally 块空回复计数
+                    stream_termination_reason = event.get(
+                        "termination_reason", "normal"
+                    )
+
+                    # 在 done 事件捕获后、yield 前触发标题生成（避免 finally
+                    # 块在 GeneratorExit 期间创建 task 失败被静默吞掉的问题）
+                    self._maybe_generate_title_async(session_id, user_input)
 
                 yield event  # 透传给 server.py
 
@@ -1214,6 +1416,25 @@ class Orchestrator:
                                 "todo": todo_dict,
                             }
         finally:
+            # 反馈监控：上报流式终止原因（覆盖正常/异常/取消所有退出路径）
+            if self.metrics is not None:
+                self.metrics.observe_termination(stream_termination_reason)
+            # 空回复计数：直接检查 response_text 是否为空
+            # 取消/工具失败不计数（避免级联误判）
+            is_empty_response_stream = (
+                stream_termination_reason not in ("user_cancel", "tool_permanent_fail")
+                and (not response_text or not response_text.strip())
+            )
+            if is_empty_response_stream:
+                self._consecutive_empty_runs[session_id] = empty_count + 1
+                logger.info(
+                    "会话 %s 空回复计数 %d -> %d（流式）",
+                    session_id, empty_count, empty_count + 1,
+                )
+            elif empty_count > 0:
+                self._consecutive_empty_runs[session_id] = 0
+                logger.info("会话 %s 收到非空回复，重置空回复计数（流式）", session_id)
+
             # 3. 批量记录到 session_logger（即使流被中断也保证保存）
             if self.session_logger is not None:
                 try:
@@ -1264,8 +1485,12 @@ class Orchestrator:
                             session_id, new_messages, user_input, response_text
                         )
                     else:
-                        self._persist_new_messages(
-                            session_id, [], user_input, response_text
+                        # 规范 3 Task 8.2: 中断降级路径不写半截 assistant
+                        # 仅持久化 user_input，不持久化 partial response_text
+                        # （半截 assistant 会污染下一轮上下文，中断通知已由
+                        # _save_interrupt_notice 暂存，下次调用时注入）
+                        self.history_buffer.add_message(
+                            session_id, "user", user_input
                         )
                 except Exception as e:
                     logger.warning("更新 HistoryBuffer 失败: %s", e)
@@ -1300,6 +1525,83 @@ class Orchestrator:
                         await self._trigger_consolidation(session_id)
                 except Exception as e:
                     logger.warning("consolidation 信息累加或触发失败: %s", e)
+
+    def _maybe_generate_title_async(
+        self, session_id: str, user_input: str
+    ) -> None:
+        """异步生成会话标题（fire-and-forget）。
+
+        首次对话后调用 LLM 生成 5-10 字标题。cron 会话跳过（由
+        CronScheduler 直接设置 schedule.name）。已生成标题的会话跳过。
+
+        参数:
+            session_id: 会话 ID。
+            user_input: 用户首条输入（用于生成标题）。
+        """
+        if not session_id or session_id.startswith("cron:"):
+            return
+        if self.session_logger is None or self.llm_client is None:
+            return
+        # 进程内缓存命中：已知有标题，直接返回，零 IO
+        if session_id in self._titled_sessions:
+            return
+        try:
+            existing = self.session_logger.get_session_title(session_id)
+            if existing:
+                # 缓存回填：服务重启后首次查到已有标题，加入 set 避免后续重复查 DB
+                self._titled_sessions.add(session_id)
+                return
+        except Exception as e:
+            logger.warning("查询会话标题失败: %s", e)
+            return
+        try:
+            task = asyncio.create_task(self._generate_title_task(session_id, user_input))
+            self._pending_title_tasks.add(task)
+            task.add_done_callback(self._pending_title_tasks.discard)
+        except RuntimeError as e:
+            logger.warning("创建标题生成任务失败: %s", e)
+
+    async def _generate_title_task(
+        self, session_id: str, user_input: str
+    ) -> None:
+        """生成标题并写入 session_logger（内部 task 实现）。
+
+        截取 user_input 前 500 字符避免 prompt 过长；max_tokens=50 限制
+        输出长度。失败时仅记录 warning，不影响主流程。
+        """
+        try:
+            prompt = TITLE_GENERATION_PROMPT.replace(
+                "{user_message}", user_input[:500]
+            )
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                response = await asyncio.wait_for(
+                    self.llm_client.chat_consolidation(
+                        messages=messages, system=None, max_tokens=50
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("会话 %s 标题生成超时（15s），跳过", session_id)
+                return
+            text_parts = []
+            for block in response.content or []:
+                if block.get("type") == "text":
+                    t = block.get("text", "")
+                    if t:
+                        text_parts.append(t)
+            title = "".join(text_parts).strip()
+            # 清理可能的引号、换行、首尾空白
+            title = title.split("\n")[0].strip('「」""\' \t')
+            if title and self.session_logger is not None:
+                self.session_logger.update_session_title(session_id, title)
+                # 写入成功后缓存，后续该会话的 chat() 直接跳过，零 IO
+                self._titled_sessions.add(session_id)
+                logger.info("已为会话 %s 生成标题: %s", session_id, title)
+            else:
+                logger.info("会话 %s 标题生成返回空响应，未写入", session_id)
+        except Exception as e:
+            logger.warning("生成会话标题失败: %s", e)
 
     def _ensure_session(self, session_id: str) -> None:
         """确保 session 存在，不存在则创建。
@@ -1345,14 +1647,22 @@ class Orchestrator:
         # 操作系统（如 "Windows 10" / "Linux 5.15.0-91-generic"）
         os_name = f"{platform.system()} {platform.release()}"
 
-        # Shell 检测（Windows 优先 PowerShell，其他平台优先 bash）
+        # Shell 检测：subprocess.Popen(shell=True) 在 Windows 默认走 cmd.exe，
+        # 仅当 pwsh (PowerShell 7) 实测存在时才标注
         if platform.system() == "Windows":
-            shell = "PowerShell" if shutil.which("powershell") else "cmd"
+            shell = "PowerShell 7 (pwsh)" if shutil.which("pwsh") else "cmd.exe"
         else:
             shell = "bash" if shutil.which("bash") else "sh"
 
-        # Python 启动命令（优先 python3，缺失时降级到 python）
-        python_cmd = "python3" if shutil.which("python3") else "python"
+        # Python 启动命令：实测 python --version（避免 MS Store stub 误命中）
+        try:
+            import subprocess as _sp
+            _sp.check_output(
+                ["python", "--version"], stderr=_sp.STDOUT, timeout=3
+            ).decode().strip()
+            python_cmd = "python"
+        except (FileNotFoundError, _sp.SubprocessError, OSError):
+            python_cmd = "python3"
 
         # Python 解释器绝对路径
         python_path = _sys.executable
@@ -1360,14 +1670,19 @@ class Orchestrator:
         # 当前工作目录
         cwd = _os.getcwd()
 
-        return (
-            "## 运行环境\n"
-            f"- 操作系统: {os_name}\n"
-            f"- 工作目录: {cwd}\n"
-            f"- Shell: {shell}\n"
-            f"- Python 启动命令: {python_cmd}\n"
-            f"- Python 路径: {python_path}"
-        )
+        env_lines = [
+            "## 运行环境",
+            f"- 操作系统: {os_name}",
+            f"- 工作目录: {cwd}",
+            f"- Shell: {shell}",
+            f"- Python 启动命令: {python_cmd}",
+            f"- Python 路径: {python_path}",
+            f"- 当前日期: {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (UTC)",
+        ]
+        # Windows 下追加跨盘 cd 提示
+        if platform.system() == "Windows":
+            env_lines.append("- 提示: 跨盘切换目录请用 `cd /d <路径>`（如 cd /d E:\\proj）")
+        return "\n".join(env_lines)
 
     def _format_todo_for_injection(self, todo_dict: Optional[dict]) -> str:
         """将 TodoList dict 格式化为可注入 messages[0] 的"## 当前计划进度"段。
@@ -1483,6 +1798,64 @@ class Orchestrator:
             f"未完成步骤：\n{unfinished_block}\n"
             "请继续完成剩余步骤，无需重复已完成的工作。"
         )
+
+    # ------------------------------------------------------------------
+    # P1-3: Skill 激活状态管理（L2 body 注入）
+    # ------------------------------------------------------------------
+
+    def activate_skill(self, skill_name: str, session_id: str = "default") -> None:
+        """标记 Skill 为已激活（下一轮注入 body 到 messages[0] 末位）。
+
+        重复激活同一 Skill 不重复追加（去重），但保留首次激活顺序。
+
+        参数:
+            skill_name: Skill 名称。
+            session_id: 会话 ID（隔离不同会话的激活状态）。
+        """
+        active = self._active_skills.setdefault(session_id, [])
+        if skill_name not in active:
+            active.append(skill_name)
+            logger.info("Skill 已激活: %s (session=%s)", skill_name, session_id)
+
+    def deactivate_skill(self, skill_name: str, session_id: str = "default") -> None:
+        """取消激活指定 Skill。
+
+        参数:
+            skill_name: Skill 名称。
+            session_id: 会话 ID。
+        """
+        active = self._active_skills.get(session_id, [])
+        if skill_name in active:
+            active.remove(skill_name)
+            logger.info("Skill 已取消激活: %s (session=%s)", skill_name, session_id)
+
+    def _build_active_skills_section(self, session_id: str) -> str:
+        """构建已激活 Skill body 段（注入 injection_text 末位）。
+
+        参数:
+            session_id: 会话 ID。
+
+        返回:
+            拼接好的 skill body 段字符串。无激活 Skill 返回空串。
+        """
+        active = self._active_skills.get(session_id, [])
+        if not active:
+            return ""
+        # skill_loader 可能未注入（纯内置工具模式），降级返回空
+        skill_loader = getattr(self, "skill_loader", None)
+        if skill_loader is None:
+            return ""
+        sections = []
+        for name in active:
+            try:
+                body = skill_loader.load_body(name)
+                if body:
+                    sections.append(f"## 已激活 Skill: {name}\n{body}")
+                else:
+                    sections.append(f"## 已激活 Skill: {name}\n(body 为空)")
+            except Exception as e:
+                logger.warning("加载 Skill %s body 失败: %s", name, e)
+        return "\n\n".join(sections)
 
     async def _build_enhanced_context(
         self,
@@ -1609,6 +1982,32 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("TodoList 状态注入失败，跳过: %s", e)
 
+        # 4. 注入已上传文件摘要到 messages[0]（缓存失效区）
+        # 让 LLM 每轮感知会话内已上传文件，无需主动调用 file_list_uploads
+        if self.context_manager is not None:
+            try:
+                file_section = self.context_manager.get_file_injection(session_id)
+                if file_section:
+                    if injection_text:
+                        injection_text = f"{injection_text}\n\n{file_section}"
+                    else:
+                        injection_text = file_section
+            except Exception as e:
+                logger.warning("文件摘要注入失败，跳过: %s", e)
+
+        # 5. P1-3: 注入已激活 Skill body 到 messages[0]（末位，L2 激活后注入）
+        # LLM 调用 skill__{name}() 后，下一轮在此注入 body 到上下文末位。
+        # 末位注入保证不破坏前面 section 的相对顺序，且不影响缓存前缀。
+        try:
+            skill_section = self._build_active_skills_section(session_id)
+            if skill_section:
+                if injection_text:
+                    injection_text = f"{injection_text}\n\n{skill_section}"
+                else:
+                    injection_text = skill_section
+        except Exception as e:
+            logger.warning("已激活 skill body 注入失败，跳过: %s", e)
+
         # 统一前置 injection_text 到 history（若存在）
         # history 先经 condenser 压缩（masking 旧 tool_result / LLM 摘要），
         # 压缩在送入 ReactLoop 前完成，不影响 history_buffer 存储。
@@ -1725,6 +2124,10 @@ class Orchestrator:
 
         # 2. cron 路径不注入 TaskManager 进度（inject_todo=False）
         #    避免动态变量破坏缓存稳定性
+
+        # 2.5 文件注入不适用于 cron 会话（无用户上传绑定）
+        #     cron session_id 形如 cron:<id>，upload_manager.get_session_files
+        #     对该 session_id 返回空列表，注入无意义且浪费 IO，故显式跳过。
 
         # 3. 统一前置 injection_text 到 history（若存在）
         condensed_history = await self._apply_condenser(history)
@@ -1935,12 +2338,11 @@ class Orchestrator:
     def _save_interrupt_notice(
         self, session_id: str, new_message: Optional[str] = None
     ) -> None:
-        """中断发生时，将 InterruptNotice 写入 history_buffer。
+        """中断发生时，暂存 InterruptNotice 到内存。
 
-        ⚠️ role 用 "user" 而非 "system"：
-        - Anthropic API 的 messages 参数只接受 user/assistant/tool 三种角色
-        - 使用 user + 【系统通知】标记在所有 provider 下兼容
-        - 下次 chat_stream() 调用时，get_history() 自动包含此消息
+        规范 3 Task 8.1: 改用结构化 dict 存储（含 timestamp，供 TTL 清理）。
+        通知将在下次 chat()/chat_stream() 开始时作为独立 system 消息注入到
+        enhanced_history，不再字符串拼接到 user_input（Task 8.3-8.5）。
         """
         if new_message:
             content = (
@@ -1951,38 +2353,86 @@ class Orchestrator:
         else:
             content = "【系统通知：用户中断了回复】请等待用户的下一条指令。不要续写被中断的内容。"
 
-        if self.history_buffer is not None:
-            try:
-                self.history_buffer.add_message(
-                    session_id,
-                    "user",
-                    content,
-                )
-                logger.info("InterruptNotice 已保存到 history_buffer: %s", session_id)
-            except Exception as e:
-                logger.warning("保存 InterruptNotice 失败: %s", e)
+        self._pending_interrupt_notices[session_id] = {
+            "content": content,
+            "timestamp": time.time(),
+        }
+        logger.info("InterruptNotice 已暂存: %s", session_id)
 
-    def _consume_interrupt_notice(
-        self, session_id: str, history: List[Dict[str, Any]]
-    ) -> Optional[Dict[str, Any]]:
-        """从 history 中查找最近一条未消费的 InterruptNotice。
+    @staticmethod
+    def _sanitize_history_alternation(
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """清理历史消息，确保 user/assistant 交替约束。
 
-        查找最后一条 content 以 【系统通知】 开头的 user 消息，
-        找到后返回并从 history 中移除（避免重复注入）。
-        返回 None 表示没有待处理的中断通知。
+        规范 3 Task 9 增强：
+        1. ``[..., user, user]`` → 合并（现有逻辑，兼容旧 JSONL）
+        2. ``[..., user, system_notice, user]`` → 保留（Task 9.1）
+           system_notice 为 role=system 的中断通知，不与相邻 user 合并
+        3. ``[..., assistant(空/半截), user]`` → 弹出空 assistant（Task 9.2）
+           避免空 assistant 污染上下文（Task 5 守卫已拦截新增，此处清理旧数据）
         """
-        for i in range(len(history) - 1, -1, -1):
-            msg = history[i]
-            content = msg.get("content", "")
+        if not history or len(history) < 2:
+            return history
+        cleaned: List[Dict[str, Any]] = [history[0]]
+        for msg in history[1:]:
+            last = cleaned[-1]
+            # Task 9.2: 弹出末尾空 assistant（content 为 None/""/[]/纯空 text 块）
+            # 当下一条是 user 消息且上一条是空 assistant 时，弹出空 assistant
             if (
-                isinstance(content, str)
-                and content.startswith("【系统通知")
-                and msg.get("role") == "user"
+                msg.get("role") == "user"
+                and last.get("role") == "assistant"
+                and Orchestrator._is_empty_assistant_content(last.get("content"))
             ):
-                notice = history.pop(i)
-                logger.debug("消费 InterruptNotice: %s", session_id)
-                return notice
-        return None
+                cleaned.pop()
+                last = cleaned[-1] if cleaned else None
+                if last is None:
+                    cleaned.append(msg)
+                    continue
+            # 现有逻辑：合并连续 user 消息（兼容旧 JSONL 中遗留的连续 user）
+            # Task 9.1: user → system → user 模式不合并（system_notice 隔开）
+            if (
+                msg.get("role") == "user"
+                and last.get("role") == "user"
+                and isinstance(last.get("content"), str)
+                and isinstance(msg.get("content"), str)
+            ):
+                cleaned[-1] = {
+                    **last,
+                    "content": f"{last['content']}\n{msg['content']}",
+                }
+            else:
+                cleaned.append(msg)
+        return cleaned
+
+    @staticmethod
+    def _is_empty_assistant_content(content: Any) -> bool:
+        """判断 assistant content 是否为空（None / "" / [] / 纯空 text 块）。
+
+        用于 _sanitize_history_alternation 清理残留的空 assistant。
+        含 tool_use 块的不算空（应由 _drop_trailing_orphan_tool_calls 处理）。
+        """
+        if content is None or content == "":
+            return True
+        if isinstance(content, list):
+            has_tool_use = any(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in content
+            )
+            if has_tool_use:
+                return False
+            has_substance = any(
+                isinstance(b, dict)
+                and (
+                    b.get("type") != "text"
+                    or (isinstance(b.get("text"), str) and b.get("text").strip())
+                )
+                for b in content
+            )
+            return not has_substance
+        if isinstance(content, str):
+            return not content.strip()
+        return False
 
     def apply_condenser_config(
         self, condenser_cfg: Dict[str, Any]

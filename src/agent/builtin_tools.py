@@ -66,7 +66,7 @@ _DEFAULT_HTTP_HEADERS = {
 }
 
 # HTTP 响应体最大字符数（超出截断）
-_MAX_HTTP_BODY_CHARS = 10000
+_MAX_HTTP_BODY_CHARS = 50000
 
 # 域名状态持久化路径（存储成功访问过的域名 Cookie/Referer）
 _DOMAIN_STATE_PATH = "data/domain_state.json"
@@ -93,6 +93,53 @@ _ANTI_CRAWLER_QUALITY_RE = re.compile(
     ]),
     re.IGNORECASE,
 )
+
+
+# 简单 HTML 转纯文本（正则实现，无外部依赖）
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_STYLE_RE = re.compile(
+    r"<(script|style|noscript)[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _html_to_plain_text(html: str) -> str:
+    """将 HTML 转换为纯文本摘要。
+
+    1. 提取 ``<title>`` 内容作为标题行
+    2. 移除 ``<script>/<style>/<noscript>`` 块
+    3. 移除其余所有 HTML 标签
+    4. 解码 HTML 实体（``&amp;`` / ``&#x27;`` 等）
+    5. 压缩连续空白为单个空格
+
+    返回:
+        ``[Title: 页面标题]`` + 页面可见文本（压缩后），
+        无 title 时仅返回文本。
+    """
+    if not html:
+        return ""
+
+    # 提取 title
+    title_match = _TITLE_RE.search(html)
+    title = title_match.group(1).strip() if title_match else ""
+
+    # 移除 script / style / noscript 块
+    text = _SCRIPT_STYLE_RE.sub("", html)
+
+    # 移除剩余 HTML 标签
+    text = _HTML_TAG_RE.sub("", text)
+
+    # 解码 HTML 实体
+    import html as _html_mod
+    text = _html_mod.unescape(text)
+
+    # 压缩空白
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if title:
+        return f"[Title: {title}]\n{text}"
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +312,15 @@ if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环�
 logger = logging.getLogger(__name__)
 
 
-def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 0, max_chars: int = 20000) -> str:
     """读取文件内容。
 
     参数:
         path: 文件路径。
         offset: 可选，起始行号（从 0 开始）。0 表示从文件开头读取。
         limit: 可选，最多读取的行数。0 表示读取全部行。
+        max_chars: 可选，最多返回的字符数。超过时截断并添加提示。
+            默认 20000（约 5000 tokens）。
 
     返回:
         文件内容字符串。读取失败时返回错误信息。
@@ -282,8 +331,12 @@ def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
             lines = p.read_text(encoding="utf-8").splitlines()
             start = max(0, offset)
             end = start + limit if limit > 0 else len(lines)
-            return "\n".join(lines[start:end])
-        return p.read_text(encoding="utf-8")
+            result = "\n".join(lines[start:end])
+        else:
+            result = p.read_text(encoding="utf-8")
+        if max_chars > 0 and len(result) > max_chars:
+            result = result[:max_chars] + f"\n...（内容已截断，原始长度 {len(result)} 字符）"
+        return result
     except Exception as e:
         return f"读取文件失败: {e}"
 
@@ -481,7 +534,88 @@ def execute_command(command: str, timeout: int = 30) -> str:
     except ImportError:
         pass
 
+    # 规范 4.3 Task 12: Windows + python -c "多行代码" 兼容
+    # cmd.exe 不支持多行 -c（换行会被截断），检测到时改写为临时 .py 文件执行。
+    # 仅匹配命令级换行（\n 后跟 import/from/def/class/if/for/while 等关键字），
+    # 避免误判单行 print('hello\nworld') 这种字符串内的 \n。
+    rewritten_command, temp_script_path = _maybe_rewrite_multiline_python_c(command)
+    try:
+        return _execute_command_inner(rewritten_command, timeout, cancel_event)
+    finally:
+        # 无论执行成功或失败，都清理临时文件（Task 12.6）
+        if temp_script_path is not None:
+            try:
+                os.unlink(temp_script_path)
+            except OSError:
+                pass
+
+
+def _maybe_rewrite_multiline_python_c(command: str):
+    """检测 Windows + python -c "多行代码" 模式，命中时改写为临时文件执行。
+
+    返回 (rewritten_command, temp_script_path) 元组：
+    - 未命中：返回 (command, None)
+    - 命中：返回 ("python <tmp_file>", tmp_file_path)
+
+    检测规则（Task 12.1-12.3）：
+    1. 仅在 Windows 平台触发（cmd.exe 不支持多行 -c）
+    2. 匹配 ``python -c "..."`` 或 ``python -c '...'`` 模式
+    3. 代码内容含**真实换行符**（ASCII 10）。LLM 通过 JSON 传入的命令中，
+       ``\\n`` 会被 JSON 解码为真实换行，而 ``print('hello\\nworld')`` 中的
+       ``\\n`` 是字面两字符（backslash + n），不会触发本规则。
+    """
+    if _sys.platform != "win32":
+        return command, None
+
+    # 匹配 python -c "代码" 或 python -c '代码'（捕获引号内的完整内容）
+    # 使用非贪婪 + 允许换行的 [\s\S] 而非 .
+    match = re.match(
+        r'^\s*python(?:3|\.exe)?\s+-c\s+(["\'])([\s\S]*?)\1\s*$',
+        command,
+    )
+    if match is None:
+        return command, None
+
+    code_content = match.group(2)
+
+    # 检测真实换行符（ASCII 10）。
+    # 字面 \n（backslash + n，如 print('hello\nworld')）不会触发，
+    # 因为 LLM 在字符串内嵌入换行时用的是字面 \n 而非真实换行。
+    if "\n" not in code_content:
+        return command, None
+
+    # 命中：写入临时 .py 文件
+    import tempfile
+    from uuid import uuid4
+
+    tmp_dir = tempfile.gettempdir()
+    tmp_filename = f"hermes_exec_{uuid4().hex[:8]}.py"
+    tmp_path = os.path.join(tmp_dir, tmp_filename)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(code_content)
+    except OSError as e:
+        logger.warning("写入临时脚本失败，回退到原命令执行: %s", e)
+        return command, None
+
+    logger.info("多行 -c 检测命中，改写为临时文件: %s", tmp_path)
+    return f"python {tmp_path}", tmp_path
+
+
+def _execute_command_inner(
+    command: str, timeout: int, cancel_event,
+) -> str:
+    """实际执行命令的内部函数（被 execute_command 包装）。
+
+    抽取出来是为了让 execute_command 的 try/finally 能确保临时文件被清理。
+    """
     # ── 构建 Popen 参数（含进程组/会话隔离） ──
+    # Windows 编码兼容：预设 PYTHONIOENCODING=utf-8 防止中文输出
+    # 被 cp936/GBK 截断导致 stdout 为空
+    _popen_env = None
+    if _sys.platform == "win32":
+        _popen_env = dict(os.environ, PYTHONIOENCODING="utf-8")
+
     if not _has_shell_metachar(command):
         args = shlex.split(command, posix=False)
         if not args:
@@ -492,6 +626,8 @@ def execute_command(command: str, timeout: int = 30) -> str:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
         }
     else:
         popen_args = {
@@ -500,7 +636,11 @@ def execute_command(command: str, timeout: int = 30) -> str:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
         }
+    if _popen_env is not None:
+        popen_args["env"] = _popen_env
 
     # 跨平台进程树隔离：force kill 时能杀整个进程树
     if _sys.platform == "win32":
@@ -543,6 +683,12 @@ def execute_command(command: str, timeout: int = 30) -> str:
     output = stdout or ""
     if proc.returncode != 0:
         output += f"\n[退出码 {proc.returncode}]\n{stderr or ''}"
+        # 退出码 9009（Windows 命令未找到）
+        if proc.returncode == 9009 and _sys.platform == "win32":
+            output += "\n[提示] 退出码 9009 通常表示命令未找到。请检查命令拼写或使用完整路径。"
+    elif output.strip() == "":
+        # returncode == 0 但 stdout 为空
+        output = "[提示] 命令执行成功但 stdout 为空。可能命令无输出或输出被重定向。"
     if interrupted:
         output = "[命令已被用户中断]\n" + output
     return output
@@ -664,6 +810,17 @@ def http_request(
     if quality == "OK" and save_state:
         _persist_success_headers(url, merged_headers, save_state=True)
 
+    # ── HTML → 纯文本转换（仅 text/html，截断前） ──
+    # 注意：反爬分类（_classify_quality）已在 Tier 1-3 对原始 body 完成，
+    # 此处清洗不影响反爬判断结果
+    if "html" in content_type.lower():
+        orig_len = len(body)
+        body = _html_to_plain_text(body)
+        logger.debug(
+            "HTML 响应已转换: 原始 %d chars → 纯文本 %d chars",
+            orig_len, len(body),
+        )
+
     # ── 构造输出 ──
     truncated = False
     if len(body) > _MAX_HTTP_BODY_CHARS:
@@ -750,14 +907,112 @@ def file_grep(pattern: str, glob: str = "**/*", max_results: int = 50) -> str:
         return f"文件搜索失败: {e}"
 
 
+# ---------------------------------------------------------------------------
+# web_search: 百度搜索 API 工具
+# ---------------------------------------------------------------------------
 
+
+def _search_baidu(query: str, top_k: int = 5, api_key: str = "") -> str:
+    """通过百度千帆 AppBuilder AI 搜索 API 搜索网页，返回结构化结果。
+
+    API 文档：https://ai.baidu.com/ai-doc/AppBuilder/pmaxd1hvy
+    需要配置 ``BAIDU_API_KEY`` 环境变量（AppBuilder API Key 或 BCE IAM Key）。
+    免费额度：每日 100 次查询。
+
+    API 使用 messages 格式（类 chat 接口），Bearer Token 认证。
+    BCE IAM Key（bce-v3/ALTAK-{ak}/{sk}）可直接作为 Bearer Token 使用。
+    """
+    if not api_key:
+        return "[ERROR] 百度 API Key 未配置"
+
+    # 调用千帆 AI 搜索 API（网页搜索，messages 格式）
+    try:
+        resp = httpx.post(
+            "https://qianfan.baidubce.com/v2/ai_search/web_search",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "messages": [{"role": "user", "content": query}],
+                "top_n": top_k,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        body = e.response.text[:300] if e.response else ""
+        return f"[TRANSIENT] 百度搜索 API 请求失败 (HTTP {e.response.status_code}): {body}"
+    except Exception as e:
+        return f"[TRANSIENT] 百度搜索 API 请求失败: {e}"
+
+    # 解析搜索结果
+    # 千帆 AI 搜索 API 返回格式: { "references": [...], ... }
+    # 每条 reference: { "id": int, "url": str, "title": str, "date": str, "content": str }
+    refs = data.get("references", data.get("search_results", data.get("results", [])))
+    if not isinstance(refs, list) or not refs:
+        return "[OK]\n未找到相关结果。\n[源: 百度]"
+
+    lines = ["[OK]", "[源: 百度]", f"[查询: {query}]"]
+    for i, ref in enumerate(refs[:top_k], 1):
+        title = ref.get("title", "") or ""
+        url = ref.get("url", ref.get("link", "")) or ""
+        content = ref.get("content", ref.get("snippet", ref.get("desc", ""))) or ""
+        # 截断超长摘要（单条不超过 300 字）
+        if len(content) > 300:
+            content = content[:297] + "..."
+        lines.append(f"\n{i}. {title}")
+        if url:
+            lines.append(f"   URL: {url}")
+        if content:
+            lines.append(f"   摘要: {content}")
+    return "\n".join(lines)
+
+
+def web_search(
+    query: str,
+    top_k: int = 5,
+) -> str:
+    """通过百度搜索 API 执行网页搜索，返回结构化结果摘要（标题 + URL + 摘要片段）。
+
+    与 ``web_fetch`` 的区别：``web_search`` 通过百度搜索引擎 API 返回精选结果，
+    LLM 无需自行猜测 URL；``web_fetch`` 用于获取指定 URL 的完整页面内容。
+    搜索公开信息应优先使用此工具。
+
+    需要配置 ``BAIDU_API_KEY`` 环境变量（或 config.yaml 中 web_search.baidu_api_key）。
+    免费额度：每日 100 次查询。
+
+    参数:
+        query: 搜索关键词（支持中文、英文等自然语言查询）。
+        top_k: 返回结果条数，默认 5，最大 10。
+
+    返回:
+        首行为 ``[OK]`` / ``[ERROR]`` 质量标签及搜索来源，
+        随后为结构化结果列表（标题 + URL + 摘要）。
+    """
+    if top_k < 1 or top_k > 10:
+        top_k = 5
+
+    # 从环境变量或 config 读取百度 API Key
+    baidu_key = os.environ.get("BAIDU_API_KEY", "")
+    try:
+        from ..config import load_config
+        cfg = load_config()
+        web_cfg = cfg.get("web_search", {}) or {}
+        if not baidu_key:
+            baidu_key = web_cfg.get("baidu_api_key", "") or ""
+    except Exception:
+        pass
+
+    if not baidu_key:
+        return "[ERROR] BAIDU_API_KEY 未配置。请设置 BAIDU_API_KEY 环境变量或 config.yaml 中 web_search.baidu_api_key。"
+
+    return _search_baidu(query, top_k, baidu_key)
 
 
 # 工具定义列表：[(name, description, input_schema, handler), ...]
 BUILTIN_TOOLS = [
     (
         "file_read",
-        "读取指定路径文件的内容并返回文本。读取文件应优先使用此工具，而非通过 bash_exec 执行 cat/type 命令——本工具更安全、无需 shell 权限、自动处理编码。",
+        "读取指定路径文件的内容并返回文本。读取文件应优先使用此工具，而非通过 bash_exec 执行 cat/type 命令——本工具更安全、无需 shell 权限、自动处理编码。\n\n⚠ 路径边界：Hermes Lite 自身源码（src/、tests/、config.yaml 等）受 PolicyEngine 黑名单保护，调用 file_read 读取这些路径会被直接 deny。如需了解项目实现请询问用户。",
         {
             "type": "object",
             "properties": {
@@ -774,6 +1029,11 @@ BUILTIN_TOOLS = [
                     "type": "integer",
                     "description": "可选，最多读取的行数，0 表示读取全部行。",
                     "default": 0,
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "可选，最多返回的字符数，超过时截断。默认 20000。",
+                    "default": 20000,
                 },
             },
             "required": ["path"],
@@ -909,7 +1169,9 @@ BUILTIN_TOOLS = [
         "不要对相同目标用相同参数重试，应添加 Cookie/Referer 等请求头或换用其他方式。\n"
         "- 404/410 = 资源永久不存在，重试无效。\n"
         "- 429/5xx = 临时性错误，可适当重试。\n"
-        "- 永久或反爬错误响应末尾会附加 [系统提示] 引导改正策略，请注意阅读。",
+        "- 永久或反爬错误响应末尾会附加 [系统提示] 引导改正策略，请注意阅读。\n\n"
+        "⚠ 失败重试上限：同一域名连续失败 2 次后，不要再换 URL 重试，改用 web_search 工具。\n"
+        "⚠ 不要自己拼 URL 抓站查实时信息（如价格、新闻）——直接用 web_search。",
         {
             "type": "object",
             "properties": {
@@ -946,6 +1208,28 @@ BUILTIN_TOOLS = [
         },
         http_request,
     ),
+    (
+        "web_search",
+        "通过百度搜索 API 执行网页搜索，返回结构化结果摘要（标题 + URL + 摘要片段）。"
+        "搜索公开信息应优先使用此工具，而非通过 web_fetch 抓取搜索引擎页面。"
+        "需要配置 BAIDU_API_KEY（环境变量或 config.yaml）。免费额度：每日 100 次。",
+        {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词（支持中文、英文等自然语言查询）。",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "返回结果条数，默认 5，最大 10。",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+        web_search,
+    ),
 ]
 
 
@@ -954,6 +1238,7 @@ def register_builtin_tools(
     file_registry: Optional["FileOperationRegistry"] = None,
     get_session_id: Callable[[], Optional[str]] = lambda: None,
     consolidation_engine: Optional["ConsolidationEngine"] = None,
+    signal_pool=None,
 ) -> None:
     """将内置工具与元工具注册到 ToolRegistry 实例。
 
@@ -968,9 +1253,8 @@ def register_builtin_tools(
       同步集合状态）。
     - 若注入 ``consolidation_engine``：注册 update_profile 工具（Core Tier），
       允许 LLM 通过 add/replace/delete 三种操作显式修改用户画像 memory.md。
-      采用延迟合并写入策略——handler 仅将操作入队到
-      ``consolidation_engine.pending_profile_updates``，下次 consolidate 时
-      统一合并到 memory.md，避免每轮缓存失效。为 ``None`` 时不注册（向后兼容）。
+      add 操作走信号池累积（若注入 signal_pool），达阈值才写入；replace/delete
+      直接入 pending 队列，下次 consolidate 时统一合并。为 ``None`` 时不注册。
     - 2 个元工具（list_tools / call_tool，closure 模式访问 registry 实例）
 
     参数:
@@ -985,6 +1269,10 @@ def register_builtin_tools(
         consolidation_engine: 可选的 ``ConsolidationEngine`` 实例。注入后注册
             update_profile 工具（Core Tier）。为 ``None`` 时不注册该工具（向后
             兼容，避免在 ConsolidationEngine 不可用的部署中注册无用工具）。
+        signal_pool: 可选的 ``SignalPool`` 实例。注入后 update_profile 的 add
+            操作走信号池累积（L1 入池，达阈值才入 pending 队列写入画像）；
+            为 ``None`` 时 add 操作回退到直接入 pending 队列（向后兼容）。
+            replace/delete 不受此参数影响，始终直接入队。
     """
     # 1. 注册内置工具（文件 / 命令 / HTTP / Plan 模式等）为 Core Tier
     for name, description, input_schema, handler in BUILTIN_TOOLS:
@@ -997,7 +1285,7 @@ def register_builtin_tools(
 
     # 1.6 若注入 consolidation_engine，注册 update_profile 工具（Core Tier）
     if consolidation_engine is not None:
-        _register_update_profile(registry, consolidation_engine)
+        _register_update_profile(registry, consolidation_engine, signal_pool)
 
     # 2. 注册元工具 list_tools / call_tool（Core Tier，始终全量注入）
     #    使用 closure 模式，使元工具内部能访问 registry 实例。
@@ -1038,6 +1326,8 @@ def register_builtin_tools(
         description=(
             "搜索并按需加载可用工具。精确匹配用 select:ToolName1,ToolName2，"
             "或输入自然语言关键词搜索。返回工具的完整 schema。"
+            "注:skill__* / mcp__* 已直接注册到 Core Tier,无需通过本工具加载。"
+            "本工具仅用于未来动态发现的 Deferred 工具。"
         ),
         input_schema={
             "type": "object",
@@ -1060,7 +1350,8 @@ def register_builtin_tools(
     registry.register_core(
         name="tool_call",
         description=(
-            "调用一个已通过 list_tools 加载的工具。如果工具未加载，先调用 list_tools。"
+            "调用一个已通过 list_tools 加载的工具。如果工具未加载,先调用 list_tools。"
+            "注:skill__* / mcp__* 可直接调用,无需通过本工具中转。"
         ),
         input_schema={
             "type": "object",
@@ -1193,27 +1484,46 @@ def _register_delete_file_v2(
 def _register_update_profile(
     registry,
     consolidation_engine: "ConsolidationEngine",
+    signal_pool=None,
 ) -> None:
     """注册 update_profile 工具到 Core Tier。
 
     工具允许 LLM 通过 add/replace/delete 三种操作显式修改用户画像
-    memory.md。采用**延迟合并写入**策略：handler 不立即写 memory.md，
-    而是将操作入队到 ``consolidation_engine.pending_profile_updates``，
-    下次 :meth:`ConsolidationEngine.consolidate` 时统一合并到 memory.md，
-    避免每轮对话都让 system prompt 的缓存命中区失效。
+    memory.md。采用**延迟合并写入**策略：handler 不立即写 memory.md。
 
-    handler 通过 closure 捕获 ``consolidation_engine`` 实例。ToolRegistry
-    调用 handler 时按关键字参数传入 tool_input（``action`` / ``section``
-    / ``content``），由 handler 内部校验后入队。
+    操作分流（信号池机制）：
+    - add：走信号池累积（若注入 signal_pool），相似信号去重 + 计数累加，
+      达阈值（7）才入 pending 队列写入画像。即使用户明确说"记住"也需多次
+      出现，符合"稳定模式"设计哲学。为 None 时回退到直接入 pending 队列。
+    - replace/delete：直接入 pending 队列（用户显式修改，非待观察信号）。
+
+    handler 通过 closure 捕获 ``consolidation_engine`` 与 ``signal_pool``。
+    ToolRegistry 调用 handler 时按关键字参数传入 tool_input（``action`` /
+    ``section`` / ``content``），由 handler 内部校验后分流。
+
+    三层防线（入池前/入队前校验）：
+    1. 长度上限（MAX_PROFILE_CONTENT_LEN = 4000）—— 先校验，避免长文本
+       浪费正则匹配开销
+    2. 内容黑名单 —— 14 条正则覆盖系统架构/项目描述/一次性上下文
+    3. 单会话频次上限（MAX_PROFILE_WRITES_PER_SESSION = 5）—— 仅约束
+       add 操作（入信号池），replace/delete 不受限
 
     参数:
         registry: ToolRegistry 实例。
         consolidation_engine: ConsolidationEngine 实例，提供
             :meth:`enqueue_profile_update` 接口。
+        signal_pool: 可选的 ``SignalPool`` 实例。注入后 add 操作走信号池
+            累积；为 None 时 add 回退到直接入 pending 队列（向后兼容）。
     """
+    # 长度与频次上限常量（4000/5，配合信号池累积机制放宽）
+    MAX_PROFILE_CONTENT_LEN = 4000
+    MAX_PROFILE_WRITES_PER_SESSION = 5
+    # per-session 写入计数器（进程内持久，跨 run 累积）
+    # key: session_id, value: write count
+    session_write_counts: dict = {}
 
     def _update_profile(action: str, section: str, content: str = "") -> str:
-        """update_profile 工具 handler（closure 捕获 consolidation_engine）。
+        """update_profile 工具 handler（closure 捕获 consolidation_engine/signal_pool）。
 
         参数:
             action: 操作类型，``"add"`` / ``"replace"`` / ``"delete"`` 之一。
@@ -1233,26 +1543,118 @@ def _register_update_profile(
         if action in ("add", "replace") and not content:
             return f"错误：{action} 操作需要 content"
 
-        # 2. 入队（不立即写 memory.md，下次 consolidate 时统一合并）
+        # 1.5 内容安全校验（仅 add/replace 需要 content）
+        if action in ("add", "replace") and content:
+            # 先做长度校验，避免长文本浪费正则开销
+            if len(content) > MAX_PROFILE_CONTENT_LEN:
+                return (
+                    f"拒绝：内容长度 {len(content)} 超过上限 "
+                    f"{MAX_PROFILE_CONTENT_LEN} 字符。用户画像应精简，"
+                    f"如需保存大量信息请分段多次调用。"
+                )
+
+            # 内容黑名单（5 条原始 + 7 条同义词 + 2 条一次性上下文）
+            # 注意：模式需精准匹配系统描述，避免误伤合法用户信息
+            # （如"用户是后端工程师"含"后端"但属于合法用户画像）
+            _system_patterns = [
+                # 原始 5 条
+                r"(系统架构|核心模块|服务层|编排层|部署架构)",
+                r"(src/|agent/|llm/|memory/|storage/|tasks/)",
+                r"(config\.yaml|requirements\.txt|\.venv|__pycache__)",
+                r"(FastAPI|uvicorn|ChromaDB|SQLite|Redis|PostgreSQL)",
+                r"(Hermes Lite 是一个|项目路径|项目作者|作者：)",
+                # 7 条同义词扩充
+                r"(流式架构|事件循环|异步后端|AsyncBaseBackend)",
+                r"(react_loop|orchestrator|tool_registry|policy_engine)",
+                r"(API\s*key|DEEPSEEK|ANTHROPIC|OPENAI|access_token)",
+                # 注：不单独匹配"前端|后端|全栈"——这些是合法用户职业属性
+                # 仅匹配明确的系统架构描述组合
+                r"(分为.*层|三层架构|分层设计|模块化设计)",
+                r"(向量库|embedding|consolidation|condenser|cron_tool)",
+                r"(调度器|scheduler|定时任务|cron 调度)",
+                r"(守护进程|daemon|微服务|microservice)",
+                # 2 条一次性上下文正则（防临时任务状态污染画像）
+                # "今天在改 login.py"、"当前任务是 X" 等不是用户画像
+                r"(今天|现在|当前|正在|这次|刚刚|刚才).{0,20}(改|修|调试|部署|运行|执行|跑|测试|重构|开发)",
+                r"(session_id|会话ID|临时变量|这次任务的具体)",
+            ]
+            for pattern in _system_patterns:
+                if re.search(pattern, content, re.IGNORECASE):
+                    return (
+                        f"拒绝：内容包含系统架构或项目实现细节（命中: {pattern}），"
+                        f"请仅保存用户个人信息。"
+                    )
+
+        # per-session 频次限制：仅约束 add 操作（入信号池累积）
+        # replace/delete 是显式修改，不受此限
+        session_id = None
         try:
-            consolidation_engine.enqueue_profile_update(action, section, content)
+            from ._cancel_context import current_session_id
+            session_id = current_session_id.get()
+        except ImportError:
+            pass
+
+        if action == "add" and session_id is not None:
+            current_count = session_write_counts.get(session_id, 0)
+            if current_count >= MAX_PROFILE_WRITES_PER_SESSION:
+                return (
+                    f"拒绝：会话 {session_id} 已达单会话 add 上限 "
+                    f"{MAX_PROFILE_WRITES_PER_SESSION} 次。"
+                    f"用户画像应精简，避免频繁修改。"
+                )
+            # 频次计数在入池/入队成功后累加（见下方）
+        # 注：session_id 为 None 时（如测试或 cron 路径）跳过频次限制
+
+        # 2. 操作分流
+        try:
+            if action == "add" and signal_pool is not None:
+                # add 走信号池累积：L1 入池，相似信号去重 + 计数累加，
+                # 达阈值（7）才入 pending 队列写入画像
+                signal_pool.add(
+                    content=content,
+                    source="L1",
+                    section=section,
+                )
+                result_msg = (
+                    f"信号已加入池累积，达阈值（{signal_pool.THRESHOLD} 次）后"
+                    f"才会写入画像（section={section}）"
+                )
+            else:
+                # replace/delete 或 signal_pool 未注入：直接入 pending 队列
+                consolidation_engine.enqueue_profile_update(action, section, content)
+                result_msg = (
+                    f"已加入待合并队列，下次记忆沉淀时生效"
+                    f"（action={action}, section={section}）"
+                )
         except Exception as e:
             return f"入队失败: {e}"
 
-        return (
-            f"已加入待合并队列，下次记忆沉淀时生效"
-            f"（action={action}, section={section}）"
-        )
+        # 频次计数累加（仅在 add 操作且入池/入队成功后）
+        if action == "add" and session_id is not None:
+            session_write_counts[session_id] = (
+                session_write_counts.get(session_id, 0) + 1
+            )
+
+        return result_msg
 
     registry.register_core(
         name="profile_update",
         description=(
-            "修改用户画像（memory.md）。操作不会立即生效，而是加入待合并队列，"
-            "下次记忆沉淀时统一写入，避免每轮缓存失效。"
+            "修改用户画像（memory.md）。操作不会立即生效：\n"
+            "- add：进入信号池累积，相似信号去重 + 计数累加，达阈值（7 次）后才写入画像。"
+            "即使用户明确说「记住」也需多次出现（稳定模式设计）。\n"
+            "- replace/delete：直接加入待合并队列，下次记忆沉淀时生效。\n\n"
+            "使用约束：\n"
+            "- 可保存：用户的个人信息、身份背景、偏好、习惯、重要决策\n"
+            "- 禁止保存：系统架构描述、项目配置、模块列表、"
+            "代码路径、部署详情、一次性任务上下文（今天在改 X、当前任务是 Y）等\n\n"
             "支持 add（追加到 section 末尾，section 不存在则新建）、"
             "replace（替换 section 全部内容，section 不存在则新建）、"
             "delete（删除整个 section）三种操作。"
-            "section 标题不含 '## ' 前缀，如 '背景'、'偏好'。"
+            "section 标题不含 '## ' 前缀，如 '背景'、'偏好'。\n\n"
+            "正确示例：action=add, section=技术栈, content='用户主力语言为 Python 和 Go'\n"
+            "错误示例：action=replace, section=系统架构, content='系统采用 FastAPI + ChromaDB，分为三层...' "
+            "（这是系统描述，不是用户画像，应拒绝）"
         ),
         input_schema={
             "type": "object",
@@ -1472,8 +1874,8 @@ def register_memory_tools(
             "【个人记忆】检索对话历史中形成的长期记忆。"
             "⚠ 仅用于回忆过往对话和用户偏好。"
             "✅ 回忆用户说过什么、查找个人背景信息\n"
-            "❌ 查找文档内容、分析报告、搜索信息（请先用 file_query）\n"
-            "❌ 如果你不确定信息在哪，先试 file_query（知识库比记忆更完整）"
+            "❌ 查找文档内容（用 file_query）\n"
+            "❌ 通用方法论/外部实时信息（用模型知识或 web_search）"
         ),
         input_schema={
             "type": "object",
@@ -1610,7 +2012,14 @@ def register_bash_tool(registry, timeout: int = 30) -> None:
             "✅ 运行程序、编译构建、git 操作\n"
             "❌ 读取文件（用 file_read）、编辑文件（用 file_edit）、"
             "搜索文件名（用 file_glob）、搜索文件内容（用 file_grep/file_query）、"
-            "HTTP 请求（用 web_fetch）"
+            "HTTP 请求（用 web_fetch）\n\n"
+            "Windows 兼容性提示：\n"
+            "- Shell 实际为 cmd.exe（非 PowerShell），请用 cmd 语法\n"
+            "- Python 命令请用 `python`（非 `python3`）\n"
+            "- 跨盘切换目录请用 `cd /d <路径>`\n"
+            "- 多行 Python 用 `python -c` 时系统会自动转临时 .py 文件\n\n"
+            "⚠ 失败重试上限：同一类命令连续失败 2 次后（stdout 为空/报错），不要再换参数重试。"
+            "先诊断根因（编码？权限？路径？），若无法诊断则停下问用户。"
         ),
         input_schema={
             "type": "object",
@@ -1707,8 +2116,32 @@ def register_file_tools(
                 top_k=top_k,
                 offset=offset,
             )
-            if not results:
+
+            # 分数阈值过滤：低于阈值视为未命中，避免低分结果污染 LLM 推断
+            score_threshold = 0.30
+            try:
+                from ..config import load_config
+                _cfg = load_config()
+                score_threshold = float(
+                    (_cfg.get("files", {}) or {}).get("query_min_score", 0.30)
+                )
+            except Exception:
+                pass
+
+            filtered = [r for r in results if r.get("score", 0.0) >= score_threshold]
+
+            if not filtered:
+                if results:
+                    max_score = max(r.get("score", 0.0) for r in results)
+                    return (
+                        f"（知识库无高置信度匹配：{len(results)} 条结果最高分 "
+                        f"{max_score:.3f} < 阈值 {score_threshold}）\n"
+                        f"建议：1) 用更具体的关键词重试；"
+                        f"2) 若是通用方法论问题，直接用模型知识回答；"
+                        f"3) 若需外部实时信息，用 web_search。"
+                    )
                 return "（无匹配结果）"
+
             output = [
                 {
                     "chunk_id": r.get("chunk_id", ""),
@@ -1717,7 +2150,7 @@ def register_file_tools(
                     "score": round(r.get("score", 0.0), 4),
                     "source": r.get("source", ""),
                 }
-                for r in results
+                for r in filtered
             ]
             return _json.dumps(output, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -1761,7 +2194,7 @@ def register_file_tools(
     # file_read_uploaded 工具
     def _file_read_uploaded(
         file_id: str,
-        max_chars: int = 50000,
+        max_chars: int = 20000,
     ) -> str:
         """按 file_id 读取文件全文。"""
         try:

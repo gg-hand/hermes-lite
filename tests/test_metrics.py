@@ -155,5 +155,99 @@ class TestMetricsCollector(unittest.TestCase):
         self.assertEqual(snap["llm_latency_ms"]["sum"], 30.0 + 80.0 + 150.0 + 350.0 + 800.0 + 50000.0)
 
 
+class TestFeedbackMetrics(unittest.TestCase):
+    """Phase 1 反馈监控扩展：termination_reason / error_class / retry 计数器。"""
+
+    def test_observe_termination_accumulates_by_reason(self):
+        """observe_termination 按 reason 分桶累加。"""
+        collector = MetricsCollector()
+        collector.observe_termination("normal")
+        collector.observe_termination("normal")
+        collector.observe_termination("user_cancel")
+        collector.observe_termination("tool_permanent_fail")
+        snap = collector.snapshot()
+        self.assertEqual(snap["termination_reasons_total"]["normal"], 2)
+        self.assertEqual(snap["termination_reasons_total"]["user_cancel"], 1)
+        self.assertEqual(snap["termination_reasons_total"]["tool_permanent_fail"], 1)
+
+    def test_observe_tool_error_class_nests_by_tool(self):
+        """observe_tool_error_class 按 tool_name → error_class 二级分桶。"""
+        collector = MetricsCollector()
+        collector.observe_tool_error_class("web_fetch", "permanent")
+        collector.observe_tool_error_class("web_fetch", "permanent")
+        collector.observe_tool_error_class("web_fetch", "transient")
+        collector.observe_tool_error_class("file_read", "unknown")
+        snap = collector.snapshot()
+        self.assertEqual(snap["tool_error_classes_total"]["web_fetch"]["permanent"], 2)
+        self.assertEqual(snap["tool_error_classes_total"]["web_fetch"]["transient"], 1)
+        self.assertEqual(snap["tool_error_classes_total"]["file_read"]["unknown"], 1)
+
+    def test_observe_tool_retry_accumulates_by_tool(self):
+        """observe_tool_retry 按 tool_name 分桶累加。"""
+        collector = MetricsCollector()
+        collector.observe_tool_retry("bash_exec")
+        collector.observe_tool_retry("bash_exec")
+        collector.observe_tool_retry("web_fetch")
+        snap = collector.snapshot()
+        self.assertEqual(snap["tool_retries_total"]["bash_exec"], 2)
+        self.assertEqual(snap["tool_retries_total"]["web_fetch"], 1)
+
+    def test_snapshot_returns_deepcopy_for_feedback_counters(self):
+        """snapshot 返回的反馈计数器是深拷贝，外部修改不影响内部状态。"""
+        collector = MetricsCollector()
+        collector.observe_termination("normal")
+        snap = collector.snapshot()
+        snap["termination_reasons_total"]["normal"] = 999
+        snap["tool_error_classes_total"]["x"] = {"y": 999}
+        snap["tool_retries_total"]["z"] = 999
+        # 再次 snapshot 验证内部状态未被影响
+        snap2 = collector.snapshot()
+        self.assertEqual(snap2["termination_reasons_total"]["normal"], 1)
+        self.assertNotIn("x", snap2["tool_error_classes_total"])
+        self.assertNotIn("z", snap2["tool_retries_total"])
+
+    def test_reset_clears_feedback_counters(self):
+        """reset 清空 3 个反馈计数器。"""
+        collector = MetricsCollector()
+        collector.observe_termination("normal")
+        collector.observe_tool_error_class("web_fetch", "permanent")
+        collector.observe_tool_retry("bash_exec")
+        collector.reset()
+        snap = collector.snapshot()
+        self.assertEqual(snap["termination_reasons_total"], {})
+        self.assertEqual(snap["tool_error_classes_total"], {})
+        self.assertEqual(snap["tool_retries_total"], {})
+
+    def test_initial_snapshot_has_empty_feedback_counters(self):
+        """新创建的 collector snapshot 中反馈计数器为空 dict。"""
+        collector = MetricsCollector()
+        snap = collector.snapshot()
+        self.assertEqual(snap["termination_reasons_total"], {})
+        self.assertEqual(snap["tool_error_classes_total"], {})
+        self.assertEqual(snap["tool_retries_total"], {})
+
+    def test_feedback_methods_thread_safe(self):
+        """反馈计数器方法在并发调用下不丢失更新（基础烟雾测试）。"""
+        import threading
+        collector = MetricsCollector()
+
+        def worker():
+            for _ in range(100):
+                collector.observe_termination("normal")
+                collector.observe_tool_error_class("web_fetch", "permanent")
+                collector.observe_tool_retry("bash_exec")
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        snap = collector.snapshot()
+        # 5 线程 × 100 次 = 500
+        self.assertEqual(snap["termination_reasons_total"]["normal"], 500)
+        self.assertEqual(snap["tool_error_classes_total"]["web_fetch"]["permanent"], 500)
+        self.assertEqual(snap["tool_retries_total"]["bash_exec"], 500)
+
+
 if __name__ == "__main__":
     unittest.main()

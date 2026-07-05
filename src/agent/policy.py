@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
@@ -75,19 +75,26 @@ class Decision:
             取值：``"default_rule"``（默认规则）/ ``"schedule_grant"``
             （cron 调度项预授权放行）/ ``"user_confirm"``（用户确认）。
             默认 ``"default_rule"``，向后兼容旧调用方。
+        tool_kind: 工具类别（generic/skill/mcp/file/shell/memory），
+            用于前端弹窗差异化渲染。默认 "generic"。由 ``check()`` 包装方法
+            通过 ``_compute_tool_kind`` 后处理填充。
     """
 
     action: Literal["allow", "confirm", "deny"]
     reason: str
     risk_level: Literal["low", "medium", "high"]
     decision_source: str = "default_rule"
+    tool_kind: str = "generic"
 
 
 DEFAULT_RULES = [
     {"tool": "file_write", "risk": "confirm", "reason": "写入文件会修改或覆盖磁盘内容"},
     {"tool": "bash_exec", "risk": "confirm", "reason": "执行 shell 命令可能修改、删除系统资源"},
     {"tool": "tool_call", "risk": "confirm", "reason": "调用扩展工具（Skill/MCP）可能产生副作用"},
-    {"tool": "profile_update", "risk": "confirm", "reason": "修改用户画像属高危操作，需确认"},
+    # 注：profile_update 不在 DEFAULT_RULES 中（默认放行）。
+    # 用户画像沉淀依赖 SignalPool 阈值累积（7 次去重后写入）+ handler 三层防护
+    # （4000 字符上限 / 单会话 5 次频次 / 14 条黑名单正则），无需 HIL 拦截。
+    # SignalPool 阈值写入早已通过 consolidation_engine.enqueue_profile_update 绕过 HIL。
     # Phase 7 Task 3: 记忆管理工具（高危截停）
     # delete_memory / update_memory 直接修改向量库长期记忆，需 confirm。
     # 流式模式下推送 confirm 事件等待用户确认；非流式模式下自动 deny
@@ -95,16 +102,47 @@ DEFAULT_RULES = [
     {"tool": "memory_delete", "risk": "confirm", "reason": "删除长期记忆属高危操作，需确认"},
     {"tool": "memory_update", "risk": "confirm", "reason": "修改长期记忆属高危操作，需确认"},
     # Phase 8 Task 5.2: Skill 管理工具（高危截停）
-    # propose_skill / reload_skill / toggle_skill 会写磁盘文件或修改注册中心，
+    # skill__propose / skill__reload / skill__toggle 会写磁盘文件或修改注册中心，
     # 需 confirm 防止误操作。
-    {"tool": "skill_propose", "risk": "confirm", "reason": "新增 Skill 会写入磁盘文件，需确认"},
-    {"tool": "skill_reload", "risk": "confirm", "reason": "重新加载 Skill 会替换注册中心工具，需确认"},
-    {"tool": "skill_toggle", "risk": "confirm", "reason": "启用/禁用 Skill 会修改注册中心状态，需确认"},
+    {"tool": "skill__propose", "risk": "confirm", "reason": "新增 Skill 会写入磁盘文件，需确认"},
+    {"tool": "skill__reload", "risk": "confirm", "reason": "重新加载 Skill 会替换注册中心工具，需确认"},
+    {"tool": "skill__toggle", "risk": "confirm", "reason": "启用/禁用 Skill 会修改注册中心状态，需确认"},
     {"tool": "file_edit", "risk": "confirm", "reason": "修改文件内容，需确认"},
     # 注：search_memory 为读取类操作，不在 DEFAULT_RULES 中（默认放行）。
     # 文件工具（file_query / file_list_uploads / file_read_uploaded）均为
     # 读取类操作，不在 DEFAULT_RULES 中（默认放行）。
 ]
+
+# ── 读路径黑名单（P0 止血）──
+# 对 file_read/file_listdir/file_glob/file_grep/file_query 做路径前缀/通配检查，
+# 命中黑名单直接 deny（不走 HIL），防止 agent 读取自身源码、配置文件等敏感路径。
+# mode=deny_first: 黑名单优先，未列出路径默认 allow
+# mode=whitelist_only: 严格白名单，未列出路径默认 deny
+READ_PATH_TOOLS = ("file_read", "file_listdir", "file_glob", "file_grep", "file_query")
+
+READ_PATH_DEFAULT_DENY = (
+    "src/",
+    "tests/",
+    ".git/",
+    ".trae/",
+    "__pycache__/",
+    "config.yaml",
+    "config.yaml.bak",
+    "config.yaml.example",
+    ".env",
+    ".env.example",
+    "requirements.txt",
+    ".server.pid",
+    "*.pyc",
+)
+
+READ_PATH_DEFAULT_ALLOW = (
+    "data/",
+    "web/",
+    "cron_tool/",
+    "tmp/",
+    "uploads/",
+)
 
 
 class CommandClassifier:
@@ -254,17 +292,52 @@ class CommandClassifier:
         return False
 
     @classmethod
+    def _strip_quoted_segments(cls, command: str) -> str:
+        """剥离引号内内容，仅保留命令层文本（引号字符保留为空格占位）。
+
+        用于 ``_has_redirect_operator`` 检测前，避免引号内的 ``>`` / ``>>``
+        被误判为文件重定向。例如 ``python -c "print(1 > 2)"`` 中的 ``>``
+        是 Python 比较运算符，不应触发重定向拦截。
+
+        规则：单引号与双引号互不嵌套（与 shell 语义一致），引号内字符
+        替换为空格，引号字符本身也替换为空格以保持 token 边界。
+
+        边界：不处理 PowerShell 的 ``"he""llo"`` 转义等复杂场景，对 LLM
+        常用的 ``python -c "..."`` / ``node -e "..."`` / ``echo "..."``
+        场景已足够。
+        """
+        result = []
+        in_single = False
+        in_double = False
+        for ch in command:
+            if ch == "'" and not in_double:
+                in_single = not in_single
+                result.append(" ")
+            elif ch == '"' and not in_single:
+                in_double = not in_double
+                result.append(" ")
+            elif in_single or in_double:
+                result.append(" ")
+            else:
+                result.append(ch)
+        return "".join(result)
+
+    @classmethod
     def _has_redirect_operator(cls, command: str) -> bool:
         """检查 ``command`` 是否含文件重定向操作符 ``>`` / ``>>``。
 
         重定向会覆盖或追加文件内容，属高危写入操作，归为 ``delete`` 类。
 
-        检测规则（与 spec 一致，保守检测带空格的形式）：
+        检测规则：
         - 命令以 ``>`` 或 ``>>`` 开头（如 ``> file.txt`` 截断文件）
-        - 命令中含 `` > `` 或 `` >> ``（前后带空格，如 ``echo hello > file.txt``）
+        - 命令层（剥离引号后）含 `` > `` 或 `` >> ``（前后带空格，
+          如 ``echo hello > file.txt``）
 
-        注：``echo hello>file.txt``（无空格）不被检测，这是已知的保守边界，
-        与任务 spec 一致。
+        引号内的 ``>`` 不视为重定向（如 ``python -c "print(1 > 2)"``
+        中的 ``>`` 是 Python 比较运算符），通过 ``_strip_quoted_segments``
+        剥离引号内容后再检测。
+
+        注：``echo hello>file.txt``（无空格）不被检测，这是已知的保守边界。
         """
         cmd = command.strip()
         if not cmd:
@@ -272,8 +345,9 @@ class CommandClassifier:
         # 命令以 > 或 >> 开头（>> 以 > 开头，统一判断 startswith(">")）
         if cmd.startswith(">"):
             return True
-        # 命令中含 " > " 或 " >> "（前后带空格）
-        if " > " in cmd or " >> " in cmd:
+        # 剥离引号后再检测，避免 python -c "print(1 > 2)" 误判
+        cmd_stripped = cls._strip_quoted_segments(cmd)
+        if " > " in cmd_stripped or " >> " in cmd_stripped:
             return True
         return False
 
@@ -365,6 +439,8 @@ class PolicyEngine:
         file_registry: Optional["FileOperationRegistry"] = None,
         cron_scheduler: Optional[Any] = None,
         workspace_root: Optional[str] = None,
+        read_paths_config: Optional[dict] = None,
+        mcp_hil_config: Optional[Dict[str, bool]] = None,
     ) -> None:
         """初始化策略评估器。
 
@@ -383,6 +459,14 @@ class PolicyEngine:
             workspace_root: 工作空间根目录路径。为 ``None`` 或空时不做边界检查。
                 非空时 ``_check_write_file`` 会检查目标路径是否在此目录内，
                 跨出工作空间写文件将触发 ``confirm``。
+            read_paths_config: P0 止血读路径策略配置，dict 可含字段：
+                ``mode``（``"deny_first"`` 默认 / ``"whitelist_only"``）、
+                ``deny``（tuple/list of 路径前缀或通配符）、
+                ``allow``（tuple/list of 路径前缀）。
+                为 ``None`` 时使用 ``READ_PATH_DEFAULT_*`` 默认值。
+            mcp_hil_config: P1-7 MCP HIL 配置，``{server_name: hil_bool}``。
+                ``hil=False`` 的 server 调用 ``mcp__{server}__*`` 时直接 allow；
+                ``hil=True``（默认）走 confirm（由后续规则匹配处理）。
         """
         self._enabled = enabled
         self._file_registry = file_registry
@@ -412,6 +496,29 @@ class PolicyEngine:
             validated.append(rule)
         self._rules = validated
 
+        # P0 止血：读路径黑名单配置
+        cfg = read_paths_config or {}
+        self._read_paths_mode = cfg.get("mode", "deny_first")
+        self._read_deny = tuple(cfg.get("deny") or READ_PATH_DEFAULT_DENY)
+        self._read_allow = tuple(cfg.get("allow") or READ_PATH_DEFAULT_ALLOW)
+
+        # P1-7: MCP HIL 配置（server_name → hil bool）
+        # hil=False 的 server 调用 mcp__{server}__* 时直接 allow
+        # hil=True（默认）走 confirm（由后续规则匹配处理）
+        self._mcp_hil_config: Dict[str, bool] = mcp_hil_config or {}
+
+    def set_mcp_hil_config(self, mcp_hil_config: Optional[Dict[str, bool]]) -> None:
+        """注入或更新 MCP HIL 配置。
+
+        由于 ``mcp_hil_config`` 通常依赖 ``skills.mcp`` 段，而该段在
+        ``server.py`` 启动时构建，晚于 ``PolicyEngine`` 构造。本方法供
+        ``server.py`` 在 MCP server 全部连接后注入引用。
+
+        参数:
+            mcp_hil_config: ``{server_name: hil_bool}`` dict，或 ``None`` 清空。
+        """
+        self._mcp_hil_config = mcp_hil_config or {}
+
     def set_cron_scheduler(self, cron_scheduler: Optional[Any]) -> None:
         """注入 cron_scheduler 引用（Phase 8 Task 4.2）。
 
@@ -425,12 +532,31 @@ class PolicyEngine:
         """
         self._cron_scheduler = cron_scheduler
 
+    @property
+    def enabled(self) -> bool:
+        """是否启用策略评估。``False`` 时 ``check`` 一律放行。"""
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        """热更新入口：翻转 ``enabled`` 即时生效。
+
+        被 ``server.py._apply_runtime_config`` 通过 ``setattr`` 调用。
+        setter 内仅记日志，不处理 pending 审批（approval_manager 是
+        server.py 全局变量，由 ``_apply_runtime_config`` 专项逻辑处理）。
+        """
+        old = self._enabled
+        self._enabled = bool(value)
+        if old != self._enabled:
+            logger.warning("PolicyEngine.enabled %s → %s", old, self._enabled)
+
     @classmethod
     def from_config(
         cls,
         security_cfg: dict,
         file_registry: Optional["FileOperationRegistry"] = None,
         cron_scheduler: Optional[Any] = None,
+        mcp_hil_config: Optional[Dict[str, bool]] = None,
     ) -> "PolicyEngine":
         """从 config 的 security 段构造 ``PolicyEngine``。
 
@@ -438,9 +564,11 @@ class PolicyEngine:
             security_cfg: config 中 ``security`` 段的 dict，可含字段：
                 ``enabled``（默认 ``True``）/ ``rules``（``None`` 或空 list
                 时使用 ``DEFAULT_RULES``，这是设计意图，让用户不配置时获得
-                安全默认值）。
+                安全默认值）/ ``read_paths``（P0 止血读路径策略）。
             file_registry: v2 可选注入，透传给 ``__init__``。
             cron_scheduler: Phase 8 Task 4.2 可选注入，透传给 ``__init__``。
+            mcp_hil_config: P1-7 可选注入，``{server_name: hil_bool}``。
+                也可在构造后通过 ``set_mcp_hil_config`` 注入。
 
         返回:
             构造好的 ``PolicyEngine`` 实例。规则校验由 ``__init__`` 完成。
@@ -456,6 +584,8 @@ class PolicyEngine:
             file_registry=file_registry,
             cron_scheduler=cron_scheduler,
             workspace_root=security_cfg.get("workspace_root"),
+            read_paths_config=security_cfg.get("read_paths"),
+            mcp_hil_config=mcp_hil_config,
         )
 
     def _match_rules(self, name: str) -> Optional[Dict[str, Any]]:
@@ -500,13 +630,169 @@ class PolicyEngine:
         risk_level = _RISK_TO_RISK_LEVEL[risk]
         return Decision(action=action, reason=reason, risk_level=risk_level)
 
+    def _check_read_path(self, tool_input: dict) -> Optional[Decision]:
+        """P0 止血：读路径黑名单检查。
+
+        对 ``file_read`` / ``file_listdir`` / ``file_glob`` / ``file_grep`` /
+        ``file_query`` 工具的路径参数做黑名单/白名单检查。
+
+        参数:
+            tool_input: 工具输入参数 dict。不同工具的路径字段名不同：
+                file_read → path / file_path
+                file_listdir → dir / directory / path
+                file_glob → pattern / path
+                file_grep → path / directory / query
+                file_query → query / path
+
+        返回:
+            ``Decision("deny", ...)`` 表示命中黑名单或不在白名单；
+            ``None`` 表示放行（未命中黑名单或在白名单内）。
+            路径提取失败（无路径字段）时返回 ``None``（不拦截）。
+        """
+        if not tool_input:
+            return None
+
+        # 从 tool_input 提取所有可能的路径字段
+        path_candidates = []
+        for key in ("path", "file_path", "dir", "directory", "pattern", "glob"):
+            val = tool_input.get(key)
+            if val and isinstance(val, str):
+                path_candidates.append(val)
+
+        # file_grep / file_query 可能有 query 字段（非路径），不提取
+        if not path_candidates:
+            return None
+
+        # 对每个路径候选做检查
+        for raw_path in path_candidates:
+            # 标准化路径：相对 workspace_root 解析
+            try:
+                p = Path(raw_path)
+                if not p.is_absolute() and self._workspace_root:
+                    p = self._workspace_root / p
+                p = p.resolve()
+            except Exception:
+                # 路径解析失败，保守不拦截（让后续流程处理）
+                continue
+
+            # 转为正斜杠字符串用于前缀匹配
+            path_str = str(p).replace("\\", "/")
+            # 同时检查原始路径（相对路径形式）
+            raw_norm = raw_path.replace("\\", "/")
+
+            # 检查是否命中黑名单
+            for pattern in self._read_deny:
+                pat_norm = pattern.replace("\\", "/")
+                if self._path_matches(path_str, raw_norm, pat_norm):
+                    return Decision(
+                        action="deny",
+                        reason=f"路径在黑名单内，源码/配置文件不可读: {pattern}",
+                        risk_level="high",
+                    )
+
+            # whitelist_only 模式：不在白名单则拒绝
+            if self._read_paths_mode == "whitelist_only":
+                in_allow = False
+                for pattern in self._read_allow:
+                    pat_norm = pattern.replace("\\", "/")
+                    if self._path_matches(path_str, raw_norm, pat_norm):
+                        in_allow = True
+                        break
+                if not in_allow:
+                    return Decision(
+                        action="deny",
+                        reason=f"路径不在白名单内（whitelist_only 模式）: {raw_path}",
+                        risk_level="high",
+                    )
+
+        return None
+
+    @staticmethod
+    def _path_matches(path_str: str, raw_norm: str, pattern: str) -> bool:
+        """检查路径是否匹配某个模式（前缀匹配或 fnmatch 通配）。
+
+        参数:
+            path_str: 标准化后的绝对路径（正斜杠）。
+            raw_norm: 原始输入路径（正斜杠，可能相对）。
+            pattern: 模式字符串（如 ``"src/"`` / ``"*.pyc"``）。
+        """
+        # 前缀匹配：pattern 以 / 结尾或不含通配符
+        if not any(c in pattern for c in "*?["):
+            # 前缀匹配（对绝对路径和相对路径都检查）
+            if path_str.startswith(pattern) or path_str.startswith("/" + pattern):
+                return True
+            if raw_norm.startswith(pattern) or raw_norm.startswith("./" + pattern):
+                return True
+            # 精确匹配文件名（如 config.yaml）
+            if path_str.endswith("/" + pattern) or raw_norm == pattern:
+                return True
+            return False
+        # 通配符匹配
+        import fnmatch
+        if fnmatch.fnmatch(path_str, "*" + pattern) or fnmatch.fnmatch(raw_norm, pattern):
+            return True
+        # 对路径各段尝试匹配（如 *.pyc 匹配 a/b/c.pyc）
+        parts = path_str.split("/")
+        for part in parts:
+            if fnmatch.fnmatch(part, pattern):
+                return True
+        return False
+
+    def _compute_tool_kind(self, tool_name: str) -> str:
+        """根据工具名推断 tool_kind（用于前端弹窗差异化渲染）。
+
+        推断规则：
+        - ``skill__*`` → "skill"
+        - ``mcp__*`` → "mcp"
+        - ``file_read`` / ``file_write`` / ``file_edit`` / ``file_delete`` /
+          ``file_listdir`` / ``file_glob`` / ``file_grep`` / ``file_query`` → "file"
+        - ``bash_exec`` → "shell"
+        - ``memory_delete`` / ``memory_update`` / ``memory_search`` /
+          ``profile_update`` → "memory"
+        - 其他 → "generic"
+        """
+        if tool_name.startswith("skill__"):
+            return "skill"
+        if tool_name.startswith("mcp__"):
+            return "mcp"
+        if tool_name in (
+            "file_read", "file_write", "file_edit", "file_delete",
+            "file_listdir", "file_glob", "file_grep", "file_query",
+        ):
+            return "file"
+        if tool_name == "bash_exec":
+            return "shell"
+        if tool_name in (
+            "memory_delete", "memory_update", "memory_search", "profile_update",
+        ):
+            return "memory"
+        return "generic"
+
     def check(
         self,
         tool_name: str,
         tool_input: dict,
         session_id: Optional[str] = None,
     ) -> Decision:
-        """评估一次工具调用的处置决策。
+        """评估一次工具调用的处置决策（对外接口）。
+
+        在 ``_check_internal`` 结果上后处理填充 ``tool_kind`` 字段，
+        避免散点修改 11 处 return。``tool_kind`` 由 ``_compute_tool_kind``
+        根据工具名推断，用于前端弹窗差异化渲染。
+
+        参数与返回值同 ``_check_internal``。
+        """
+        decision = self._check_internal(tool_name, tool_input, session_id)
+        kind = self._compute_tool_kind(tool_name)
+        return replace(decision, tool_kind=kind)
+
+    def _check_internal(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        session_id: Optional[str] = None,
+    ) -> Decision:
+        """评估一次工具调用的处置决策（内部实现，不含 tool_kind 后处理）。
 
         评估流程：
         1. ``enabled=False`` → 一律放行 ``Decision("allow", "", "low")``。
@@ -535,11 +821,39 @@ class PolicyEngine:
                 即使 ``session_id`` 为 ``None`` 也会执行分类决策。
 
         返回:
-            评估得到的 ``Decision``。
+            评估得到的 ``Decision``（``tool_kind`` 字段未填充，由 ``check()``
+            包装方法后处理）。
         """
         # 1. 未启用 → 一律放行
         if not self._enabled:
             return Decision("allow", "", "low")
+
+        # 1.2 P0 止血：读路径黑名单检查（优先级仅次于 enabled 开关）
+        # 命中黑名单直接 deny（不走 HIL），防止 agent 读取自身源码、配置文件
+        if tool_name in READ_PATH_TOOLS:
+            read_decision = self._check_read_path(tool_input)
+            if read_decision is not None:
+                return read_decision
+
+        # 1.3 P1-7: MCP HIL 前缀检查
+        # hil=False 的 server 调用 mcp__{server}__* 时直接 allow（可信 server）
+        # hil=True（默认）走 confirm（陌生 server 需审批）
+        if tool_name.startswith("mcp__"):
+            parts = tool_name.split("__", 2)
+            server_name = parts[1] if len(parts) >= 2 else ""
+            hil = self._mcp_hil_config.get(server_name, True)  # 默认 True（安全）
+            if not hil:
+                return Decision(
+                    action="allow",
+                    reason=f"MCP server '{server_name}' 可信，直接放行",
+                    risk_level="low",
+                )
+            else:
+                return Decision(
+                    action="confirm",
+                    reason=f"MCP server '{server_name}' 调用需确认（hil=true）",
+                    risk_level="high",
+                )
 
         # 1.5 Phase 8 Task 4.2: cron 会话预授权三层检查
         # 检测 session_id 以 "cron:" 开头且注入了 cron_scheduler 时，走预授权路径。

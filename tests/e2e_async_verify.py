@@ -6,7 +6,7 @@
 - SubTask 10.1: mock LLM 卡死 → 60s 后 ActivityTimeout，期间 /health <50ms
 
 运行方式：python tests/e2e_async_verify.py
-需先启动服务：python -m uvicorn src.server:app --port 7007 --workers 1
+需先启动服务：python -m uvicorn src.server:app --port 8000 --workers 1
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import time
 import urllib.request
 import urllib.error
 
-BASE = "http://127.0.0.1:7007"
+BASE = "http://127.0.0.1:8000"
 
 
 def _post_json(path: str, body: dict, timeout: float = 120.0) -> dict:
@@ -404,7 +404,7 @@ def main():
             sys.exit(1)
     except Exception as e:
         print(f"/health 不可达: {e}")
-        print("请先启动服务: python -m uvicorn src.server:app --port 7007 --workers 1")
+        print("请先启动服务: python -m uvicorn src.server:app --port 8000 --workers 1")
         sys.exit(1)
 
     results = {}

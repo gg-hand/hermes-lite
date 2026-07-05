@@ -415,12 +415,12 @@ class TestRunMethodAcceptsSessionId(unittest.IsolatedAsyncioTestCase):
         loop = ReactLoop(llm_client=mock_llm, tool_registry=None)
 
         # 传 session_id 不应报错
-        final, _, _ = await loop.run("Hi", session_id="sess-xyz")
+        final, _, _, _ = await loop.run("Hi", session_id="sess-xyz")
         self.assertEqual(final, "ok")
 
         # 不传 session_id 也应正常工作（向后兼容）
         mock_llm.chat_main.return_value = mock_resp
-        final2, _, _ = await loop.run("Hi")
+        final2, _, _, _ = await loop.run("Hi")
         self.assertEqual(final2, "ok")
 
 
@@ -476,7 +476,12 @@ class TestDenyResultContentRun(unittest.IsolatedAsyncioTestCase):
     """
 
     async def test_run_deny_result_contains_explicit_message(self):
-        """run() deny 后 tool_result 包含 [用户已拒绝] 与 请停止重试。"""
+        """run() deny 后 tool_result 直接含 [拦截] 详情块。
+
+        Phase B-3 改造：deny 走 pre_execution 路径，tool_result 直接
+        包含 to_system_block() 输出（含 [拦截]/原因/建议），不再有
+        独立的 system 注入消息。
+        """
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
             action="deny", reason="危险操作", risk_level="high"
@@ -511,12 +516,12 @@ class TestDenyResultContentRun(unittest.IsolatedAsyncioTestCase):
             policy_engine=mock_policy,
         )
 
-        final, messages, _ = await loop.run("delete everything")
+        final, messages, _, _ = await loop.run("delete everything")
 
         # execute_tool 不应被调用（被 deny）
         mock_registry.execute_tool.assert_not_called()
 
-        # 检查 messages 中的 tool_result 的 content
+        # 提取 tool_result content（详情直接在 tool_result 中）
         tool_result_content = ""
         for msg in messages:
             if msg.get("role") == "user" and isinstance(msg.get("content"), list):
@@ -524,15 +529,16 @@ class TestDenyResultContentRun(unittest.IsolatedAsyncioTestCase):
                     if isinstance(block, dict) and block.get("type") == "tool_result":
                         tool_result_content = block.get("content", "")
 
-        self.assertIn("[用户已拒绝]", tool_result_content)
-        self.assertIn("请停止重试", tool_result_content)
+        # tool_result 含完整 [拦截] 详情块
+        self.assertIn("[拦截]", tool_result_content)
         self.assertIn("file_write", tool_result_content)
         self.assertIn("危险操作", tool_result_content)
+        self.assertIn("停止重试", tool_result_content)
         # 最终回复为第 2 轮文本
         self.assertEqual(final, "好的，我不再尝试。")
 
     async def test_run_deny_empty_reason_uses_default(self):
-        """reason 为空时使用 '用户未提供原因'。"""
+        """reason 为空时 tool_result 中使用 '用户未提供原因'。"""
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
             action="deny", reason="", risk_level="high"
@@ -560,8 +566,9 @@ class TestDenyResultContentRun(unittest.IsolatedAsyncioTestCase):
             llm_client=mock_llm, tool_registry=mock_registry,
             max_loops=5, policy_engine=mock_policy,
         )
-        _, messages, _ = await loop.run("Hi")
+        _, messages, _, _ = await loop.run("Hi")
 
+        # 提取 tool_result content
         tool_result_content = ""
         for msg in messages:
             if msg.get("role") == "user" and isinstance(msg.get("content"), list):
@@ -576,7 +583,12 @@ class TestDenyResultContentRunStream(unittest.TestCase):
     """验证流式 run_stream() deny 后 tool 事件 result 包含明确拒绝提示。"""
 
     def test_run_stream_deny_result_contains_explicit_message(self):
-        """run_stream() deny 后 tool 事件 result 包含 [用户已拒绝] 与 请停止重试。"""
+        """run_stream() deny 后 tool 事件 result 含 [拦截] 详情 + blocked 标记。
+
+        Phase B-3 改造：deny 走 pre_execution 路径，tool 事件 result 直接
+        包含 to_system_block() 输出（含 [拦截]/原因/建议），is_error=True，
+        blocked=True 表示工具被拦截未执行。
+        """
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
             action="deny", reason="危险操作", risk_level="high"
@@ -617,11 +629,11 @@ class TestDenyResultContentRunStream(unittest.TestCase):
 
         tool_events = [e for e in events if e.get("type") == "tool"]
         self.assertEqual(len(tool_events), 1)
-        result = tool_events[0]["result"]
-        self.assertIn("[用户已拒绝]", result)
-        self.assertIn("请停止重试", result)
-        self.assertIn("file_write", result)
-        self.assertIn("危险操作", result)
+        evt = tool_events[0]
+        self.assertIn("[拦截]", evt["result"])
+        self.assertIn("危险操作", evt["result"])
+        self.assertTrue(evt.get("is_error"))
+        self.assertTrue(evt.get("blocked"))
 
         # execute_tool 不应被调用
         mock_registry.execute_tool.assert_not_called()
@@ -631,7 +643,12 @@ class TestDenyResultConfirmToDenyRunStream(unittest.TestCase):
     """验证流式 confirm→deny（用户拒绝）后 tool 事件 result 包含明确拒绝提示。"""
 
     def test_run_stream_confirm_then_user_deny(self):
-        """confirm 后用户拒绝，tool 事件 result 包含 [用户已拒绝] 与 请停止重试。"""
+        """confirm 后用户拒绝，tool 事件 result 含 [拦截] 详情 + blocked 标记。
+
+        Phase B-3 改造：confirm→deny 走 UserRejectedError 路径，tool 事件
+        result 直接包含 to_system_block() 输出（含 [拦截]/原因/建议），
+        is_error=True，blocked=True 表示工具被拦截未执行。
+        """
         mock_policy = MagicMock()
         mock_policy.check.return_value = Decision(
             action="confirm", reason="需要确认", risk_level="high"
@@ -681,11 +698,14 @@ class TestDenyResultConfirmToDenyRunStream(unittest.TestCase):
 
         tool_events = [e for e in events if e.get("type") == "tool"]
         self.assertEqual(len(tool_events), 1)
-        result = tool_events[0]["result"]
-        self.assertIn("[用户已拒绝]", result)
-        self.assertIn("请停止重试", result)
-        self.assertIn("file_write", result)
-        self.assertIn("用户拒绝了", result)
+        evt = tool_events[0]
+        # tool 事件 result 含 [拦截] 详情（Phase B-3 改造）
+        self.assertIn("[拦截]", evt["result"])
+        self.assertIn("用户拒绝了", evt["result"])
+        self.assertTrue(evt.get("is_error"))
+        self.assertTrue(evt.get("blocked"))
+        # execute_tool 不应被调用（被用户拒绝）
+        mock_registry.execute_tool.assert_not_called()
 
         # 审批事件
         appr_req = [e for e in events if e.get("type") == "approval_request"]
@@ -693,9 +713,6 @@ class TestDenyResultConfirmToDenyRunStream(unittest.TestCase):
         appr_res = [e for e in events if e.get("type") == "approval_resolved"]
         self.assertEqual(len(appr_res), 1)
         self.assertEqual(appr_res[0]["decision"], "deny")
-
-        # execute_tool 不应被调用
-        mock_registry.execute_tool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +758,7 @@ class TestMaxLoopsSummaryRun(unittest.IsolatedAsyncioTestCase):
             max_loops=2,
         )
 
-        final, _, _ = await loop.run("Hi", session_id="sess-1")
+        final, _, _, _ = await loop.run("Hi", session_id="sess-1")
 
         # chat_main 调用 3 次：2 次循环 + 1 次总结
         self.assertEqual(mock_llm.chat_main.call_count, 3)
@@ -782,7 +799,7 @@ class TestMaxLoopsSummaryRun(unittest.IsolatedAsyncioTestCase):
             max_loops=2,
         )
 
-        final, _, _ = await loop.run("Hi")
+        final, _, _, _ = await loop.run("Hi")
 
         # 降级返回 last_text
         self.assertEqual(final, "looping...")

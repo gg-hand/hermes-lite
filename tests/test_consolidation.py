@@ -336,5 +336,121 @@ class TestConsolidateWithMockLlm(unittest.TestCase):
         self.assertEqual(stats["facts_added"], 1)
 
 
+class TestPreferenceDualWrite(unittest.TestCase):
+    """验证 preference 类型事实的双写：信号池累积 + ChromaDB 检索。
+
+    经 review 发现若把 preference 从 ChromaDB 摘掉，retrieval.py 的
+    priority_map 仍把 preference: 2 列为检索类型，会导致 memory_search
+    检索不到用户偏好。因此 preference 必须同时进信号池和向量库。
+    """
+
+    def test_preference_dual_write_signal_pool_and_chromadb(self):
+        """preference 类型事实同时进入信号池和向量库。"""
+        facts_json = (
+            '{"facts": ['
+            '{"content": "用户讨厌 emoji", "type": "preference", "importance": 0.8}'
+            ']}'
+        )
+        llm_client = MagicMock()
+        llm_client.chat_consolidation_sync.return_value = _make_llm_response(facts_json)
+
+        chroma_store = MagicMock()
+        chroma_store.find_duplicates.return_value = []
+
+        signal_pool = MagicMock()
+        signal_pool.THRESHOLD = 7
+
+        engine = ConsolidationEngine(
+            llm_client=llm_client,
+            chroma_store=chroma_store,
+            signal_pool=signal_pool,
+            threshold=1,
+        )
+        engine.add_info({"role": "user", "content": "我讨厌 emoji"})
+
+        stats = engine.consolidate()
+
+        # 信号池被调用，source="L3"
+        signal_pool.add.assert_called_once()
+        call_kwargs = signal_pool.add.call_args.kwargs
+        self.assertEqual(call_kwargs["source"], "L3")
+        self.assertEqual(call_kwargs["weight"], 2)
+        self.assertEqual(call_kwargs["section"], "沉淀笔记")
+        self.assertIn("emoji", call_kwargs["content"])
+
+        # 向量库也被调用（双写保留检索能力）
+        chroma_store.add_memory.assert_called_once()
+
+        # profile_only 不应增加（preference 不是 profile_only）
+        self.assertEqual(stats["profile_only"], 0)
+        self.assertEqual(stats["facts_added"], 1)
+
+    def test_user_profile_only_signal_pool(self):
+        """回归保护：user_profile 仅走信号池，不入向量库。"""
+        facts_json = (
+            '{"facts": ['
+            '{"content": "user is backend engineer", "type": "user_profile", "importance": 0.9}'
+            ']}'
+        )
+        llm_client = MagicMock()
+        llm_client.chat_consolidation_sync.return_value = _make_llm_response(facts_json)
+
+        chroma_store = MagicMock()
+        chroma_store.find_duplicates.return_value = []
+
+        signal_pool = MagicMock()
+        signal_pool.THRESHOLD = 7
+
+        engine = ConsolidationEngine(
+            llm_client=llm_client,
+            chroma_store=chroma_store,
+            signal_pool=signal_pool,
+            threshold=1,
+        )
+        engine.add_info({"role": "user", "content": "I am engineer"})
+
+        stats = engine.consolidate()
+
+        # 信号池被调用
+        signal_pool.add.assert_called_once()
+        # 向量库未被调用（user_profile 跳过）
+        chroma_store.add_memory.assert_not_called()
+        # profile_only 计数正确
+        self.assertEqual(stats["profile_only"], 1)
+
+    def test_decision_only_chromadb(self):
+        """回归保护：decision 仅走向量库，不入信号池。"""
+        facts_json = (
+            '{"facts": ['
+            '{"content": "user decided to migrate from Webpack to Vite", "type": "decision", "importance": 0.9}'
+            ']}'
+        )
+        llm_client = MagicMock()
+        llm_client.chat_consolidation_sync.return_value = _make_llm_response(facts_json)
+
+        chroma_store = MagicMock()
+        chroma_store.find_duplicates.return_value = []
+
+        signal_pool = MagicMock()
+        signal_pool.THRESHOLD = 7
+
+        engine = ConsolidationEngine(
+            llm_client=llm_client,
+            chroma_store=chroma_store,
+            signal_pool=signal_pool,
+            threshold=1,
+        )
+        engine.add_info({"role": "user", "content": "I decided to migrate"})
+
+        stats = engine.consolidate()
+
+        # 信号池未被调用（decision 不进信号池）
+        signal_pool.add.assert_not_called()
+        # 向量库被调用
+        chroma_store.add_memory.assert_called_once()
+        # profile_only 不增加
+        self.assertEqual(stats["profile_only"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

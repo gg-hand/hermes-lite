@@ -53,7 +53,22 @@ HistoryBuffer   Condenser   ChromaDB向量库   memory.md
 
 ### Skill 系统
 
-动态加载本地 Skill 扩展工具，支持热重载、启用/禁用管理。每个 Skill 通过 `SKILL.md` + `tools.py` 定义。
+动态加载本地 Skill 扩展工具，支持热重载、启用/禁用管理。每个 Skill 通过三层结构定义：
+- `SKILL.md`（L1 元数据）：name/version/description/requires
+- `body`（L2 注入）：激活后注入 LLM 上下文的 Markdown 内容
+- `scripts/`（L3 资源）：可执行的 Python 脚本，通过 `skill__resource` 读取或 `bash_exec` 调用
+LLM 调用 `skill__{name}` 激活按钮后，body 内容注入上下文。
+
+## MCP 扩展
+
+MCP 工具遵循 `mcp__{server}__{tool}` 双下划线命名规范，注册为 Core Tier。
+
+### HIL 配置
+- 可信 server（`config.yaml` 中 `skills.mcp[*].hil=false`）：直接放行，LLM 可自由调用
+- 陌生 server（`hil=true`，默认）：调用走 HIL 审批，用户确认后执行
+
+### advertise_threshold 降级
+当 MCP 工具总数超过 `advertise_threshold`（默认 30）时，降级为摘要模式，仅注入 server 名 + 工具数，需调用 `mcp__list` 工具查看详情。
 
 ### Cron 调度
 
@@ -112,7 +127,7 @@ python src/server.py
 uvicorn src.server:app --host 0.0.0.0 --port 8000
 ```
 
-服务默认监听 `http://localhost:7007`，打开浏览器即可开始对话。
+服务默认监听 `http://localhost:8000`，打开浏览器即可开始对话。
 
 ---
 
@@ -135,7 +150,7 @@ memory:
 
 server:
   host: 0.0.0.0
-  port: 7007
+  port: 8000
 ```
 
 环境变量使用 `${VAR}` 语法在 YAML 中占位，运行时自动注入。
@@ -182,7 +197,10 @@ hermes-lite/
 │   ├── server.py        # FastAPI HTTP 服务
 │   └── config.py        # 配置加载（YAML + 环境变量注入）
 ├── web/
-│   └── index.html       # 前端 SPA（暗色主题）
+│   ├── index.html        # 首页
+│   ├── chat.html         # 对话
+│   ├── monitor.html      # 监控
+│   └── scheduler.html    # 调度
 ├── skills/              # 本地 Skill 扩展
 ├── cron_tool/           # cron_tool 子进程工具
 ├── tests/               # 100+ 单元与集成测试
@@ -216,6 +234,10 @@ hermes-lite/
 | `/schedules/{id}/trigger` | POST | 立即触发调度 |
 | `/proposals` | GET | 调度提议 |
 | `/skills` | GET | Skill 管理 |
+| `/skills/{name}` | GET | 获取 Skill 详情 |
+| `/skills/{name}/reload` | POST | 重载 Skill |
+| `/skills/{name}/toggle` | POST | 启用/禁用 Skill |
+| `/skills/{name}` | DELETE | 删除 Skill |
 | `/metrics` | GET | 指标快照 |
 
 ---

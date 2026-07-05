@@ -551,6 +551,53 @@ pre:hover .copy-btn { opacity: 1; }
   border-radius: var(--radius-md);
   overflow: hidden;
 }
+/* P2-4: 审批卡片差异化样式（按 tool_kind 左边框颜色区分） */
+.approval-card.tool-kind-skill   { border-left: 4px solid #3b82f6; }
+.approval-card.tool-kind-mcp     { border-left: 4px solid #a855f7; }
+.approval-card.tool-kind-file    { border-left: 4px solid #f97316; }
+.approval-card.tool-kind-shell   { border-left: 4px solid #ef4444; }
+.approval-card.tool-kind-memory  { border-left: 4px solid #991b1b; }
+.approval-card.tool-kind-generic { border-left: 4px solid #6b7280; }
+/* memory 高危警告条 */
+.approval-memory-warning {
+  background: #fef2f2;
+  border-left: 4px solid #991b1b;
+  color: #7f1d1d;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 0 0 8px 0;
+  border-radius: 4px;
+}
+/* tag-info / tag-purple（若未定义则新增） */
+.tag.tag-info { background: #3b82f6; color: #fff; }
+.tag.tag-purple { background: #a855f7; color: #fff; }
+/* approval-label / approval-file-path / approval-skill-name 等辅助样式 */
+.approval-label {
+  display: inline-block;
+  color: var(--text-secondary, #6b7280);
+  font-size: 12px;
+  margin-right: 6px;
+}
+.approval-file-path code,
+.approval-skill-name code,
+.approval-mcp-info code,
+.approval-memory-op code {
+  background: rgba(0,0,0,0.06);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.approval-sub-tool {
+  margin-left: 8px;
+  color: var(--text-secondary, #6b7280);
+  font-size: 12px;
+}
+.approval-shell-cmd pre {
+  background: rgba(0,0,0,0.06);
+  padding: 8px;
+  border-radius: 4px;
+  margin: 4px 0;
+}
 .approval-header {
   display: flex;
   align-items: center;
@@ -604,6 +651,59 @@ pre:hover .copy-btn { opacity: 1; }
 }
 .approval-resolved-tag.approved { color: var(--success); }
 .approval-resolved-tag.denied { color: var(--danger); }
+
+/* ---------- 拒绝原因输入面板 ---------- */
+.deny-reason-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+}
+.deny-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.deny-chip {
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.deny-chip:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.deny-chip.is-selected {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.deny-reason-input {
+  width: 100%;
+  padding: var(--space-2);
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  resize: vertical;
+  font-family: inherit;
+}
+.deny-reason-input:focus {
+  outline: none;
+  border-color: var(--danger);
+}
+.deny-reason-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
 
 /* ---------- 主题切换器 ---------- */
 .theme-switcher {
@@ -725,4 +825,119 @@ pre:hover .copy-btn { opacity: 1; }
 .empty-state-text {
   font-size: var(--text-sm);
   color: var(--text-muted);
+}
+
+/* ---------- 滑动开关（防护系统等即时生效配置） ---------- */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+.switch-row .switch-label {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.switch-row .hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.switch .slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.switch .slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background-color: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+.switch input:checked + .slider {
+  background-color: var(--success-dim);
+  border-color: var(--success);
+}
+.switch input:checked + .slider::before {
+  transform: translateX(18px);
+  background-color: var(--success);
+}
+.switch input:focus-visible + .slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 响应式：手机端全屏模态框 + 表单纵向 ---------- */
+@media (max-width: 768px) {
+  /* 模态框遮罩去掉 padding，让 modal 撑满 */
+  .modal-overlay {
+    padding: 0;
+  }
+  /* 模态框全屏化 */
+  .modal,
+  .modal-content {
+    max-width: 100%;
+    max-height: 100vh;
+    width: 100%;
+    height: 100vh;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-bottom: none;
+    box-shadow: none;
+  }
+  .modal-header,
+  .modal-body,
+  .modal-footer {
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+  }
+  .modal-header {
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-3);
+  }
+  .modal-footer {
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-3);
+    flex-wrap: wrap;
+  }
+  .modal-footer .btn {
+    flex: 1;
+    min-width: 120px;
+  }
+  /* 表单多列改纵向（chat.css 的 .form-row 是 flex 多列） */
+  .form-row {
+    flex-direction: column !important;
+    gap: var(--space-2) !important;
+  }
+  .form-row > * {
+    width: 100%;
+  }
 }

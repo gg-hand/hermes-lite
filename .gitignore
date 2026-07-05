@@ -1,37 +1,72 @@
-# 备份配置（含敏感信息）
+# ── 敏感文件 ──
+# API Key 使用 ${VAR} 环境变量注入，不存明文
+# 本地覆盖配置放 config.yaml.bak（自动忽略）
 config.yaml.bak
+.env
+.env.example
 
-# 运行时数据（数据库、日志、审计、向量库、会话历史）
+# ── 运行时数据（数据库、日志、向量库、会话历史） ──
 data/
-
-# 但保留 data/.gitkeep
 !data/.gitkeep
 
-# 启动输出重定向
+# ── IDE / 编辑器 ──
+.trae/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── 调试 / 临时文件 ──
+scratch/
+tmp/
+debug_*.py
+debug_*.txt
+fix*.py
+*bug_fix*.py
+analyze_*.py
+wbi_*.py
+bili_wbi_test*.py
+*_out.json
+*_out.txt
+sv*.txt
+output.txt
+search_params.txt
+out_parse.txt
+
+# 深层调试文件（任意目录）
+**/fix*.py
+**/analyze_*.py
+**/builtin_tools_fixed.py
+
+# ── 启动输出重定向 ──
 server_out.txt
 server_err.txt
 
-# Python 字节码缓存
+# ── Python ──
 __pycache__/
 *.pyc
-
-# 虚拟环境
 .venv/
-
-# 环境变量文件（含 API Key）
-.env
-
-# 运行时 PID 文件
-.server.pid
-
-# 测试缓存
 .pytest_cache/
 
-# Windows 工件
-$null
-
-# 系统生成
+# ── 系统生成 ──
 *.log
+.server.pid
 
-# ONNX 模型（可重新下载）
+# ── 截图 / 图片工件 ──
+tests/*.png
+tests/*.jpg
+
+# ── 个人笔记 / 研究文档 ──
+*价格对比*.md
+*云服务器*.md
+
+# ── ONNX 模型（可重新下载） ──
 _onnx_model/
+
+# ── 部署包 ──
+*.tar.gz
+deploy/
+
+# ── Windows 工件 ──
+$null
+Thumbs.db

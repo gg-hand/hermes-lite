@@ -99,6 +99,25 @@ class TestPolicyEngineDefaults(unittest.TestCase):
         self.assertEqual(decision.action, "confirm")
         self.assertEqual(decision.risk_level, "high")
 
+    def test_profile_update_not_in_default_rules(self):
+        """profile_update 不在 DEFAULT_RULES 中（默认放行 allow），不触发 HIL。
+
+        用户画像沉淀依赖 SignalPool 阈值累积 + handler 三层防护，无需 HIL 拦截。
+        """
+        # 断言 DEFAULT_RULES 中无 profile_update 规则
+        rule_tools = [r["tool"] for r in DEFAULT_RULES]
+        self.assertNotIn("profile_update", rule_tools)
+        # check 返回 allow / low
+        engine = PolicyEngine()
+        decision = engine.check("profile_update", {"content": "some content"})
+        self.assertEqual(decision.action, "allow")
+        self.assertEqual(decision.risk_level, "low")
+
+    def test_profile_update_tool_kind_memory(self):
+        """_compute_tool_kind 仍将 profile_update 归类为 memory（监控/日志用）。"""
+        engine = PolicyEngine()
+        self.assertEqual(engine._compute_tool_kind("profile_update"), "memory")
+
 
 class TestPolicyEngineConfigOverride(unittest.TestCase):
     """验证配置 rules 覆盖默认规则与 enabled=False 行为。"""
@@ -405,6 +424,195 @@ class TestPolicyEngineV2FromConfig(unittest.TestCase):
         """from_config 不传 file_registry 时为 None（向后兼容）。"""
         engine = PolicyEngine.from_config({})
         self.assertIsNone(engine._file_registry)
+
+
+class TestPolicyEngineEnabledSetter(unittest.TestCase):
+    """验证 enabled property setter 支持热更新翻转。"""
+
+    def test_enabled_property_reads_init_value(self):
+        """enabled property 返回 __init__ 设置的值。"""
+        engine_on = PolicyEngine(enabled=True)
+        engine_off = PolicyEngine(enabled=False)
+        self.assertTrue(engine_on.enabled)
+        self.assertFalse(engine_off.enabled)
+
+    def test_setter_true_to_false_allows_all(self):
+        """enabled=True→False 后 check() 一律放行（即使规则是 confirm/deny）。"""
+        engine = PolicyEngine(enabled=True)
+        # 翻转前 bash_exec 默认 confirm
+        d_before = engine.check("bash_exec", {"command": "del foo"}, session_id="s1")
+        self.assertEqual(d_before.action, "confirm")
+        # 翻转为 False
+        engine.enabled = False
+        self.assertFalse(engine.enabled)
+        # 翻转后一律 allow
+        d_after = engine.check("bash_exec", {"command": "del foo"}, session_id="s1")
+        self.assertEqual(d_after.action, "allow")
+
+    def test_setter_false_to_true_restores_decisions(self):
+        """enabled=False→True 后 check() 恢复正常决策。"""
+        engine = PolicyEngine(enabled=False)
+        # 关闭时 allow
+        d_off = engine.check("bash_exec", {"command": "del foo"}, session_id="s1")
+        self.assertEqual(d_off.action, "allow")
+        # 重新开启
+        engine.enabled = True
+        self.assertTrue(engine.enabled)
+        # 恢复 confirm
+        d_on = engine.check("bash_exec", {"command": "del foo"}, session_id="s1")
+        self.assertEqual(d_on.action, "confirm")
+
+    def test_setter_bool_coercion(self):
+        """setter 对非布尔值做 bool() 强制转换。"""
+        engine = PolicyEngine(enabled=True)
+        engine.enabled = 0  # 0 → False
+        self.assertFalse(engine.enabled)
+        engine.enabled = "yes"  # 非空字符串 → True
+        self.assertTrue(engine.enabled)
+        engine.enabled = None  # None → False
+        self.assertFalse(engine.enabled)
+
+    def test_setter_idempotent_no_log_when_unchanged(self):
+        """setter 设置相同值时不触发变更日志（值未变）。"""
+        engine = PolicyEngine(enabled=True)
+        # 设置相同值，_enabled 仍为 True
+        engine.enabled = True
+        self.assertTrue(engine.enabled)
+        # 再设置 False 触发变更
+        engine.enabled = False
+        self.assertFalse(engine.enabled)
+
+
+class TestPolicyEngineReadPath(unittest.TestCase):
+    """P0 止血：读路径黑名单验证。
+
+    验证 file_read/file_listdir/file_glob/file_grep/file_query 在
+    deny_first 模式下命中黑名单返回 deny，未命中返回 None（不阻断）。
+    """
+
+    def test_file_read_src_denied(self):
+        """file_read 读 src/server.py → deny，reason 含'黑名单'。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": "src/server.py"})
+        self.assertEqual(d.action, "deny")
+        self.assertIn("黑名单", d.reason)
+
+    def test_file_read_data_uploads_allowed(self):
+        """file_read 读 data/uploads/x.txt → 未命中黑名单，继续走后续规则（最终 allow）。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": "data/uploads/x.txt"})
+        # file_read 不在 DEFAULT_RULES 中，未命中黑名单 → allow
+        self.assertEqual(d.action, "allow")
+
+    def test_file_listdir_tests_denied(self):
+        """file_listdir 列 tests/ 目录 → deny。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_listdir", {"dir": "tests/"})
+        self.assertEqual(d.action, "deny")
+
+    def test_file_grep_git_denied(self):
+        """file_grep 在 .git/ 下搜索 → deny。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_grep", {"path": ".git/config", "query": "foo"})
+        self.assertEqual(d.action, "deny")
+
+    def test_file_read_config_yaml_denied(self):
+        """file_read 读 config.yaml → deny。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": "config.yaml"})
+        self.assertEqual(d.action, "deny")
+
+    def test_file_read_no_path_not_blocked(self):
+        """file_read 无 path 参数 → _check_read_path 返回 None，不阻断。"""
+        engine = PolicyEngine(enabled=True)
+        # 无 path 参数，read_path 检查返回 None，继续走后续规则
+        d = engine.check("file_read", {})
+        self.assertEqual(d.action, "allow")
+
+    def test_file_read_env_denied(self):
+        """file_read 读 .env → deny。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": ".env"})
+        self.assertEqual(d.action, "deny")
+
+    def test_file_read_pyc_denied(self):
+        """file_read 读 *.pyc → deny（通配匹配）。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": "src/__pycache__/foo.cpython-310.pyc"})
+        self.assertEqual(d.action, "deny")
+
+    def test_file_read_workspace_data_allowed(self):
+        """file_read 读 data/ 下任意文件 → allow。"""
+        engine = PolicyEngine(enabled=True)
+        d = engine.check("file_read", {"path": "data/memory.md"})
+        self.assertEqual(d.action, "allow")
+
+    def test_read_paths_config_override(self):
+        """read_paths_config 自定义配置覆盖默认黑名单。"""
+        engine = PolicyEngine(
+            enabled=True,
+            read_paths_config={
+                "mode": "deny_first",
+                "deny": ["secret/"],
+                "allow": [],
+            },
+        )
+        # secret/ 在自定义黑名单中 → deny
+        d = engine.check("file_read", {"path": "secret/passwords.txt"})
+        self.assertEqual(d.action, "deny")
+        # src/ 不在自定义黑名单中 → allow
+        d2 = engine.check("file_read", {"path": "src/server.py"})
+        self.assertEqual(d2.action, "allow")
+
+
+class TestPolicyEngineMcpHil(unittest.TestCase):
+    """P1-7: MCP HIL 前缀匹配验证。"""
+
+    def test_mcp_hil_false_allows_directly(self):
+        """hil=False 的 MCP server 调用直接 allow。"""
+        engine = PolicyEngine(
+            enabled=True,
+            mcp_hil_config={"filesystem": False},
+        )
+        d = engine.check("mcp__filesystem__read_file", {"path": "data/test.txt"})
+        self.assertEqual(d.action, "allow")
+        self.assertIn("可信", d.reason)
+
+    def test_mcp_hil_true_triggers_confirm(self):
+        """hil=True 的 MCP server 调用走 confirm。"""
+        engine = PolicyEngine(
+            enabled=True,
+            mcp_hil_config={"custom-tool": True},
+        )
+        d = engine.check("mcp__custom-tool__do_stuff", {"arg": "value"})
+        self.assertEqual(d.action, "confirm")
+        self.assertIn("hil=true", d.reason)
+
+    def test_mcp_default_hil_true_when_not_configured(self):
+        """未配置的 MCP server 默认 hil=True（安全优先）。"""
+        engine = PolicyEngine(enabled=True, mcp_hil_config={})
+        d = engine.check("mcp__unknown__tool", {})
+        self.assertEqual(d.action, "confirm")
+
+    def test_mcp_set_hil_config_updates(self):
+        """set_mcp_hil_config 动态更新配置。"""
+        engine = PolicyEngine(enabled=True, mcp_hil_config={})
+        # 初始未配置 → confirm
+        d1 = engine.check("mcp__fs__read", {})
+        self.assertEqual(d1.action, "confirm")
+        # 动态设置为可信 → allow
+        engine.set_mcp_hil_config({"fs": False})
+        d2 = engine.check("mcp__fs__read", {})
+        self.assertEqual(d2.action, "allow")
+
+    def test_mcp_disabled_engine_allows_all(self):
+        """enabled=False 时 MCP 工具也走 allow 路径。"""
+        engine = PolicyEngine(
+            enabled=False,
+            mcp_hil_config={"custom": True},
+        )
+        d = engine.check("mcp__custom__tool", {})
+        self.assertEqual(d.action, "allow")
 
 
 if __name__ == "__main__":

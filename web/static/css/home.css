@@ -5,9 +5,11 @@
 
 .home {
   min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
-  overflow-x: hidden;
 }
 
 /* ========== 顶栏 ========== */
@@ -46,6 +48,20 @@
   transition: background 0.2s, color 0.2s;
 }
 .home-cta-btn:hover { background: var(--accent); color: #fff; }
+
+.home-ghost-link {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+.home-ghost-link:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ========== Hero ========== */
 .home-hero {
@@ -149,6 +165,7 @@
   padding: 80px 32px;
   max-width: 1100px;
   margin: 0 auto;
+  scroll-margin-top: 64px;
 }
 .home-section-header { margin-bottom: 48px; }
 .home-section-label {
@@ -302,11 +319,84 @@
 .home-footer a { color: var(--accent); text-decoration: none; }
 
 /* ========== 响应式 ========== */
+/* 手机档 768 */
 @media (max-width: 768px) {
+  .home {
+    width: 100%;
+    max-width: 100vw;
+  }
+
   .home-topbar { padding: 0 16px; }
+  /* 顶栏操作区不换行，避免溢出 */
+  .home-topbar-actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .home-topbar-actions .accent-picker {
+    display: none;
+  }
+  /* 顶栏链接缩小 */
+  .home-ghost-link {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .home-cta-btn {
+    padding: 7px 14px;
+    font-size: 12px;
+  }
+
   .home-hero { padding: 70px 16px 32px; }
+  .home-hero-title {
+    font-size: clamp(28px, 9vw, 56px);
+  }
+  /* 装饰性 SVG 占位图直接隐藏（避免撑宽页面） */
+  .home-hero-loom {
+    display: none;
+  }
+
   .home-section { padding: 48px 16px; }
+
+  /* 能力矩阵 */
+  .capability-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .capability-card {
+    padding: 16px;
+  }
+
+  /* ReAct 流程改单列 */
   .react-flow { flex-direction: column; }
   .react-arrow { transform: rotate(90deg); padding: 8px 0; }
-  .home-hero-loom { width: 100%; height: 100%; opacity: 0.05; }
+  .react-step {
+    flex: none;
+    width: 100%;
+  }
+
+  /* 记忆网络 SVG 防溢出 */
+  .loom-canvas {
+    height: auto;
+    max-height: 300px;
+    max-width: 100%;
+  }
+}
+
+/* 极窄屏 480：小屏手机 */
+@media (max-width: 480px) {
+  .home-hero-title {
+    font-size: clamp(24px, 10vw, 40px);
+  }
+  /* 隐藏次要按钮及可替代入口 */
+  .home-topbar-actions .home-ghost-link {
+    display: none;
+  }
+  .home-section {
+    padding: 32px 12px;
+  }
+  .capability-grid {
+    grid-template-columns: 1fr;
+  }
+  .capability-card {
+    padding: 14px;
+  }
 }

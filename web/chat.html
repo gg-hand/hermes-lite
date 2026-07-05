@@ -18,8 +18,10 @@
 <body>
 
 <div class="app">
+  <!-- 侧边栏遮罩（移动端浮层化时显示，点击关闭侧栏） -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
   <!-- 侧边栏 -->
-  <aside class="sidebar" id="sidebar">
+  <aside class="sidebar collapsed" id="sidebar">
     <div class="sidebar-header">
       <h1>hermes<span>-lite</span></h1>
       <div class="sidebar-actions">
@@ -76,6 +78,7 @@
 
       <!-- 主题切换器 -->
       <div class="topbar-actions">
+        <a href="/monitor" class="icon-btn" title="监控面板">&#9678;</a>
         <button class="theme-toggle icon-btn" id="themeToggleBtn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
         <div class="accent-picker" id="accentPicker">
           <span class="accent-dot accent-amber" data-accent="amber" title="琥珀"></span>
@@ -84,94 +87,12 @@
         </div>
       </div>
 
-      <!-- 调度按钮 -->
-      <button class="schedule-header-btn" id="scheduleDropdownBtn" title="调度面板">
+      <!-- 调度按钮（跳转独立页） -->
+      <a class="schedule-header-btn" href="/scheduler" id="scheduleLink" title="调度管理">
         <span class="schedule-header-icon">&#9201;</span>
         <span class="schedule-header-label">调度</span>
-        <span class="schedule-header-arrow">&#9660;</span>
         <span class="schedule-badge" id="scheduleBadge" style="display:none">0</span>
-      </button>
-    </div>
-
-    <!-- 调度下拉面板 -->
-    <div class="schedule-panel" id="schedulePanel">
-      <!-- 调度会话（执行历史时间轴） -->
-      <div class="schedule-section" id="scheduleRunsSection">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">调度会话</span>
-          <button class="btn btn-primary btn-mini" id="btnRefreshScheduleRuns">刷新</button>
-        </div>
-        <div class="schedule-runs-list has-scroll-mask" id="scheduleRunsList">
-          <div class="schedule-empty">打开调度面板后加载执行记录</div>
-        </div>
-      </div>
-      <!-- 提议确认 -->
-      <div class="schedule-section collapsible" id="proposalSection">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">提议确认</span>
-          <span class="schedule-section-count" id="proposalCount">0</span>
-          <span class="schedule-section-toggle">▼</span>
-          <button class="btn btn-primary btn-mini" id="btnRefreshProposals">刷新</button>
-        </div>
-        <div id="proposalList" class="has-scroll-mask">
-          <div class="proposal-empty">打开调度面板后加载提议</div>
-        </div>
-      </div>
-      <!-- 调度项管理 -->
-      <div class="schedule-section collapsible collapsed" id="scheduleManageSection">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">调度项</span>
-          <span class="schedule-section-count" id="scheduleCount">0</span>
-          <span class="schedule-section-toggle">▼</span>
-          <button class="btn btn-primary btn-mini" id="btnNewScheduleTab">+ 新建</button>
-        </div>
-        <div class="schedule-list has-scroll-mask" id="scheduleList">
-          <div class="schedule-empty">打开调度面板后加载</div>
-        </div>
-      </div>
-      <!-- 调度记忆 -->
-      <div class="schedule-section" id="scheduleMemoriesSection" style="display:none;">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">调度记忆</span>
-        </div>
-        <div class="schedule-memories-list has-scroll-mask" id="scheduleMemoriesList">
-          <div class="schedule-empty">选择上方调度项查看其隔离记忆</div>
-        </div>
-      </div>
-      <!-- 工具调用审计 -->
-      <div class="schedule-section" id="scheduleAuditSection" style="display:none;">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">工具调用审计</span>
-          <button class="btn btn-mini" id="btnRefreshScheduleAudit">刷新</button>
-        </div>
-        <div class="schedule-audit-list has-scroll-mask" id="scheduleAuditList">
-          <div class="schedule-empty">选择上方调度项查看工具调用审计</div>
-        </div>
-      </div>
-      <!-- cron_tool 待审查 -->
-      <div class="schedule-section collapsible" id="cronToolPendingSection">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">cron_tool 待审查</span>
-          <span class="schedule-section-count" id="cronToolPendingCount">0</span>
-          <span class="schedule-section-toggle">▼</span>
-          <button class="btn btn-primary btn-mini" id="btnRefreshCronToolsPending">刷新</button>
-        </div>
-        <div id="cronToolPendingList" class="has-scroll-mask">
-          <div class="schedule-empty">打开调度面板后加载待审查 cron_tool</div>
-        </div>
-      </div>
-      <!-- cron_tool 管理 -->
-      <div class="schedule-section collapsible collapsed" id="cronToolManageSection">
-        <div class="schedule-section-header">
-          <span class="schedule-section-title">cron_tool 已激活</span>
-          <span class="schedule-section-count" id="cronToolCount">0</span>
-          <span class="schedule-section-toggle">▼</span>
-          <button class="btn btn-primary btn-mini" id="btnRefreshCronTools">刷新</button>
-        </div>
-        <div id="cronToolList" class="has-scroll-mask">
-          <div class="schedule-empty">打开调度面板后加载已激活 cron_tool</div>
-        </div>
-      </div>
+      </a>
     </div>
 
     <div class="messages" id="messages">
@@ -217,100 +138,6 @@
   </div>
 </div>
 
-<!-- 新建调度弹窗 -->
-<div class="modal-overlay" id="scheduleModal">
-  <div class="modal">
-    <div class="modal-header">
-      <h2>新建调度</h2>
-      <button class="modal-close" onclick="closeModal('scheduleModal')">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>名称 *</label>
-        <input class="form-input" id="schedName" placeholder="调度名称">
-      </div>
-      <div class="form-group">
-        <label>Cron 表达式 *</label>
-        <input class="form-input" id="schedCron" placeholder="*/30 * * * *">
-        <div class="hint">标准 5 字段 cron（分 时 日 月 周）</div>
-      </div>
-      <div class="form-group">
-        <label>任务描述 *</label>
-        <textarea class="form-input" id="schedTask" rows="4" placeholder="要执行的任务描述"></textarea>
-      </div>
-      <div class="form-group">
-        <label>启用</label>
-        <select class="form-select" id="schedEnabled">
-          <option value="true" selected>启用</option>
-          <option value="false">禁用</option>
-        </select>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('scheduleModal')">取消</button>
-      <button class="btn btn-primary" id="createScheduleBtn" disabled>创建</button>
-    </div>
-  </div>
-</div>
-
-<!-- cron_tool 审查详情弹窗 -->
-<div class="modal-overlay" id="cronToolDetailModal">
-  <div class="modal cron-tool-detail-modal">
-    <div class="modal-header">
-      <h2 id="cronToolDetailTitle">cron_tool 审查</h2>
-      <button class="modal-close" onclick="closeModal('cronToolDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="cronToolDetailBody"></div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('cronToolDetailModal')">关闭</button>
-      <button class="btn btn-mini btn-danger" id="cronToolDetailRejectBtn">✗ 拒绝</button>
-      <button class="btn btn-primary" id="cronToolDetailApproveBtn">✓ 通过审查（激活）</button>
-    </div>
-  </div>
-</div>
-
-<!-- 提议确认详情弹窗 -->
-<div class="modal-overlay" id="proposalDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="proposalDetailTitle">提议详情</h2>
-      <button class="modal-close" onclick="closeModal('proposalDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="proposalDetailBody"></div>
-    <div class="modal-footer" id="proposalDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('proposalDetailModal')">关闭</button>
-    </div>
-  </div>
-</div>
-
-<!-- 调度项详情弹窗 -->
-<div class="modal-overlay" id="scheduleDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="scheduleDetailTitle">调度项详情</h2>
-      <button class="modal-close" onclick="closeModal('scheduleDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="scheduleDetailBody"></div>
-    <div class="modal-footer" id="scheduleDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('scheduleDetailModal')">关闭</button>
-    </div>
-  </div>
-</div>
-
-<!-- cron_tool 已激活详情弹窗 -->
-<div class="modal-overlay" id="cronToolActiveDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="cronToolActiveDetailTitle">cron_tool 详情</h2>
-      <button class="modal-close" onclick="closeModal('cronToolActiveDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="cronToolActiveDetailBody"></div>
-    <div class="modal-footer" id="cronToolActiveDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('cronToolActiveDetailModal')">关闭</button>
-    </div>
-  </div>
-</div>
-
 <!-- 用户画像弹窗 -->
 <div class="modal-overlay" id="profileModal">
   <div class="modal">
@@ -339,7 +166,7 @@
 <script src="/static/js/chat-core.js"></script>
 <script src="/static/js/chat-session.js"></script>
 <script src="/static/js/chat-memory.js"></script>
-<script src="/static/js/chat-schedule.js"></script>
+<script src="/static/js/chat-schedule-badge.js"></script>
 <script src="/static/js/chat-files.js"></script>
 <script src="/static/js/chat-settings.js"></script>
 <script src="/static/js/chat-main.js"></script>

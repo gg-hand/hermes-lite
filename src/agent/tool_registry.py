@@ -25,7 +25,23 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from .tool_error import (
+    InternalError,
+    ParamError,
+    ToolError,
+    ToolNotFoundError,
+    from_exception,
+)
+
 logger = logging.getLogger(__name__)
+
+# jsonschema 延迟导入，避免在缺失时阻断模块加载
+try:
+    import jsonschema  # type: ignore
+    _HAS_JSONSCHEMA = True
+except ImportError:  # pragma: no cover
+    _HAS_JSONSCHEMA = False
+    logger.debug("jsonschema 不可用，将跳过工具参数 schema 校验")
 
 
 @dataclass
@@ -82,6 +98,8 @@ class ToolRegistry:
         self._deferred_tools: Dict[str, ToolDef] = {}
         self._loaded_tools: Dict[str, ToolDef] = {}
         self._disabled_prefixes: Set[str] = set()
+        # schema validator 缓存：name -> Draft7Validator
+        self._schema_cache: Dict[str, Any] = {}
 
     def register_core(
         self,
@@ -166,6 +184,8 @@ class ToolRegistry:
         """返回工具 schema 列表（Anthropic tool use 格式）。
 
         - Core Tier：返回完整 schema（``name``/``description``/``input_schema``）。
+          P1-5：被 ``_disabled_prefixes`` 命中的 Core 工具追加 ``enabled: False``
+          （如已禁用的 skill 激活按钮 ``skill__{name}``）。
         - Deferred Tier：返回 stub（``name``/``description``/``defer_loading: True``），
           **不含** ``input_schema``。
         - 顺序：先 Core 后 Deferred。
@@ -174,13 +194,17 @@ class ToolRegistry:
             工具 schema 列表。
         """
         schemas: List[Dict[str, Any]] = []
-        # Core Tier：完整 schema
+        # Core Tier：完整 schema（被禁用的工具追加 enabled: False）
         for t in self._core_tools.values():
-            schemas.append({
+            disabled = any(t.name.startswith(prefix) for prefix in self._disabled_prefixes)
+            entry = {
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.input_schema,
-            })
+            }
+            if disabled:
+                entry["enabled"] = False
+            schemas.append(entry)
         # Deferred Tier：stub（不含 input_schema）
         for t in self._deferred_tools.values():
             disabled = any(t.name.startswith(prefix) for prefix in self._disabled_prefixes)
@@ -198,34 +222,107 @@ class ToolRegistry:
         """执行工具调用，返回结果字符串。
 
         查找顺序：``_loaded_tools`` → ``_core_tools``。
-        如果是 Deferred 工具但未加载：返回提示信息。
-        异常时返回错误信息字符串（不抛异常，保证 ReactLoop 稳定）。
+
+        失败语义（统一异常层次）：
+        - 工具未注册/已禁用/Deferred 未加载 → 抛 :class:`ToolNotFoundError`
+        - 参数校验失败（schema 不匹配） → 抛 :class:`ParamError`
+        - handler 抛 :class:`ToolError` 子类 → 原样上抛
+        - handler 抛其他异常 → 由 :func:`from_exception` 归一化为对应 ToolError 子类
+
+        ReactLoop 调用方需捕获 :class:`ToolError` 并按 ``stage`` 分流处理。
 
         参数:
             tool_name: 工具名称。
             tool_input: 工具输入参数 dict。
 
         返回:
-            执行结果字符串。
+            执行结果字符串（成功时）。
+
+        抛出:
+            ToolError: 工具执行失败的统一异常基类。
         """
         if any(tool_name.startswith(prefix) for prefix in self._disabled_prefixes):
-            return f"工具 '{tool_name}' 已被禁用"
+            raise ToolNotFoundError(
+                tool_name=tool_name,
+                reason=f"工具 '{tool_name}' 已被禁用",
+                suggestion="启用后再试或换用其他工具",
+            )
         tool = self._loaded_tools.get(tool_name)
         if tool is None:
             tool = self._core_tools.get(tool_name)
         if tool is None:
             # Deferred 但未加载
             if tool_name in self._deferred_tools:
-                return f"工具 '{tool_name}' 未加载，请先调用 tool_list 加载"
-            return f"未注册的工具: {tool_name}"
+                raise ToolNotFoundError(
+                    tool_name=tool_name,
+                    reason=f"工具 '{tool_name}' 未加载",
+                    suggestion="先调用 tool_list 加载该 Deferred 工具",
+                )
+            raise ToolNotFoundError(
+                tool_name=tool_name,
+                reason=f"未注册的工具: {tool_name}",
+                suggestion="确认工具名拼写或调用 tool_list 查看可用工具",
+            )
+
+        # schema 校验（jsonschema），拦截幻觉性参数
+        if _HAS_JSONSCHEMA and tool.input_schema:
+            validator = self._get_validator(tool_name, tool.input_schema)
+            try:
+                validator.validate(tool_input or {})
+            except jsonschema.ValidationError as ve:
+                allowed = list(tool.input_schema.get("properties", {}).keys())
+                raise ParamError(
+                    tool_name=tool_name,
+                    reason=f"参数校验失败：{ve.message}",
+                    suggestion=f"工具支持参数：{allowed}" if allowed else "检查工具 schema",
+                ) from ve
+            # 额外属性检查（jsonschema 默认允许 additionalProperties，需手动拦截）
+            allowed_keys = set(tool.input_schema.get("properties", {}).keys())
+            if allowed_keys:
+                extra = set((tool_input or {}).keys()) - allowed_keys
+                if extra:
+                    raise ParamError(
+                        tool_name=tool_name,
+                        reason=f"未声明的参数：{sorted(extra)}",
+                        suggestion=f"工具支持参数：{sorted(allowed_keys)}",
+                    )
+            # 必填字段检查（双保险，jsonschema 已覆盖但此处给出更友好提示）
+            # 注意：必须用 ``k not in tool_input`` 而非 ``not tool_input.get(k)``，
+            # 后者会把合法的 falsy 值（0/False/""）误判为缺失。
+            required = tool.input_schema.get("required", [])
+            missing = [k for k in required if k not in (tool_input or {})]
+            if missing:
+                raise ParamError(
+                    tool_name=tool_name,
+                    reason=f"缺少必填参数：{missing}",
+                    suggestion=f"必填参数：{required}",
+                )
 
         try:
             # 将 tool_input 作为关键字参数传给 handler
             result = tool.handler(**(tool_input or {}))
             return str(result)
+        except ToolError:
+            # ToolError 子类直接上抛，不再吞没
+            raise
         except Exception as e:
+            # 非 ToolError 异常 → 归一化为 ToolError 子类
             logger.error("工具 %s 执行失败: %s", tool_name, e)
-            return f"工具 {tool_name} 执行出错: {e}"
+            raise from_exception(tool_name, e) from e
+
+    def _get_validator(self, name: str, schema: dict):
+        """获取（或编译缓存）jsonschema Draft7Validator。
+
+        参数:
+            name: 工具名（缓存 key）。
+            schema: 工具的 input_schema。
+
+        返回:
+            ``jsonschema.Draft7Validator`` 实例。
+        """
+        if name not in self._schema_cache:
+            self._schema_cache[name] = jsonschema.Draft7Validator(schema)
+        return self._schema_cache[name]
 
     def search_and_load(
         self, query: str, top_k: int = 5
@@ -346,13 +443,15 @@ class ToolRegistry:
     def disable_skill(self, skill_name: str) -> None:
         """禁用指定 skill 的所有工具。
 
-        Deferred tier 中以 ``skill__{skill_name}__`` 为前缀的工具将被标记为已禁用。
+        P1-5：双前缀兼容，覆盖两类工具：
+        - ``skill__{skill_name}``：精确匹配激活按钮（Core Tier，新主流程）
+        - ``skill__{skill_name}__``：前缀匹配旧业务工具（Deferred Tier，向后兼容）
 
         参数:
             skill_name: 要禁用的 skill 名称。
         """
-        prefix = f"skill__{skill_name}__"
-        self._disabled_prefixes.add(prefix)
+        self._disabled_prefixes.add(f"skill__{skill_name}")
+        self._disabled_prefixes.add(f"skill__{skill_name}__")
         logger.info("已禁用 skill: %s", skill_name)
 
     def enable_skill(self, skill_name: str) -> None:
@@ -361,8 +460,8 @@ class ToolRegistry:
         参数:
             skill_name: 要启用的 skill 名称。
         """
-        prefix = f"skill__{skill_name}__"
-        self._disabled_prefixes.discard(prefix)
+        self._disabled_prefixes.discard(f"skill__{skill_name}")
+        self._disabled_prefixes.discard(f"skill__{skill_name}__")
         logger.info("已启用 skill: %s", skill_name)
 
     def is_skill_disabled(self, skill_name: str) -> bool:
@@ -374,7 +473,10 @@ class ToolRegistry:
         返回:
             如果该 skill 已被禁用返回 True，否则返回 False。
         """
-        return f"skill__{skill_name}__" in self._disabled_prefixes
+        return (
+            f"skill__{skill_name}" in self._disabled_prefixes
+            or f"skill__{skill_name}__" in self._disabled_prefixes
+        )
 
     def unregister_by_prefix(self, prefix: str) -> int:
         """根据前缀从 Deferred 和 Loaded 层批量注销工具。

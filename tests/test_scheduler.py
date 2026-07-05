@@ -253,5 +253,343 @@ class TestCronScheduler(unittest.TestCase):
         self.assertEqual(schedules[0]["task"], "morning")
 
 
+# ===========================================================================
+# Task 10: _execute_workflow 双轨支持 + run_id 注入 + step_traces 持久化
+# ===========================================================================
+
+
+class WorkflowMockOrchestrator:
+    """供 workflow 路径测试用的 mock orchestrator。
+
+    提供最小依赖集合：``llm_client`` / ``chroma_store`` / ``session_logger`` /
+    ``react_loop`` / ``tool_registry`` / ``policy_engine`` / ``audit_logger`` /
+    ``skill_loader``，覆盖 ``_build_workflow_context`` 的 setattr 注入需求。
+    不调用真实 LLM / SMTP / 文件系统。
+    """
+
+    def __init__(self):
+        self.calls = []  # 记录 chat 调用（legacy 路径）
+        self.llm_client = None
+        self.chroma_store = None
+        self.session_logger = None
+        self.react_loop = None
+        self.tool_registry = None
+        self.policy_engine = None
+        self.audit_logger = None
+        self.skill_loader = None
+
+    def chat(self, session_id, user_input):
+        self.calls.append((session_id, user_input))
+        return "mock response"
+
+
+class TestExecuteWorkflowDualTrack(unittest.TestCase):
+    """Task 10.2/10.5：_execute_workflow 双轨支持测试。
+
+    验证：
+    - 多步模式（含 steps）走 WorkflowEngine.execute
+    - 简易模式（仅 template）走旧 WorkflowTemplate.execute
+    - D2 修复：模板未找到返回 success=False
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
+        self.runs_dir = os.path.join(self.tmpdir, "schedules")
+        # 使用临时目录避免污染 data/schedules
+        from src.tasks.run_summary import RunsJsonlStore
+        self._RunsJsonlStore = RunsJsonlStore
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _new_scheduler(self) -> CronScheduler:
+        scheduler = CronScheduler(schedules_file=self.sched_file)
+        # 注入临时 runs_store 避免污染 data/schedules
+        scheduler.runs_store = self._RunsJsonlStore(self.runs_dir)
+        return scheduler
+
+    def test_multistep_workflow_goes_through_engine(self):
+        """多步 workflow（含 steps）走 WorkflowEngine.execute 路径。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "多步",
+            "cron": "0 9 * * *",
+            "task": "执行多步",
+            "enabled": True,
+            "workflow": {
+                "name": "test_workflow",
+                "steps": [
+                    {
+                        "id": "s1",
+                        "type": "deterministic",
+                        "config": {"template": "email_notify"},
+                    }
+                ],
+            },
+        })
+        orch = WorkflowMockOrchestrator()
+
+        # patch WorkflowEngine.execute 验证调用路径
+        from src.tasks import scheduler as sched_mod
+        original_execute = sched_mod.WorkflowEngine.execute
+        captured = {"called": False, "spec_name": None}
+
+        def fake_execute(self_engine, spec, context):
+            captured["called"] = True
+            captured["spec_name"] = spec.name
+            from src.tasks.workflow import WorkflowResult, StepTrace
+            result = WorkflowResult(
+                success=True,
+                assistant_response="engine result",
+                workflow_name=spec.name,
+            )
+            result.step_traces.append(
+                StepTrace(step_id="s1", step_type="deterministic", status="success")
+            )
+            return result
+
+        try:
+            sched_mod.WorkflowEngine.execute = fake_execute
+            asyncio.run(scheduler.trigger_now(orch, sched_id))
+        finally:
+            sched_mod.WorkflowEngine.execute = original_execute
+
+        self.assertTrue(captured["called"], "WorkflowEngine.execute 应被调用")
+        self.assertEqual(captured["spec_name"], "test_workflow")
+        # 验证 RunSummary 已写入 runs.jsonl
+        last_run = scheduler.runs_store.read_last(sched_id)
+        self.assertIsNotNone(last_run)
+        self.assertTrue(last_run.success)
+        self.assertEqual(last_run.assistant_response, "engine result")
+        self.assertEqual(last_run.workflow_name, "test_workflow")
+
+    def test_simple_template_workflow_goes_through_template_path(self):
+        """简易模式（仅 template）走旧 WorkflowTemplate.execute 路径。
+
+        使用 mock 模板类避免真实 SMTP/LLM 依赖，验证：
+        - WorkflowEngine.execute 未被调用
+        - 模板 execute 被调用
+        - StepTrace 包装补充（Task 10.3）
+        """
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "简易",
+            "cron": "0 9 * * *",
+            "task": "执行简易",
+            "enabled": True,
+            "workflow": {"template": "test_mock_template"},
+        })
+        orch = WorkflowMockOrchestrator()
+
+        # 注册 mock 模板到 BUILTIN_TEMPLATES
+        from src.tasks import scheduler as sched_mod
+        from src.tasks.workflow import WorkflowResult, WorkflowTemplate
+
+        class MockTemplate(WorkflowTemplate):
+            name = "test_mock_template"
+
+            def execute(self, config, context):
+                return WorkflowResult(
+                    success=True, assistant_response="template result"
+                )
+
+        original_templates = dict(sched_mod.BUILTIN_TEMPLATES)
+        sched_mod.BUILTIN_TEMPLATES["test_mock_template"] = MockTemplate
+
+        # patch WorkflowEngine.execute 验证未被调用
+        original_execute = sched_mod.WorkflowEngine.execute
+        engine_called = {"called": False}
+
+        def fake_execute(self_engine, spec, context):
+            engine_called["called"] = True
+            return WorkflowResult()
+
+        try:
+            sched_mod.WorkflowEngine.execute = fake_execute
+            asyncio.run(scheduler.trigger_now(orch, sched_id))
+        finally:
+            sched_mod.WorkflowEngine.execute = original_execute
+            sched_mod.BUILTIN_TEMPLATES.clear()
+            sched_mod.BUILTIN_TEMPLATES.update(original_templates)
+
+        self.assertFalse(engine_called["called"], "简易模式不应调 WorkflowEngine")
+        last_run = scheduler.runs_store.read_last(sched_id)
+        self.assertIsNotNone(last_run)
+        self.assertEqual(last_run.assistant_response, "template result")
+        # Task 10.3：旧路径也补充 step_traces
+        self.assertEqual(len(last_run.step_traces), 1)
+        self.assertEqual(last_run.step_traces[0]["status"], "success")
+        self.assertEqual(last_run.step_traces[0]["step_id"], "template")
+
+    def test_d2_unknown_template_returns_failure(self):
+        """D2 修复：未知模板名返回 success=False（不抛异常）。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "未知模板",
+            "cron": "0 9 * * *",
+            "task": "执行未知",
+            "enabled": True,
+            "workflow": {"template": "nonexistent_template_xxx"},
+        })
+        orch = WorkflowMockOrchestrator()
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+
+        last_run = scheduler.runs_store.read_last(sched_id)
+        self.assertIsNotNone(last_run)
+        self.assertFalse(last_run.success)
+        # 错误信息含模板名
+        self.assertTrue(
+            any("nonexistent_template_xxx" in e for e in last_run.errors),
+            f"errors 应含模板名，实际: {last_run.errors}",
+        )
+
+
+class TestRunIdAndStepTracesPersistence(unittest.TestCase):
+    """Task 10.1/10.4：run_id 注入 context + step_traces 持久化测试。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
+        self.runs_dir = os.path.join(self.tmpdir, "schedules")
+        from src.tasks.run_summary import RunsJsonlStore
+        self._RunsJsonlStore = RunsJsonlStore
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _new_scheduler(self) -> CronScheduler:
+        scheduler = CronScheduler(schedules_file=self.sched_file)
+        scheduler.runs_store = self._RunsJsonlStore(self.runs_dir)
+        return scheduler
+
+    def test_run_id_injected_into_context(self):
+        """Task 10.1：run_id 通过 setattr 注入 WorkflowContext。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "run_id 测试",
+            "cron": "0 9 * * *",
+            "task": "测试 run_id",
+            "enabled": True,
+            "workflow": {
+                "name": "ctx_test",
+                "steps": [
+                    {
+                        "id": "s1",
+                        "type": "deterministic",
+                        "config": {},
+                    }
+                ],
+            },
+        })
+        orch = WorkflowMockOrchestrator()
+
+        from src.tasks import scheduler as sched_mod
+        from src.tasks.workflow import WorkflowResult, StepTrace
+
+        captured = {"context": None, "run_id": None}
+
+        def fake_execute(self_engine, spec, context):
+            captured["context"] = context
+            captured["run_id"] = getattr(context, "run_id", None)
+            # 验证其他 setattr 注入字段
+            captured["tool_registry"] = getattr(context, "tool_registry", None)
+            captured["policy_engine"] = getattr(context, "policy_engine", None)
+            captured["audit_logger"] = getattr(context, "audit_logger", None)
+            captured["orchestrator"] = getattr(context, "orchestrator", None)
+            captured["session_id"] = getattr(context, "session_id", None)
+            result = WorkflowResult(success=True, assistant_response="ok")
+            result.step_traces.append(
+                StepTrace(step_id="s1", step_type="deterministic", status="success")
+            )
+            return result
+
+        original_execute = sched_mod.WorkflowEngine.execute
+        try:
+            sched_mod.WorkflowEngine.execute = fake_execute
+            asyncio.run(scheduler.trigger_now(orch, sched_id))
+        finally:
+            sched_mod.WorkflowEngine.execute = original_execute
+
+        # run_id 注入到 context
+        self.assertIsNotNone(captured["run_id"], "context.run_id 应被注入")
+        self.assertEqual(len(captured["run_id"]), 12, "run_id 应为 12 字符")
+        # 其他 setattr 注入字段
+        self.assertEqual(captured["session_id"], f"cron:{sched_id}")
+        self.assertIs(captured["orchestrator"], orch)
+        # run_id 持久化到 RunSummary
+        last_run = scheduler.runs_store.read_last(sched_id)
+        self.assertIsNotNone(last_run)
+        self.assertEqual(last_run.run_id, captured["run_id"])
+
+    def test_step_traces_persisted_to_runs_jsonl(self):
+        """Task 10.4：step_traces 从 WorkflowResult 持久化到 runs.jsonl。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "step_traces 持久化",
+            "cron": "0 9 * * *",
+            "task": "测试 trace 持久化",
+            "enabled": True,
+            "workflow": {
+                "name": "trace_test",
+                "steps": [
+                    {"id": "s1", "type": "deterministic", "config": {}},
+                    {"id": "s2", "type": "llm", "config": {}, "depends_on": ["s1"]},
+                ],
+            },
+        })
+        orch = WorkflowMockOrchestrator()
+
+        from src.tasks import scheduler as sched_mod
+        from src.tasks.workflow import WorkflowResult, StepTrace
+
+        def fake_execute(self_engine, spec, context):
+            result = WorkflowResult(
+                success=True,
+                assistant_response="trace test ok",
+                workflow_name="trace_test",
+            )
+            result.step_traces.append(
+                StepTrace(
+                    step_id="s1",
+                    step_name="第一步",
+                    step_type="deterministic",
+                    status="success",
+                    duration_ms=10,
+                )
+            )
+            result.step_traces.append(
+                StepTrace(
+                    step_id="s2",
+                    step_name="第二步",
+                    step_type="llm",
+                    status="success",
+                    duration_ms=50,
+                )
+            )
+            return result
+
+        original_execute = sched_mod.WorkflowEngine.execute
+        try:
+            sched_mod.WorkflowEngine.execute = fake_execute
+            asyncio.run(scheduler.trigger_now(orch, sched_id))
+        finally:
+            sched_mod.WorkflowEngine.execute = original_execute
+
+        last_run = scheduler.runs_store.read_last(sched_id)
+        self.assertIsNotNone(last_run)
+        # step_traces 持久化为 List[Dict]
+        self.assertEqual(len(last_run.step_traces), 2)
+        self.assertEqual(last_run.step_traces[0]["step_id"], "s1")
+        self.assertEqual(last_run.step_traces[0]["status"], "success")
+        self.assertEqual(last_run.step_traces[0]["duration_ms"], 10)
+        self.assertEqual(last_run.step_traces[1]["step_id"], "s2")
+        self.assertEqual(last_run.step_traces[1]["step_type"], "llm")
+        # workflow_name 持久化
+        self.assertEqual(last_run.workflow_name, "trace_test")
+        # run_id 持久化（12 字符）
+        self.assertEqual(len(last_run.run_id), 12)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

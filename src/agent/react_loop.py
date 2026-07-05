@@ -25,6 +25,7 @@ import json
 import logging
 import threading
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环依赖
@@ -59,6 +60,40 @@ except ImportError:
     except ImportError:
         ErrorClassifier = None  # type: ignore
         ErrorClass = None  # type: ignore
+
+# 统一工具错误异常层次（Phase A：替换字符串错误载体）
+try:
+    from .tool_error import (
+        EXECUTION_ERROR_CATEGORIES,
+        ErrorStage,
+        NonStreamHILError,
+        PolicyDeniedError,
+        StuckDetectedError,
+        ToolError,
+        UserRejectedError,
+        from_exception,
+    )
+except ImportError:
+    try:
+        from agent.tool_error import (  # type: ignore
+            EXECUTION_ERROR_CATEGORIES,
+            ErrorStage,
+            NonStreamHILError,
+            PolicyDeniedError,
+            StuckDetectedError,
+            ToolError,
+            UserRejectedError,
+            from_exception,
+        )
+    except ImportError:  # pragma: no cover
+        ToolError = None  # type: ignore
+        ErrorStage = None  # type: ignore
+        from_exception = None  # type: ignore
+        PolicyDeniedError = None  # type: ignore
+        NonStreamHILError = None  # type: ignore
+        UserRejectedError = None  # type: ignore
+        StuckDetectedError = None  # type: ignore
+        EXECUTION_ERROR_CATEGORIES = frozenset()  # type: ignore
 
 # Phase 9 Task 6: GuardrailEngine（fail-open 软护栏，工具返回值脱敏）
 # 与 monitoring / agent 模块同样降级为 None，由 __init__ 内部降级为 noop。
@@ -179,6 +214,7 @@ class ReactLoop:
         approval_manager: Optional["ApprovalManager"] = None,
         cron_tool_registry: Optional[Any] = None,
         guardrail_engine: Optional["GuardrailEngine"] = None,
+        orchestrator_ref: Optional[Any] = None,
     ) -> None:
         """初始化 React 循环引擎。
 
@@ -200,6 +236,11 @@ class ReactLoop:
                 用于对外部工具返回值做脱敏（fail-open 软护栏）。为 ``None`` 时
                 降级为 ``GuardrailEngine.create_noop()``（所有方法空操作），
                 避免 react_loop 空指针。
+            orchestrator_ref: 可选的 Orchestrator 实例引用，用于 stash 中断提示
+                到 ``_pending_interrupt_notices``，使 stuck/cancel 等终止性错误
+                在下一轮用户消息时浮出。使用 ``weakref`` 存储避免循环引用
+                （Orchestrator → ReactLoop → Orchestrator）导致 GC 无法回收
+                （见边界 9.18）。为 ``None`` 时 stuck 路径仅记 warning 日志。
         """
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -221,6 +262,13 @@ class ReactLoop:
             # 提供 sanitize_tool_result / scan_input / filter_output 三个方法
             # 全部直返原值，保证调用方不抛异常。
             self.guardrail_engine = _NoopGuardrail()
+        # Phase B-4: Orchestrator 弱引用（用于 _stash_interrupt_notice）
+        # weakref 避免 Orchestrator → ReactLoop → Orchestrator 循环引用导致
+        # GC 无法回收（见边界 9.18）。orchestrator_ref 为 None 时 _stash
+        # 路径降级为 warning 日志，不抛异常。
+        self._orchestrator_ref: Optional[weakref.ReferenceType] = (
+            weakref.ref(orchestrator_ref) if orchestrator_ref is not None else None
+        )
         # 信息计数器：user / assistant / tool 各算 1 条，用于触发 consolidation
         self._info_count: int = 0
 
@@ -231,6 +279,41 @@ class ReactLoop:
     def reset_info_count(self) -> None:
         """重置信息计数器为 0。"""
         self._info_count = 0
+
+    # ------------------------------------------------------------------
+    # Phase B-4: 跨轮中断提示 stash（stuck/cancel 等终止性错误用）
+    # ------------------------------------------------------------------
+    def _stash_interrupt_notice(self, session_id: str, text: str) -> None:
+        """通过 orchestrator 引用 stash 中断提示，下一轮 chat() 注入到 messages[0] 动态区。
+
+        stuck/cancel 等终止性错误当轮无法注入（循环立即 return），通过此通道
+        在下一轮用户消息时浮出。复用 orchestrator._pending_interrupt_notices
+        既有机制（TTL 300s 自动过期清理）。
+
+        参数:
+            session_id: 会话 ID。
+            text: 中断提示文本（通常是 ``ToolError.to_system_block()`` 输出）。
+
+        说明:
+            - orchestrator_ref 为 None 或已被 GC 回收时，降级为 warning 日志，
+              不抛异常（见边界 9.18）。
+            - stash 格式与 orchestrator 既有路径一致：``{"content": str, "timestamp": float}``
+              参见 orchestrator.py L2343。
+        """
+        orch = self._orchestrator_ref() if self._orchestrator_ref else None
+        if orch is None:
+            logger.warning(
+                "orchestrator_ref 不可用，中断提示将丢失（session=%s）: %s",
+                session_id, text[:80],
+            )
+            return
+        orch._pending_interrupt_notices[session_id] = {
+            "content": text,
+            "timestamp": time.time(),
+        }
+        logger.info(
+            "InterruptNotice 已 stash (session=%s): %s", session_id, text[:80]
+        )
 
     # ------------------------------------------------------------------
     # Phase 9 Task 7.3: 单工具重试检测辅助方法
@@ -266,10 +349,14 @@ class ReactLoop:
     ) -> Tuple[bool, str]:
         """检测工具是否陷入重复调用卡死。
 
-        在最近 ``window_size`` 次工具调用记录中，按语义分类判断卡死：
+        在最近 ``window_size`` 次工具调用记录中，按优先级判断卡死：
         1. 历史上同工具同参数已触发 ANTI_CRAWLER → 立即卡死（"anti_crawler"）
         2. 历史上同工具同参数已触发 PERMANENT → 立即卡死（"permanent"）
-        3. 否则按同参数出现次数 ≥ ``threshold`` 判定卡死（默认 ""）
+        3. 同参数重复次数 ≥ ``threshold`` → 卡死（""）
+
+        注：原第 4 条规则"仅同工具名重复 ≥ 宽松阈值"已下线（P0 止血），
+        因为对"读 N 个不同文件"的正常探索行为过于敏感。探索预算由
+        prompts 软提示（"≥8 次注入提醒"）管理，不需要循环检测兼任。
 
         参数:
             tool_name: 当前待执行的工具名。
@@ -291,7 +378,7 @@ class ReactLoop:
         # 仅检查最近 window_size 条记录
         window = recent_calls[-window_size:]
 
-        # Phase 9+：扫描历史记录中同参数的语义分类
+        # ── 1. 语义分类检测（同参数 + 历史错误分类） ──
         for name, phash, ec_str in window:
             if name == tool_name and phash == params_hash:
                 if ec_str in ("anti_crawler",):
@@ -299,13 +386,20 @@ class ReactLoop:
                 if ec_str in ("permanent",):
                     return True, "permanent"
 
-        # 统计与当前 (tool_name, params_hash) 完全匹配的历史记录数
-        matches = sum(
+        # ── 2. 同参数重复检测（params_hash 相同） ──
+        exact_matches = sum(
             1
-            for name, phash, _ic in window
+            for name, phash, _ in window
             if name == tool_name and phash == params_hash
         )
-        return matches >= (threshold - 1), ""
+        if exact_matches >= (threshold - 1):
+            return True, ""
+
+        # 原第 3 条规则（同工具名 ≥ generic_threshold）已下线（P0 止血）
+        # 探索式读 N 个不同文件是正常行为，不应判为卡死。
+        # 真正的卡死由同参数重复（规则 2）覆盖。
+
+        return False, ""
 
     @staticmethod
     def _build_stuck_message(tool_name: str, reason: str = "") -> str:
@@ -480,11 +574,14 @@ class ReactLoop:
         1. ``cron_tool_registry`` 非 None 且 ``has_tool(tool_name)`` → 走
            ``cron_tool_registry.execute_tool``（子进程执行，返回结果字符串）。
         2. 否则走 ``tool_registry.execute_tool``（全局 registry，含内置工具）。
-        3. ``tool_registry`` 为 None 时返回错误字符串（理论上不会发生，
-           因为 cron 路径下 tool_registry 必非 None）。
+        3. ``tool_registry`` 为 None 时抛 :class:`ToolNotFoundError`。
 
-        两个 registry 的 ``execute_tool`` 均保证不抛异常（返回错误字符串），
-        因此本方法也不抛异常。
+        失败语义（统一异常层次）：
+        - 两个 registry 的 ``execute_tool`` 均抛 :class:`ToolError` 子类，
+          本方法原样上抛，由调用方（``run`` / ``run_stream``）捕获并按
+          ``stage`` 分流处理。
+        - cron_tool 派发时若发生非 ToolError 异常（如网络/序列化错误），
+          回退到 tool_registry 派发（向后兼容）。
 
         参数:
             tool_name: 工具名称。
@@ -492,7 +589,10 @@ class ReactLoop:
             cancel_event: 可选的取消事件，通过 ContextVar 传播到工具 handler。
 
         返回:
-            执行结果字符串。
+            执行结果字符串（成功时）。
+
+        抛出:
+            ToolError: 工具执行失败的统一异常基类。
         """
         # Phase 9+：设置 ContextVar，传播 cancel_event 到同步工具 handler
         token = None
@@ -509,15 +609,23 @@ class ReactLoop:
                 try:
                     if cron_reg.has_tool(tool_name):
                         return cron_reg.execute_tool(tool_name, tool_input)
+                except ToolError:
+                    # ToolError 子类直接上抛，不回退（保留原始错误类别）
+                    raise
                 except Exception as exc:
-                    logger.error(
-                        "cron_tool %s 派发执行失败，回退到 tool_registry: %s",
+                    # 非 ToolError 异常（如派发层序列化错误），回退到 tool_registry
+                    logger.warning(
+                        "cron_tool %s 派发异常，回退到 tool_registry: %s",
                         tool_name,
                         exc,
                     )
             # 2. 全局 tool_registry 派发
             if self.tool_registry is None:
-                return f"未注册的工具: {tool_name}（tool_registry 未注入）"
+                raise ToolNotFoundError(
+                    tool_name=tool_name,
+                    reason=f"tool_registry 未注入，无法执行 {tool_name}",
+                    suggestion="检查 ReactLoop 初始化配置",
+                )
             return self.tool_registry.execute_tool(tool_name, tool_input)
         finally:
             if token is not None:
@@ -535,7 +643,7 @@ class ReactLoop:
         session_id: Optional[str] = None,
         tools_override: Optional[List[Dict[str, Any]]] = None,
         cancel_event: Optional[threading.Event] = None,
-    ) -> Tuple[str, List[Dict[str, Any]], bool]:
+    ) -> Tuple[str, List[Dict[str, Any]], bool, str]:
         """执行 React 循环。
 
         参数:
@@ -543,7 +651,7 @@ class ReactLoop:
             history: 历史消息列表 [{role, content}]，可为 None。
                      history 中的消息不参与信息计数器累加。
             system: 系统提示词，若为 None 则不发送 system 字段。
-            session_id: 可选会话 ID，由 orchestrator 透传，
+            session_id: 可选会话 ID，由 orchestrator 透传,
                      非流式模式仅作占位（不 yield 事件），保留以便日志关联。
             tools_override: Phase 8 Task 5.7。工具 schema 覆盖列表。为 ``None``
                      时使用 ``self.tool_registry.get_tools_schema()``（默认
@@ -554,13 +662,18 @@ class ReactLoop:
                      检测点终止执行，返回 is_complete=False。
 
         返回:
-            (final_response, messages_used, is_complete):
+            (final_response, messages_used, is_complete, termination_reason):
                 final_response: 最终回复文本（若全程无文本则返回空串）。
                 messages_used: 整个循环中使用过的完整消息列表（含历史与新增）。
                 is_complete: 本轮是否自然完成。Phase 9 Task 7.4：
                     - ``True``：模型返回 end_turn 自然结束；
                     - ``False``：达到 max_loops、卡死终止或被取消，由 orchestrator
                       检查 TodoList 决定是否自动续接。
+                termination_reason: 终止原因，取值：
+                    - ``"normal"``：模型 end_turn 或 LLM 失败降级
+                    - ``"user_cancel"``：cancel_event 被设置
+                    - ``"tool_permanent_fail"``：工具卡死检测命中
+                    - ``"max_loops"``：达到最大循环次数
         """
         # 1. 构建 messages = history + [user_input]
         messages: List[Dict[str, Any]] = []
@@ -592,11 +705,15 @@ class ReactLoop:
         # error_class 为 ErrorClass.value（"anti_crawler"/"permanent"等）或 None。
         # 窗口在本次 run() 内维护，不跨 run 调用持久化。
         recent_tool_calls: List[Tuple[str, str, Optional[str]]] = []
+        # 卡死检测软警告状态机：首次命中重复 → warn（tool_result 返回警告，
+        # 不执行工具，继续循环给 LLM 自我纠正机会）；二次命中 → stop（硬终止）。
+        # (tool_name, params_hash) 对的集合，per-run 局部状态。
+        warned_pairs: set = set()
 
         for loop_idx in range(self.max_loops):
             # 检测点 1：每轮开始前检查 cancel_event
             if cancel_event and cancel_event.is_set():
-                return last_text, messages, False
+                return last_text, messages, False, "user_cancel"
 
             # 3. 调用主对话 LLM
             try:
@@ -609,7 +726,7 @@ class ReactLoop:
                 logger.error("LLM 调用失败 (loop=%d): %s", loop_idx, e)
                 # 若已有文本回复，降级返回；否则向上抛出
                 if last_text:
-                    return last_text, messages, False
+                    return last_text, messages, False, "normal"
                 raise
 
             # 解析响应
@@ -645,7 +762,7 @@ class ReactLoop:
             # stop_reason != "tool_use" 或无 tool_use 块时，视为最终回复
             if stop_reason != "tool_use" or not tool_use_blocks:
                 # 自然结束（end_turn）→ is_complete=True
-                return last_text, messages, True
+                return last_text, messages, True, "normal"
 
             # 响应包含 tool_use，但未提供 tool_registry：终止循环
             if self.tool_registry is None:
@@ -654,7 +771,7 @@ class ReactLoop:
                 )
                 # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
                 messages = self._drop_trailing_orphan_tool_calls(messages)
-                return last_text, messages, False
+                return last_text, messages, False, "normal"
 
             # 5. 执行工具调用，将 tool_result 作为 user 消息回传
             tool_results: List[Dict[str, Any]] = []
@@ -672,19 +789,79 @@ class ReactLoop:
                     tool_name, params_hash, recent_tool_calls
                 )
                 if is_stuck:
-                    logger.warning(
-                        "检测到工具 %s 重复调用卡死 (loop=%d, reason=%s)，终止本轮循环",
+                    pair = (tool_name, params_hash)
+                    if pair in warned_pairs:
+                        # 二次命中 → 硬终止（LLM 已收到警告仍重复同参数）
+                        logger.warning(
+                            "检测到工具 %s 重复调用卡死 (loop=%d, reason=%s)，已警告过，终止本轮循环",
+                            tool_name,
+                            loop_idx,
+                            stuck_reason or "count",
+                        )
+                        # Phase B-4: stash 中断提示到下轮（当轮循环终止，无注入时机）
+                        # 通过 orchestrator._pending_interrupt_notices 在下一轮 chat() 注入
+                        if StuckDetectedError is not None and session_id is not None:
+                            stuck_err = StuckDetectedError(
+                                tool_name=tool_name,
+                                reason=f"重复调用卡死（{stuck_reason or 'count'}）",
+                                suggestion="更换参数或换用其他工具",
+                            )
+                            self._stash_interrupt_notice(session_id, stuck_err.to_system_block())
+                            if self.metrics is not None:
+                                self.metrics.observe_tool_error_class(tool_name, "stuck_detected")
+                        # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
+                        messages = self._drop_trailing_orphan_tool_calls(messages)
+                        return (
+                            self._build_stuck_message(tool_name, stuck_reason),
+                            messages,
+                            False,
+                            "tool_permanent_fail",
+                        )
+                    # 首次命中 → 软警告：把警告作为 tool_result 返回，不执行工具，
+                    # 让 LLM 看到反馈后换参数；若仍重复同参数则升级为硬终止。
+                    warned_pairs.add(pair)
+                    logger.info(
+                        "工具 %s 重复调用软警告 (loop=%d, reason=%s)，注入警告跳过执行",
                         tool_name,
                         loop_idx,
                         stuck_reason or "count",
                     )
-                    # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                    messages = self._drop_trailing_orphan_tool_calls(messages)
-                    return (
-                        self._build_stuck_message(tool_name, stuck_reason),
-                        messages,
-                        False,
+                    warn_content = (
+                        f"[拦截] {tool_name} → 卡死警告\n"
+                        f"原因：检测到与最近调用重复（{stuck_reason or 'count'}）\n"
+                        f"建议：更换参数、换用其他工具，或询问用户。继续重复同参数将被终止。"
                     )
+                    if StuckDetectedError is not None and session_id is not None:
+                        warn_err = StuckDetectedError(
+                            tool_name=tool_name,
+                            reason=f"重复调用软警告（{stuck_reason or 'count'}）",
+                            suggestion="更换参数或换用其他工具",
+                        )
+                        self._stash_interrupt_notice(session_id, warn_err.to_system_block())
+                        warn_content = warn_err.to_system_block()
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": warn_content,
+                            "is_error": True,
+                        }
+                    )
+                    recent_tool_calls.append((tool_name, params_hash, "stuck_warned"))
+                    if self.metrics is not None:
+                        self.metrics.observe_tool_error_class(tool_name, "stuck_warned")
+                        self.metrics.observe_tool_retry(tool_name)
+                    duration_ms = (time.perf_counter() - t0) * 1000
+                    self._log_audit(
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        result=warn_content,
+                        is_error=True,
+                        duration_ms=duration_ms,
+                    )
+                    self._info_count += 1
+                    continue
 
                 # Phase 5: 策略评估
                 decision = self._evaluate_policy(
@@ -692,88 +869,112 @@ class ReactLoop:
                 )
 
                 if decision.action == "deny":
-                    # 拒绝：不调用 execute_tool，返回明确拒绝提示
+                    # Phase B: 拒绝走 pre_execution system 注入路径
                     reason_text = decision.reason or "用户未提供原因"
-                    result = (
-                        f"[用户已拒绝] 工具 {tool_name} 的执行请求"
-                        f"（原因：{reason_text}）。"
-                        f"请停止重试该工具，改为询问用户意图或换一种方式完成任务。"
+                    deny_err = PolicyDeniedError(
+                        tool_name=tool_name,
+                        reason=reason_text,
+                        suggestion="停止重试该工具，改为询问用户意图或换一种方式完成任务",
                     )
                     duration_ms = (time.perf_counter() - t0) * 1000
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": result,
+                            "content": deny_err.to_system_block(),
+                            "is_error": True,
                         }
                     )
-                    # 审计与指标上报（拒绝也算一次工具调用记录）
+                    # 审计与指标上报（拒绝视为错误，is_error=True）
                     self._log_audit(
                         session_id=session_id,
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        result=result,
-                        is_error=False,
+                        result=deny_err.to_system_block(),
+                        is_error=True,
                         duration_ms=duration_ms,
                         decision=decision,
                     )
                     if self.metrics is not None:
-                        self.metrics.observe_tool_call(tool_name, True, duration_ms)
+                        self.metrics.observe_tool_call(tool_name, False, duration_ms)
+                        self.metrics.observe_tool_error_class(tool_name, "policy_denied")
+                        # 注意：不调用 observe_tool_retry，deny 是拦截不是重试（见边界 9.13）
                     self._info_count += 1
-                    # 拒绝路径不计入重试检测窗口
+                    # 拒绝路径不计入重试检测窗口（工具未实际执行）
                     continue
                 elif decision.action == "confirm":
-                    # 非流式模式不支持 HIL，自动拒绝
+                    # 非流式模式不支持 HIL，自动拒绝（走 pre_execution system 注入）
                     logger.warning(
                         "非流式 run() 命中 confirm 但不支持 HIL，自动拒绝: tool=%s",
                         tool_name,
                     )
-                    reason_text = "非流式模式不支持 HIL 审批，请使用 /chat/stream"
-                    result = (
-                        f"[用户已拒绝] 工具 {tool_name} 的执行请求"
-                        f"（原因：{reason_text}）。"
-                        f"请停止重试该工具，改为询问用户意图或换一种方式完成任务。"
+                    hil_err = NonStreamHILError(
+                        tool_name=tool_name,
+                        reason="非流式模式不支持 HIL 审批",
+                        suggestion="改用 /chat/stream 端点以支持审批",
                     )
                     duration_ms = (time.perf_counter() - t0) * 1000
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": result,
+                            "content": hil_err.to_system_block(),
+                            "is_error": True,
                         }
                     )
                     self._log_audit(
                         session_id=session_id,
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        result=result,
-                        is_error=False,
+                        result=hil_err.to_system_block(),
+                        is_error=True,
                         duration_ms=duration_ms,
                         decision=decision,
                     )
                     if self.metrics is not None:
-                        self.metrics.observe_tool_call(tool_name, True, duration_ms)
+                        self.metrics.observe_tool_call(tool_name, False, duration_ms)
+                        self.metrics.observe_tool_error_class(tool_name, "non_stream_hil")
+                        # 注意：不调用 observe_tool_retry，拦截不是重试（见边界 9.13）
                     self._info_count += 1
-                    # 拒绝路径不计入重试检测窗口
                     continue
 
                 # action == "allow"：正常执行
                 # 检测点 2：工具执行前检查 cancel_event
                 if cancel_event and cancel_event.is_set():
                     messages = self._drop_trailing_orphan_tool_calls(messages)
-                    return last_text, messages, False
+                    return last_text, messages, False, "user_cancel"
 
                 # Phase 8 Task 5.7: 通过 _execute_tool_with_dispatch 派发到
                 # cron_tool_registry（子进程）或 tool_registry（全局）。
+                error_class: Optional[str] = None
                 try:
                     result = self._execute_tool_with_dispatch(tool_name, tool_input, cancel_event)
+                except ToolError as te:
+                    # 统一异常层次：registry 抛 ToolError 子类，按 stage 分流
+                    is_error = True
+                    error_class = te.category
+                    if te.stage == ErrorStage.PRE_EXECUTION:
+                        # pre_execution 错误（如 ParamError）→ tool_result 自包含 [拦截] 详情块
+                        result = te.to_system_block()
+                    else:
+                        # execution 阶段错误 → tool_result 收据
+                        result = te.to_receipt()
+                    logger.info(
+                        "工具 %s 执行失败 [%s]: %s", tool_name, te.category, te.reason
+                    )
                 except Exception as e:
+                    # 兜底：理论上 registry 已归一化，此处防御性处理
                     is_error = True
                     logger.error("工具执行失败 %s: %s", tool_name, e)
-                    result = f"工具执行出错: {e}"
+                    if from_exception is not None:
+                        te = from_exception(tool_name, e)
+                        error_class = te.category
+                        result = te.to_receipt()
+                    else:
+                        result = f"工具执行出错: {e}"
 
                 # Phase 9+ 错误分类：调用 ErrorClassifier 分类，记录到滑动窗口
-                error_class: Optional[str] = None
+                # （仅当 ToolError 未给出 error_class 时兜底，识别老 handler 字符串错误）
                 if ErrorClassifier is not None and not is_error:
                     try:
                         ec, _ec_reason = ErrorClassifier.classify(
@@ -790,16 +991,21 @@ class ReactLoop:
                                 )
                             elif ec is ErrorClass.PERMANENT:
                                 result += (
-                                    "\n\n[系统提示：该请求返回了永久性错误"
-                                    "（如资源不存在），重试无法解决。]"
+                                    "\n\n[系统提示：永久性错误，请勿以相同参数重试。]"
                                 )
                             elif ec is ErrorClass.TRANSIENT:
                                 result += (
-                                    "\n\n[系统提示：该请求遇到了临时性错误，"
-                                    "可稍后重试或检查目标是否正常。]"
+                                    "\n\n[系统提示：临时性错误，可稍后重试。]"
                                 )
                     except Exception as exc:
                         logger.debug("ErrorClassifier 分类失败: %s", exc)
+                # ErrorClassifier 识别出错误 → 同步 is_error，确保 metrics/audit 准确
+                if error_class is not None:
+                    is_error = True
+                    if self.metrics is not None:
+                        self.metrics.observe_tool_error_class(tool_name, error_class)
+                        # Phase 2 反馈监控：错误分类识别即视为一次重试信号
+                        self.metrics.observe_tool_retry(tool_name)
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
 
@@ -835,9 +1041,11 @@ class ReactLoop:
 
             # 检测点 3：工具执行后、下一轮 LLM 调用前检查 cancel_event
             if cancel_event and cancel_event.is_set():
-                return last_text, messages, False
+                return last_text, messages, False, "user_cancel"
 
             messages.append({"role": "user", "content": tool_results})
+
+            # === 下一轮 LLM 调用前 ===
             # 继续下一轮循环
 
         # 达到 max_loops 仍未完成，触发总结调用
@@ -848,7 +1056,7 @@ class ReactLoop:
             messages, last_text, session_id
         )
         # max_loops 耗尽 → is_complete=False（orchestrator 检查 TodoList 决定续接）
-        return summary_text, messages, False
+        return summary_text, messages, False, "max_loops"
 
     async def run_stream(
         self,
@@ -918,6 +1126,9 @@ class ReactLoop:
 
         # Phase 9 Task 7.3: 单工具重试检测滑动窗口（与 run() 等价语义）
         recent_tool_calls: List[Tuple[str, str, Optional[str]]] = []
+        # 卡死检测软警告状态机：首次命中重复 → warn（tool_result 返回警告，
+        # 不执行工具，继续循环给 LLM 自我纠正机会）；二次命中 → stop（硬终止）。
+        warned_pairs: set = set()
 
         for loop_idx in range(self.max_loops):
             # 🔴 检测点 1：每轮循环开始前检测中断
@@ -927,6 +1138,7 @@ class ReactLoop:
                     "response": last_text,
                     "messages": messages,
                     "is_complete": False,
+                    "termination_reason": "user_cancel",
                 }
                 return
 
@@ -961,6 +1173,7 @@ class ReactLoop:
                             "response": current_round_text or last_text,
                             "messages": messages,
                             "is_complete": False,
+                            "termination_reason": "user_cancel",
                         }
                         return
 
@@ -983,6 +1196,7 @@ class ReactLoop:
                     "response": current_round_text or last_text,
                     "messages": messages,
                     "is_complete": False,
+                    "termination_reason": "user_cancel",
                 }
                 return
             except Exception as e:
@@ -993,6 +1207,7 @@ class ReactLoop:
                         "response": last_text,
                         "messages": messages,
                         "is_complete": False,
+                        "termination_reason": "normal",
                     }
                     return
                 raise
@@ -1026,6 +1241,7 @@ class ReactLoop:
                     "response": last_text,
                     "messages": messages,
                     "is_complete": True,
+                    "termination_reason": "normal",
                 }
                 return
 
@@ -1041,6 +1257,7 @@ class ReactLoop:
                     "response": last_text,
                     "messages": messages,
                     "is_complete": False,
+                    "termination_reason": "normal",
                 }
                 return
 
@@ -1053,6 +1270,7 @@ class ReactLoop:
                     "response": last_text,
                     "messages": messages,
                     "is_complete": False,
+                    "termination_reason": "user_cancel",
                 }
                 return
 
@@ -1071,21 +1289,87 @@ class ReactLoop:
                     tool_name, params_hash, recent_tool_calls
                 )
                 if is_stuck:
-                    logger.warning(
-                        "检测到工具 %s 重复调用卡死 (loop=%d, reason=%s)，终止本轮循环",
+                    pair = (tool_name, params_hash)
+                    if pair in warned_pairs:
+                        # 二次命中 → 硬终止（LLM 已收到警告仍重复同参数）
+                        logger.warning(
+                            "检测到工具 %s 重复调用卡死 (loop=%d, reason=%s)，已警告过，终止本轮循环",
+                            tool_name,
+                            loop_idx,
+                            stuck_reason or "count",
+                        )
+                        # Phase B-4: stash 中断提示到下轮（与 run() 对称）
+                        if StuckDetectedError is not None and session_id is not None:
+                            stuck_err = StuckDetectedError(
+                                tool_name=tool_name,
+                                reason=f"重复调用卡死（{stuck_reason or 'count'}）",
+                                suggestion="更换参数或换用其他工具",
+                            )
+                            self._stash_interrupt_notice(session_id, stuck_err.to_system_block())
+                            if self.metrics is not None:
+                                self.metrics.observe_tool_error_class(tool_name, "stuck_detected")
+                        # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
+                        messages = self._drop_trailing_orphan_tool_calls(messages)
+                        yield {
+                            "type": "done",
+                            "response": self._build_stuck_message(tool_name, stuck_reason),
+                            "messages": messages,
+                            "is_complete": False,
+                            "termination_reason": "tool_permanent_fail",
+                        }
+                        return
+                    # 首次命中 → 软警告：把警告作为 tool_result 返回，不执行工具，
+                    # 让 LLM 看到反馈后换参数；若仍重复同参数则升级为硬终止。
+                    warned_pairs.add(pair)
+                    logger.info(
+                        "工具 %s 重复调用软警告 (loop=%d, reason=%s)，注入警告跳过执行",
                         tool_name,
                         loop_idx,
                         stuck_reason or "count",
                     )
-                    # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                    messages = self._drop_trailing_orphan_tool_calls(messages)
+                    warn_content = (
+                        f"[拦截] {tool_name} → 卡死警告\n"
+                        f"原因：检测到与最近调用重复（{stuck_reason or 'count'}）\n"
+                        f"建议：更换参数、换用其他工具，或询问用户。继续重复同参数将被终止。"
+                    )
+                    if StuckDetectedError is not None and session_id is not None:
+                        warn_err = StuckDetectedError(
+                            tool_name=tool_name,
+                            reason=f"重复调用软警告（{stuck_reason or 'count'}）",
+                            suggestion="更换参数或换用其他工具",
+                        )
+                        self._stash_interrupt_notice(session_id, warn_err.to_system_block())
+                        warn_content = warn_err.to_system_block()
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": warn_content,
+                            "is_error": True,
+                        }
+                    )
+                    recent_tool_calls.append((tool_name, params_hash, "stuck_warned"))
+                    if self.metrics is not None:
+                        self.metrics.observe_tool_error_class(tool_name, "stuck_warned")
+                        self.metrics.observe_tool_retry(tool_name)
+                    duration_ms = (time.perf_counter() - t0) * 1000
+                    self._log_audit(
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        result=warn_content,
+                        is_error=True,
+                        duration_ms=duration_ms,
+                    )
                     yield {
-                        "type": "done",
-                        "response": self._build_stuck_message(tool_name, stuck_reason),
-                        "messages": messages,
-                        "is_complete": False,
+                        "type": "tool",
+                        "name": tool_name,
+                        "input": tool_input,
+                        "result": warn_content,
+                        "is_error": True,
+                        "session_id": session_id,
                     }
-                    return
+                    continue
 
                 # Phase 5: 策略评估
                 decision = self._evaluate_policy(
@@ -1093,81 +1377,91 @@ class ReactLoop:
                 )
 
                 if decision.action == "deny":
+                    # Phase B-2: 拒绝走 pre_execution system 注入路径（与 run() 对称）
+                    # 工具未实际执行，详情走 system 注入，tool_result 仅返回占位
                     reason_text = decision.reason or "用户未提供原因"
-                    result = (
-                        f"[用户已拒绝] 工具 {tool_name} 的执行请求"
-                        f"（原因：{reason_text}）。"
-                        f"请停止重试该工具，改为询问用户意图或换一种方式完成任务。"
+                    deny_err = PolicyDeniedError(
+                        tool_name=tool_name,
+                        reason=reason_text,
+                        suggestion="停止重试该工具，改为询问用户意图或换一种方式完成任务",
                     )
                     duration_ms = (time.perf_counter() - t0) * 1000
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": result,
+                            "content": deny_err.to_system_block(),
+                            "is_error": True,
                         }
                     )
                     self._log_audit(
                         session_id=session_id,
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        result=result,
-                        is_error=False,
+                        result=deny_err.to_system_block(),
+                        is_error=True,
                         duration_ms=duration_ms,
                         decision=decision,
                     )
                     if self.metrics is not None:
-                        self.metrics.observe_tool_call(tool_name, True, duration_ms)
+                        self.metrics.observe_tool_call(tool_name, False, duration_ms)
+                        self.metrics.observe_tool_error_class(tool_name, "policy_denied")
+                        # 注意：不调用 observe_tool_retry，deny 是拦截不是重试（见边界 9.13）
                     yield {
                         "type": "tool",
                         "name": tool_name,
                         "input": tool_input,
-                        "result": result,
-                        "is_error": False,
+                        "result": deny_err.to_system_block(),
+                        "is_error": True,
+                        "blocked": True,
                         "session_id": session_id,
                         "tool_use_id": tool_use_id,
                     }
                     self._info_count += 1
-                    # 拒绝路径不计入重试检测窗口
+                    # 拒绝路径不计入重试检测窗口（工具未实际执行）
                     continue
                 elif decision.action == "confirm":
                     # 流式模式：抛出审批请求，等待用户决定
                     if self.approval_manager is None:
+                        # Phase B-2: approval_manager 未初始化走 NonStreamHILError
+                        # （流式路径不应进此处，但兜底需对齐 is_error=True 语义）
                         logger.error(
-                            "命中 confirm 但 approval_manager 未初始化，降级为 deny: tool=%s",
+                            "命中 confirm 但 approval_manager 未初始化，降级为拦截: tool=%s",
                             tool_name,
                         )
-                        reason_text = "审批管理器未初始化"
-                        result = (
-                            f"[用户已拒绝] 工具 {tool_name} 的执行请求"
-                            f"（原因：{reason_text}）。"
-                            f"请停止重试该工具，改为询问用户意图或换一种方式完成任务。"
+                        hil_err = NonStreamHILError(
+                            tool_name=tool_name,
+                            reason="流式路径 approval_manager 未配置",
+                            suggestion="检查 approval_manager 注入或改用其他方式",
                         )
                         duration_ms = (time.perf_counter() - t0) * 1000
                         tool_results.append(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
-                                "content": result,
+                                "content": hil_err.to_system_block(),
+                                "is_error": True,
                             }
                         )
                         self._log_audit(
                             session_id=session_id,
                             tool_name=tool_name,
                             tool_input=tool_input,
-                            result=result,
-                            is_error=False,
+                            result=hil_err.to_system_block(),
+                            is_error=True,
                             duration_ms=duration_ms,
                             decision=decision,
                         )
                         if self.metrics is not None:
-                            self.metrics.observe_tool_call(tool_name, True, duration_ms)
+                            self.metrics.observe_tool_call(tool_name, False, duration_ms)
+                            self.metrics.observe_tool_error_class(tool_name, "non_stream_hil")
                         yield {
                             "type": "tool",
                             "name": tool_name,
                             "input": tool_input,
-                            "result": result,
-                            "is_error": False,
+                            "result": hil_err.to_system_block(),
+                            "is_error": True,
+                            "blocked": True,
                             "session_id": session_id,
                             "tool_use_id": tool_use_id,
                         }
@@ -1180,6 +1474,7 @@ class ReactLoop:
                         tool_input=tool_input,
                         reason=decision.reason,
                         risk_level=decision.risk_level,
+                        tool_kind=decision.tool_kind,
                     )
                     # 抛出 approval_request 事件给前端
                     yield {
@@ -1189,6 +1484,7 @@ class ReactLoop:
                         "tool_input": tool_input,
                         "reason": decision.reason,
                         "risk_level": decision.risk_level,
+                        "tool_kind": decision.tool_kind,
                     }
                     # 等待用户决定（async generator 可直接 await）
                     decision_str, wait_reason = (
@@ -1257,42 +1553,48 @@ class ReactLoop:
                         }
                         self._info_count += 1
                     else:
-                        # 用户拒绝或超时
+                        # Phase B-2: 用户拒绝或超时走 UserRejectedError（与 run() 语义对齐）
+                        # 工具未实际执行，详情走 system 注入
                         reason_text = (
                             wait_reason or decision.reason or "用户未提供原因"
                         )
-                        result = (
-                            f"[用户已拒绝] 工具 {tool_name} 的执行请求"
-                            f"（原因：{reason_text}）。"
-                            f"请停止重试该工具，改为询问用户意图或换一种方式完成任务。"
+                        reject_err = UserRejectedError(
+                            tool_name=tool_name,
+                            reason=reason_text,
+                            suggestion="停止重试该工具，改为询问用户意图或换一种方式完成任务",
                         )
                         duration_ms = (time.perf_counter() - t0) * 1000
                         tool_results.append(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
-                                "content": result,
+                                "content": reject_err.to_system_block(),
+                                "is_error": True,
                             }
                         )
                         self._log_audit(
                             session_id=session_id,
                             tool_name=tool_name,
                             tool_input=tool_input,
-                            result=result,
-                            is_error=False,
+                            result=reject_err.to_system_block(),
+                            is_error=True,
                             duration_ms=duration_ms,
                             decision=decision,
                         )
                         if self.metrics is not None:
                             self.metrics.observe_tool_call(
-                                tool_name, True, duration_ms
+                                tool_name, False, duration_ms
+                            )
+                            self.metrics.observe_tool_error_class(
+                                tool_name, "user_rejected"
                             )
                         yield {
                             "type": "tool",
                             "name": tool_name,
                             "input": tool_input,
-                            "result": result,
-                            "is_error": False,
+                            "result": reject_err.to_system_block(),
+                            "is_error": True,
+                            "blocked": True,
                             "session_id": session_id,
                             "tool_use_id": tool_use_id,
                         }
@@ -1309,15 +1611,35 @@ class ReactLoop:
                 }
                 # Phase 8 Task 5.7: 通过 _execute_tool_with_dispatch 派发到
                 # cron_tool_registry（子进程）或 tool_registry（全局）。
+                error_class: Optional[str] = None
                 try:
                     result = self._execute_tool_with_dispatch(tool_name, tool_input, cancel_event)
-                except Exception as e:
-                    logger.error("工具执行失败 %s: %s", tool_name, e)
-                    result = f"工具执行出错: {e}"
+                except ToolError as te:
+                    # Phase B-2: 统一异常层次，按 stage 分流（与 run() 对称）
+                    # pre_execution 错误（如 ParamError）→ tool_result 自包含 [拦截] 详情块
+                    # execution 阶段错误 → tool_result 收据
                     is_error = True
+                    error_class = te.category
+                    if te.stage == ErrorStage.PRE_EXECUTION:
+                        result = te.to_system_block()
+                    else:
+                        result = te.to_receipt()
+                    logger.info(
+                        "工具 %s 执行失败 [%s]: %s", tool_name, te.category, te.reason
+                    )
+                except Exception as e:
+                    # 兜底：理论上 registry 已归一化，此处防御性处理
+                    is_error = True
+                    logger.error("工具执行失败 %s: %s", tool_name, e)
+                    if from_exception is not None:
+                        te = from_exception(tool_name, e)
+                        error_class = te.category
+                        result = te.to_receipt()
+                    else:
+                        result = f"工具执行出错: {e}"
 
                 # Phase 9+ 错误分类：调用 ErrorClassifier 分类，记录到滑动窗口
-                error_class: Optional[str] = None
+                # （仅当 ToolError 未给出 error_class 时兜底，识别老 handler 字符串错误）
                 if ErrorClassifier is not None and not is_error:
                     try:
                         ec, _ec_reason = ErrorClassifier.classify(
@@ -1333,16 +1655,21 @@ class ReactLoop:
                                 )
                             elif ec is ErrorClass.PERMANENT:
                                 result += (
-                                    "\n\n[系统提示：该请求返回了永久性错误"
-                                    "（如资源不存在），重试无法解决。]"
+                                    "\n\n[系统提示：永久性错误，请勿以相同参数重试。]"
                                 )
                             elif ec is ErrorClass.TRANSIENT:
                                 result += (
-                                    "\n\n[系统提示：该请求遇到了临时性错误，"
-                                    "可稍后重试或检查目标是否正常。]"
+                                    "\n\n[系统提示：临时性错误，可稍后重试。]"
                                 )
                     except Exception as exc:
                         logger.debug("ErrorClassifier 分类失败: %s", exc)
+                # ErrorClassifier 识别出错误 → 同步 is_error，确保 metrics/audit 准确
+                if error_class is not None:
+                    is_error = True
+                    if self.metrics is not None:
+                        self.metrics.observe_tool_error_class(tool_name, error_class)
+                        # Phase 2 反馈监控：错误分类识别即视为一次重试信号
+                        self.metrics.observe_tool_retry(tool_name)
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
 
@@ -1395,10 +1722,13 @@ class ReactLoop:
                     "response": last_text,
                     "messages": messages,
                     "is_complete": False,
+                    "termination_reason": "user_cancel",
                 }
                 return
 
             messages.append({"role": "user", "content": tool_results})
+
+            # === 下一轮 LLM 调用前 ===
             # 继续下一轮循环（LLM 会基于工具结果再次流式输出）
 
         # 达到 max_loops 仍未完成，触发总结调用
@@ -1414,6 +1744,7 @@ class ReactLoop:
             "response": summary_text,
             "messages": messages,
             "is_complete": False,
+            "termination_reason": "max_loops",
         }
 
     async def _generate_max_loops_summary(

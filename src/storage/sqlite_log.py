@@ -72,6 +72,11 @@ class SessionLogger:
                 self.conn.execute(
                     "ALTER TABLE messages ADD COLUMN is_error INTEGER DEFAULT 0"
                 )
+            # 兼容旧库：若 sessions 表无 title 列则补加（旧数据按 NULL 处理）
+            try:
+                self.conn.execute("SELECT title FROM sessions LIMIT 1")
+            except sqlite3.OperationalError:
+                self.conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
             self.conn.commit()
 
     def _ensure_fts_table(self):
@@ -425,6 +430,42 @@ class SessionLogger:
             )
             self.conn.commit()
             return len(ids)
+
+    def update_session_title(self, session_id: str, title: str) -> None:
+        """更新会话标题。
+
+        Args:
+            session_id: 会话 ID。
+            title: 标题文本，长度上限 100 字符（超出截断）。
+        """
+        if title is None:
+            return
+        title = title.strip()[:100]
+        if not title:
+            return
+        with self._lock:
+            self.conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                (title, session_id),
+            )
+            self.conn.commit()
+
+    def get_session_title(self, session_id: str) -> Optional[str]:
+        """获取会话标题。
+
+        Args:
+            session_id: 会话 ID。
+
+        Returns:
+            标题字符串；会话不存在或未设置标题时返回 None。
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT title FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return row["title"] if row is not None else None
 
     # ------------------------------------------------------------------
     # 文件分块 FTS5 全文索引（文件 ETL 管道使用）

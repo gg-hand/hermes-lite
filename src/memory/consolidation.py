@@ -57,6 +57,7 @@ class ConsolidationEngine:
         surprise_gate_enabled: bool = True,
         surprise_similarity_threshold: float = 0.85,
         surprise_skip_threshold: float = 0.92,
+        signal_pool: Optional[Any] = None,
     ) -> None:
         """初始化记忆沉淀引擎。
 
@@ -80,6 +81,10 @@ class ConsolidationEngine:
             surprise_skip_threshold: 惊讶门控跳过阈值，默认 0.92。
                 ``sim ≥ surprise_skip_threshold`` 视为「不惊讶，已有等价记忆」→ 跳过；
                 介于两阈值之间视为「惊讶，纠正/补充旧记忆」→ 更新。
+            signal_pool: 可选的 ``SignalPool`` 实例。注入后 L3 提取的
+                user_profile 事实走信号池累积（source="L3", weight=2），
+                达阈值才写入画像；为 None 时回退到 ``memory_md_writer``
+                直接异步写入（向后兼容）。
         """
         self.llm_client = llm_client
         self.chroma_store = chroma_store
@@ -91,6 +96,8 @@ class ConsolidationEngine:
         self.surprise_gate_enabled = surprise_gate_enabled
         self.surprise_similarity_threshold = surprise_similarity_threshold
         self.surprise_skip_threshold = surprise_skip_threshold
+        # 信号池（L3 改走信号池累积，达阈值才写入画像）
+        self.signal_pool = signal_pool
 
         # 内部状态
         self.info_counter: int = 0
@@ -344,14 +351,20 @@ class ConsolidationEngine:
             except (TypeError, ValueError):
                 importance = 0.5
 
-            # user_profile 类事实：仅收集给 memory.md，跳过向量库写入
+            # user_profile 类事实：仅收集给信号池，跳过向量库写入
             # 原因：memory.md 全文已注入 system prompt 缓存命中区，
             # 向量库再存一份会导致双写不一致（手改 md 后向量变脏数据）
             if fact_type == "user_profile":
                 profile_facts.append(fact)
                 stats["profile_only"] += 1
-                logger.debug("user_profile 事实仅写入 memory.md: %s", content[:50])
+                logger.debug("user_profile 事实仅写入信号池: %s", content[:50])
                 continue
+            elif fact_type == "preference":
+                # preference 双写：信号池累积 + 向量库检索
+                # 信号池用于达阈值后写入画像，向量库用于 memory_search 实时检索
+                profile_facts.append(fact)
+                logger.debug("preference 事实入信号池+向量库: %s", content[:50])
+                # 不 continue，继续走下方 ChromaDB 写入分支
 
             metadata = {
                 "type": fact_type,
@@ -471,9 +484,25 @@ class ConsolidationEngine:
                     except Exception as e:
                         logger.error("新增记忆失败: %s", e)
 
-        # 6. user_profile 事实异步写入 memory.md
-        if profile_facts and self.memory_md_writer is not None:
-            self._async_write_memory_md(profile_facts)
+        # 6. user_profile 事实分流：信号池累积 或 异步写入 memory.md
+        if profile_facts:
+            if self.signal_pool is not None:
+                # L3 改走信号池：weight=2（一次隐含 15 条对话消息），
+                # section="沉淀笔记"（L3 自动提取的累积区）
+                for fact in profile_facts:
+                    content = str(fact.get("content", "")).strip()
+                    if not content:
+                        continue
+                    self.signal_pool.add(
+                        content=content,
+                        source="L3",
+                        weight=2,
+                        section="沉淀笔记",
+                    )
+                logger.debug("L3 提取 %d 条 user_profile/preference 事实已入信号池", len(profile_facts))
+            elif self.memory_md_writer is not None:
+                # 向后兼容：signal_pool 未注入时走原异步写入路径
+                self._async_write_memory_md(profile_facts)
 
         # 7. 重置计数器与消息缓冲
         # Phase 9: 计数器和消息列表已在 consolidate 开始时通过原子 swap 重置，
@@ -578,6 +607,19 @@ class ConsolidationEngine:
                         "合并 %d 条 pending 画像更新到 memory.md",
                         len(profile_updates),
                     )
+                    # 信号池状态回写：apply 成功后，将已写入的 triggered 信号
+                    # 标记为 written。通过 content 匹配（pending 队列中混合了
+                    # L1 add 信号、replace/delete 显式修改，仅 add 操作有对应信号）
+                    if self.signal_pool is not None:
+                        add_contents = [
+                            str(u.get("content", ""))
+                            for u in profile_updates
+                            if isinstance(u, dict)
+                            and u.get("action") == "add"
+                            and u.get("content")
+                        ]
+                        if add_contents:
+                            self.signal_pool.mark_written_by_contents(add_contents)
                 else:
                     logger.warning(
                         "pending_profile_updates 非空但未注入 memory_md_manager，"

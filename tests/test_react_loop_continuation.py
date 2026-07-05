@@ -109,7 +109,7 @@ class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
 
         # 验证卡死消息
         self.assertIn("卡死", response)
@@ -118,6 +118,62 @@ class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_complete)
         # execute_tool 最多被调用 2 次（第 3 次在执行前被卡死检测拦截）
         self.assertLessEqual(mock_registry.execute_tool.call_count, 2)
+
+    async def test_warn_then_stop_on_repeated_same_params(self):
+        """首次命中重复 → 软警告（不执行工具，循环继续）；二次命中 → 硬终止。
+
+        时间线（threshold=3，window=5）：
+        - 第 1 次：recent_calls=[]，is_stuck=False → 执行工具
+        - 第 2 次：recent_calls=[(search,h1,None)]，matches=1 < 2，is_stuck=False → 执行工具
+        - 第 3 次：recent_calls=[(...),(search,h1,None)]，matches=2 >= 2，is_stuck=True，
+                  warned_pairs 空 → warn，不执行工具，recent_calls 追加 (search,h1,"stuck_warned")
+        - 第 4 次：matches=3 >= 2，is_stuck=True，warned_pairs 含 (search,h1) → stop，硬终止
+        """
+        tool_block = _make_tool_use_block(
+            name="search",
+            input_data={"q": "test"},
+            block_id="tu_1",
+        )
+        responses = [
+            _make_llm_response(
+                text="thinking", stop_reason="tool_use",
+                tool_use_blocks=[tool_block],
+            )
+        ]
+        mock_llm = MagicMock()
+        mock_llm.chat_main = AsyncMock(side_effect=responses * 10)
+
+        mock_registry = MagicMock()
+        mock_registry.get_tools_schema.return_value = [
+            {"name": "search", "description": "search", "input_schema": {}},
+        ]
+        mock_registry.execute_tool.return_value = "result"
+
+        loop = ReactLoop(
+            llm_client=mock_llm,
+            tool_registry=mock_registry,
+            max_loops=10,
+        )
+        response, messages, is_complete, _ = await loop.run("Hi")
+
+        # 硬终止：返回卡死消息
+        self.assertIn("卡死", response)
+        self.assertIn("search", response)
+        self.assertFalse(is_complete)
+        # 关键验证：execute_tool 仅被调用 2 次（第 1、2 次正常执行）
+        # 第 3 次 warn 跳过执行，第 4 次 stop 硬终止
+        self.assertEqual(mock_registry.execute_tool.call_count, 2)
+        # messages 中应有一条 stuck_warned 的 tool_result（is_error=True）
+        warn_results = [
+            m for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+            and any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                and b.get("is_error")
+                for b in m["content"]
+            )
+        ]
+        self.assertGreaterEqual(len(warn_results), 1, "应至少有一条 stuck_warned tool_result")
 
     async def test_different_params_does_not_trigger_stuck(self):
         """不同参数不触发卡死，正常完成循环。"""
@@ -155,7 +211,7 @@ class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
 
         # 正常完成
         self.assertEqual(response, "done")
@@ -200,7 +256,7 @@ class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
             tool_registry=mock_registry,
             max_loops=10,
         )
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
 
         # 正常完成（不同工具名不触发卡死）
         self.assertEqual(response, "done")
@@ -247,7 +303,7 @@ class TestToolStuckDetection(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 
 class TestRunReturnValueSignature(unittest.IsolatedAsyncioTestCase):
-    """验证 run() 返回三元组 (response, messages, is_complete)。
+    """验证 run() 返回四元组 (response, messages, is_complete, termination_reason)。
 
     注：``run`` / ``chat_main`` 已 async，本类用 IsolatedAsyncioTestCase + await。
     """
@@ -259,7 +315,7 @@ class TestRunReturnValueSignature(unittest.IsolatedAsyncioTestCase):
             text="Hello!", stop_reason="end_turn",
         ))
         loop = ReactLoop(llm_client=mock_llm, tool_registry=None, max_loops=5)
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
         self.assertEqual(response, "Hello!")
         self.assertTrue(is_complete)
 
@@ -296,7 +352,7 @@ class TestRunReturnValueSignature(unittest.IsolatedAsyncioTestCase):
             tool_registry=mock_registry,
             max_loops=3,
         )
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
 
         # max_loops 耗尽 → is_complete=False
         self.assertFalse(is_complete)
@@ -313,7 +369,7 @@ class TestRunReturnValueSignature(unittest.IsolatedAsyncioTestCase):
         loop = ReactLoop(
             llm_client=mock_llm, tool_registry=None, max_loops=5,
         )
-        response, messages, is_complete = await loop.run("Hi")
+        response, messages, is_complete, _ = await loop.run("Hi")
         self.assertFalse(is_complete)
 
 
@@ -445,6 +501,12 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch.guardrail_engine = None
         orch.audit_logger = None
         orch._current_session_id = None
+        # spec Task 5.1：chat() 访问 _pending_interrupt_notices，需手动注入
+        orch._pending_interrupt_notices = {}
+        # chat() 空回复计数路径访问 _consecutive_empty_runs
+        orch._consecutive_empty_runs = {}
+        # Phase 1 反馈监控：chat() 调用 self.metrics.observe_termination
+        orch.metrics = None
         # react_loop.run 已 async（spec Task 4），用 AsyncMock
         orch.react_loop.run = AsyncMock()
         return orch
@@ -460,10 +522,10 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
             call_count[0] += 1
             if call_count[0] == 1:
                 # 第一次：达到 max_loops，is_complete=False
-                return ("partial", [], False)
+                return ("partial", [], False, "normal")
             else:
                 # 第二次：自然完成
-                return ("final answer", [], True)
+                return ("final answer", [], True, "normal")
 
         orch.react_loop.run.side_effect = mock_run
 
@@ -501,7 +563,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch = self._make_orchestrator_with_mocks()
 
         # mock react_loop.run：返回 is_complete=False
-        orch.react_loop.run.return_value = ("partial", [], False)
+        orch.react_loop.run.return_value = ("partial", [], False, "normal")
 
         # mock todo_registry：返回所有步骤已完成
         orch.todo_registry.get_todo_dict.return_value = {
@@ -529,7 +591,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch = self._make_orchestrator_with_mocks()
         orch.todo_registry = None
 
-        orch.react_loop.run.return_value = ("partial", [], False)
+        orch.react_loop.run.return_value = ("partial", [], False, "normal")
 
         orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
@@ -547,7 +609,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         """is_complete=True 时不续接。"""
         orch = self._make_orchestrator_with_mocks()
 
-        orch.react_loop.run.return_value = ("done", [], True)
+        orch.react_loop.run.return_value = ("done", [], True, "normal")
 
         orch._build_enhanced_context = AsyncMock(
             return_value=("system", [], None)
@@ -570,7 +632,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch.react_loop.max_loops = 50
 
         # mock react_loop.run：始终返回 is_complete=False
-        orch.react_loop.run.return_value = ("partial", [], False)
+        orch.react_loop.run.return_value = ("partial", [], False, "normal")
 
         # mock todo_registry：始终返回有未完成步骤
         orch.todo_registry.get_todo_dict.return_value = {
@@ -594,6 +656,77 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         # 验证：返回熔断消息
         self.assertIn("总轮次上限 200", result)
         self.assertIn("终止", result)
+
+    async def test_observe_termination_called_with_react_loop_reason(self):
+        """Phase 1 反馈监控：orchestrator.chat() 调用后 metrics.observe_termination 被触发。
+
+        验证非流式路径埋点：orchestrator.py:885-887 在 await react_loop.run() 后
+        立即上报 termination_reason。
+        """
+        from src.monitoring.metrics import MetricsCollector
+
+        orch = self._make_orchestrator_with_mocks()
+        # 注入真实 metrics 实例（替换默认的 None）
+        metrics = MetricsCollector()
+        orch.metrics = metrics
+
+        # 模拟正常完成
+        orch.react_loop.run.return_value = ("done", [], True, "normal")
+        orch._build_enhanced_context = AsyncMock(
+            return_value=("system", [], None)
+        )
+        orch._persist_new_messages = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
+
+        await orch.chat("session-1", "Hi")
+
+        # 验证 termination_reason 上报
+        snap = metrics.snapshot()
+        self.assertEqual(
+            snap["termination_reasons_total"].get("normal", 0), 1
+        )
+
+    async def test_observe_termination_reports_each_continuation_round(self):
+        """Phase 1 反馈监控：自动续接场景下每次 run() 都上报 termination_reason。"""
+        from src.monitoring.metrics import MetricsCollector
+
+        orch = self._make_orchestrator_with_mocks()
+        metrics = MetricsCollector()
+        orch.metrics = metrics
+
+        # mock react_loop.run：第一次 max_loops 耗尽，第二次正常完成
+        call_count = [0]
+
+        async def mock_run(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "partial", [], False, "max_loops"
+            return "final answer", [], True, "normal"
+
+        orch.react_loop.run = AsyncMock(side_effect=mock_run)
+        orch.react_loop.max_loops = 50
+
+        orch.todo_registry.get_todo_dict.return_value = {
+            "goal": "g",
+            "steps": [{"id": 0, "status": "in_progress", "content": "step1"}],
+            "completed": False,
+        }
+        orch._build_enhanced_context = AsyncMock(
+            return_value=("system", [], None)
+        )
+        orch._persist_new_messages = MagicMock()
+        orch._maybe_flush_on_session_switch = AsyncMock()
+
+        await orch.chat("session-1", "Hi")
+
+        # 验证两次 termination_reason 都被上报
+        snap = metrics.snapshot()
+        self.assertEqual(
+            snap["termination_reasons_total"].get("max_loops", 0), 1
+        )
+        self.assertEqual(
+            snap["termination_reasons_total"].get("normal", 0), 1
+        )
 
 
 if __name__ == "__main__":

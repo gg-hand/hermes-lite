@@ -598,7 +598,7 @@ class ContextManager:
 
         # 1. 文件摘要注入 + 检索记忆注入（每轮可能变）：合并为第一条 user 消息
         #    文件摘要在前，记忆检索在后，\n\n 分隔；两者均为空时跳过整条消息
-        file_injection = self._get_file_injection(session_id)
+        file_injection = self.get_file_injection(session_id)
         memory_injection = self._get_memory_injection(user_input)
         parts = [p for p in [file_injection, memory_injection] if p]
         if parts:
@@ -633,8 +633,8 @@ class ContextManager:
 
         return messages
 
-    def _get_file_injection(self, session_id: str) -> str:
-        """获取文件摘要注入文本。
+    def get_file_injection(self, session_id: str) -> str:
+        """获取文件摘要注入文本（public 入口，供 orchestrator 调用）。
 
         参数:
             session_id: 会话 ID。

@@ -1,591 +1,540 @@
-"""update_profile 工具与延迟合并写入机制的单元测试。
+"""profile_update 工具三层防线（黑名单 + 长度 + 频次）单元测试。
 
-覆盖以下场景：
-1. handler 入队成功：调用 update_profile handler，验证 pending_profile_updates 队列新增
-2. consolidate 合并 pending 队列：入队 2 条 add 操作，调用 consolidate，验证
-   memory.md 更新且队列清空
-3. add 操作：在 memory.md 的指定 section 追加内容；section 不存在则新建
-4. replace 操作：替换指定 section 的全部内容；section 不存在则新建
-5. delete 操作：删除指定 section（含标题与 body）
-6. PolicyEngine 返回 confirm：DEFAULT_RULES 中 update_profile 为 confirm 决策
-7. handler 参数校验：非法 action / 空 section / add 无 content 返回错误提示
-8. register_builtin_tools 向后兼容：consolidation_engine=None 时不注册 update_profile
+覆盖规范 9.2 Task 0b SubTask 0b.8-0b.12：
+- 0b.8 黑名单拒绝：12 条正则模式覆盖系统架构/项目描述同义词
+- 0b.9 长度上限拒绝：>2000 字符的合法用户信息仍拒绝
+- 0b.10 频次上限拒绝：单会话 >3 次写入拒绝
+- 0b.11 正常入队不误伤：合法用户偏好（含"后端"等敏感词但不属于系统描述）正常入队
+- 0b.12 ContextVar 透传：session_id 通过 current_session_id ContextVar 正确传入 handler
 
 运行方式:
-    python -m unittest tests.test_update_profile_tool -v
-    python tests/test_update_profile_tool.py
-
-mock 策略:
-- ConsolidationEngine 的 LLM 与 chroma_store 用 unittest.mock.MagicMock 替代
-- MemoryMdManager 使用真实实例，文件路径指向 tempfile.TemporaryDirectory
-- 这样可以端到端验证 enqueue → consolidate → apply_profile_updates → 文件落盘
-  的完整链路
+    python -m pytest tests/test_update_profile_tool.py -v
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import tempfile
-import time
 import unittest
-from unittest.mock import MagicMock
-
-# ---------------------------------------------------------------------------
-# 路径与 mock 依赖初始化（必须在导入任何 src 模块之前完成）
-# ---------------------------------------------------------------------------
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from tests._mock_deps import install_mocks  # noqa: E402
+from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.agent.builtin_tools import register_builtin_tools  # noqa: E402
-from src.agent.policy import PolicyEngine, DEFAULT_RULES  # noqa: E402
-from src.agent.tool_registry import ToolRegistry  # noqa: E402
-from src.memory.consolidation import ConsolidationEngine  # noqa: E402
-from src.memory.memory_md import MemoryMdManager  # noqa: E402
+from src.agent._cancel_context import current_session_id
+from src.agent.builtin_tools import _register_update_profile
+from src.agent.tool_registry import ToolRegistry
 
 
-def _make_llm_response(text: str) -> MagicMock:
-    """构造 mock LLM 响应对象，.content 为含单个 text block 的列表。
-
-    与 test_consolidation.py 保持一致，兼容 ConsolidationEngine
-    ._extract_response_text 的 dict block 解析逻辑。
-    """
-    response = MagicMock()
-    response.content = [{"type": "text", "text": text}]
-    return response
+# ---------------------------------------------------------------------------
+# Mock ConsolidationEngine：仅需 enqueue_profile_update 方法记录调用
+# ---------------------------------------------------------------------------
 
 
-class _FakeConsolidationEngine:
-    """轻量 mock ConsolidationEngine，仅实现 enqueue_profile_update。
+class _MockConsolidationEngine:
+    """最小化 ConsolidationEngine mock。
 
-    用于 handler 入队测试，避免依赖 LLM / chroma_store 等重型依赖。
+    仅实现 ``enqueue_profile_update``，记录所有入队调用以便断言。
+    不涉及真实文件写入或异步合并逻辑。
     """
 
     def __init__(self) -> None:
-        self.pending_profile_updates: list = []
+        self.enqueued: list = []  # [(action, section, content), ...]
 
     def enqueue_profile_update(
         self, action: str, section: str, content: str
     ) -> None:
-        self.pending_profile_updates.append(
-            {"action": action, "section": section, "content": content}
-        )
+        self.enqueued.append((action, section, content))
 
 
-# ===========================================================================
-# 1. handler 入队成功
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# 测试基类：每个测试方法独立注册工具，保证 session_write_counts 隔离
+# ---------------------------------------------------------------------------
 
 
-class TestUpdateProfileHandlerEnqueue(unittest.TestCase):
-    """验证 update_profile handler 正确入队到 pending_profile_updates。"""
+class _ProfileToolTestBase(unittest.TestCase):
+    """所有 profile_update 测试的公共 fixture。
 
-    def test_handler_enqueues_add_operation(self):
-        """add 操作入队后 pending 队列新增一条对应记录。"""
-        registry = ToolRegistry()
-        engine = _FakeConsolidationEngine()
-        register_builtin_tools(registry, consolidation_engine=engine)
+    每个测试方法 setUp 时重新注册工具，获得独立的 closure（独立
+    ``session_write_counts`` dict），避免测试间状态污染。
+    """
 
-        result = registry.execute_tool(
-            "profile_update",
-            {"action": "add", "section": "背景", "content": "用户是后端工程师"},
-        )
-
-        # 返回成功提示
-        self.assertIn("已加入待合并队列", result)
-        self.assertIn("add", result)
-        self.assertIn("背景", result)
-        # 队列新增一条
-        self.assertEqual(len(engine.pending_profile_updates), 1)
-        entry = engine.pending_profile_updates[0]
-        self.assertEqual(entry["action"], "add")
-        self.assertEqual(entry["section"], "背景")
-        self.assertEqual(entry["content"], "用户是后端工程师")
-
-    def test_handler_enqueues_replace_and_delete(self):
-        """replace 与 delete 操作均能正确入队。"""
-        registry = ToolRegistry()
-        engine = _FakeConsolidationEngine()
-        register_builtin_tools(registry, consolidation_engine=engine)
-
-        # replace
-        registry.execute_tool(
-            "profile_update",
-            {"action": "replace", "section": "偏好", "content": "新的偏好内容"},
-        )
-        # delete（content 可省略）
-        registry.execute_tool(
-            "profile_update",
-            {"action": "delete", "section": "过时信息"},
-        )
-
-        self.assertEqual(len(engine.pending_profile_updates), 2)
-        self.assertEqual(engine.pending_profile_updates[0]["action"], "replace")
-        self.assertEqual(engine.pending_profile_updates[1]["action"], "delete")
-        # delete 入队时 content 为空串（handler 默认值）
-        self.assertEqual(engine.pending_profile_updates[1]["content"], "")
-
-
-# ===========================================================================
-# 2. handler 参数校验
-# ===========================================================================
-
-
-class TestUpdateProfileHandlerValidation(unittest.TestCase):
-    """验证 handler 对非法参数返回友好错误提示（不抛异常）。"""
-
-    def setUp(self):
-        """每个测试创建独立的 registry 与 engine。"""
+    def setUp(self) -> None:
         self.registry = ToolRegistry()
-        self.engine = _FakeConsolidationEngine()
-        register_builtin_tools(self.registry, consolidation_engine=self.engine)
+        self.consolidation = _MockConsolidationEngine()
+        _register_update_profile(self.registry, self.consolidation)
+        # 获取注册的 handler（直接从 _core_tools 取，避免 execute_tool 的参数校验层）
+        self.handler = self.registry._core_tools["profile_update"].handler
+        # 跟踪 ContextVar token，tearDown 时 reset
+        self._session_tokens: list = []
 
-    def test_invalid_action_returns_error(self):
-        """action 非 add/replace/delete 时返回错误提示，不入队。"""
-        result = self.registry.execute_tool(
-            "profile_update",
-            {"action": "modify", "section": "背景", "content": "x"},
+    def tearDown(self) -> None:
+        for token in reversed(self._session_tokens):
+            try:
+                current_session_id.reset(token)
+            except (ValueError, LookupError):
+                pass
+        self._session_tokens.clear()
+
+    def _set_session(self, session_id) -> None:
+        """设置 current_session_id ContextVar，tearDown 自动 reset。"""
+        token = current_session_id.set(session_id)
+        self._session_tokens.append(token)
+
+    def _call(self, action: str, section: str, content: str = "") -> str:
+        """便捷调用 handler。"""
+        return self.handler(action=action, section=section, content=content)
+
+
+# ---------------------------------------------------------------------------
+# 0b.8 黑名单拒绝测试
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateBlacklist(_ProfileToolTestBase):
+    """12 条黑名单正则模式逐条覆盖测试。
+
+    每个测试构造一条命中特定模式的 content，验证 handler 返回
+    "拒绝：内容包含系统架构或项目实现细节" 前缀，且未入队。
+    """
+
+    def assert_rejected(self, result: str, content_preview: str = "") -> None:
+        """断言 handler 返回拒绝消息且未入队。"""
+        self.assertTrue(
+            result.startswith("拒绝：内容包含系统架构或项目实现细节"),
+            f"应被拒绝，实际返回: {result!r} (content={content_preview!r})",
         )
-        self.assertIn("错误", result)
-        self.assertIn("action", result)
-        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+        self.assertEqual(len(self.consolidation.enqueued), 0)
 
-    def test_empty_section_returns_error(self):
-        """section 为空时返回错误提示，不入队。"""
-        result = self.registry.execute_tool(
-            "profile_update",
-            {"action": "add", "section": "", "content": "x"},
+    def test_pattern1_system_architecture(self):
+        """原始模式 1：系统架构 / 核心模块 / 服务层 / 编排层 / 部署架构。"""
+        result = self._call(
+            "add", "系统架构", "系统架构采用微服务，核心模块包括 API 网关"
         )
-        self.assertIn("错误", result)
-        self.assertIn("section", result)
-        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+        self.assert_rejected(result, "系统架构")
 
-    def test_add_without_content_returns_error(self):
-        """add 操作无 content 时返回错误提示，不入队。"""
-        result = self.registry.execute_tool(
-            "profile_update",
-            {"action": "add", "section": "背景", "content": ""},
+    def test_pattern2_source_paths(self):
+        """原始模式 2：src/ agent/ llm/ 等代码路径。"""
+        result = self._call(
+            "replace", "代码结构", "主要代码位于 src/agent/ 目录下"
         )
-        self.assertIn("错误", result)
-        self.assertIn("content", result)
-        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+        self.assert_rejected(result, "src/")
 
-    def test_replace_without_content_returns_error(self):
-        """replace 操作无 content 时返回错误提示，不入队。"""
-        result = self.registry.execute_tool(
-            "profile_update",
-            {"action": "replace", "section": "背景"},
+    def test_pattern3_config_files(self):
+        """原始模式 3：config.yaml / requirements.txt / .venv / __pycache__。"""
+        result = self._call(
+            "add", "项目配置", "依赖见 requirements.txt 文件"
         )
-        self.assertIn("错误", result)
-        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+        self.assert_rejected(result, "requirements.txt")
 
-    def test_delete_without_content_succeeds(self):
-        """delete 操作可省略 content，正常入队。"""
+    def test_pattern4_tech_stack(self):
+        """原始模式 4：FastAPI / uvicorn / ChromaDB / SQLite / Redis / PostgreSQL。"""
+        result = self._call(
+            "replace", "技术栈", "后端使用 FastAPI + SQLite 存储数据"
+        )
+        self.assert_rejected(result, "FastAPI")
+
+    def test_pattern5_project_meta(self):
+        """原始模式 5：Hermes Lite 是一个 / 项目路径 / 项目作者 / 作者：。"""
+        result = self._call(
+            "add", "项目信息", "Hermes Lite 是一个个人 agent 项目"
+        )
+        self.assert_rejected(result, "Hermes Lite")
+
+    def test_pattern6_streaming_arch(self):
+        """扩充模式 6：流式架构 / 事件循环 / 异步后端 / AsyncBaseBackend。"""
+        result = self._call(
+            "replace", "架构", "流式架构基于事件循环实现异步处理"
+        )
+        self.assert_rejected(result, "流式架构")
+
+    def test_pattern7_core_modules(self):
+        """扩充模式 7：react_loop / orchestrator / tool_registry / policy_engine。"""
+        result = self._call(
+            "add", "模块", "react_loop 是核心循环，orchestrator 负责编排"
+        )
+        self.assert_rejected(result, "react_loop")
+
+    def test_pattern8_api_key(self):
+        """扩充模式 8：API key / DEEPSEEK / ANTHROPIC / OPENAI / access_token。"""
+        result = self._call(
+            "replace", "凭证", "DEEPSEEK API key 配置在 .env 文件"
+        )
+        self.assert_rejected(result, "API key")
+
+    def test_pattern9_layered_design(self):
+        """扩充模式 9：分为 X 层 / 三层架构 / 分层设计 / 模块化设计。"""
+        result = self._call(
+            "add", "设计", "系统分为三层架构，每层职责清晰"
+        )
+        self.assert_rejected(result, "三层架构")
+
+    def test_pattern10_vector_store(self):
+        """扩充模式 10：向量库 / embedding / consolidation / condenser / cron_tool。"""
+        result = self._call(
+            "replace", "存储", "向量库使用 embedding 进行相似度检索"
+        )
+        self.assert_rejected(result, "向量库")
+
+    def test_pattern11_scheduler(self):
+        """扩充模式 11：调度器 / scheduler / 定时任务 / cron 调度。"""
+        result = self._call(
+            "add", "调度", "调度器 scheduler 负责定时任务执行"
+        )
+        self.assert_rejected(result, "调度器")
+
+    def test_pattern12_daemon(self):
+        """扩充模式 12：守护进程 / daemon / 微服务 / microservice。"""
+        result = self._call(
+            "replace", "部署", "采用守护进程 daemon 模式运行"
+        )
+        self.assert_rejected(result, "守护进程")
+
+    def test_blacklist_case_insensitive(self):
+        """正则 IGNORECASE 标志：FastAPI / fastapi / FASTAPI 均命中。"""
+        result = self._call(
+            "add", "stack", "uses fastapi and chromadb"
+        )
+        self.assert_rejected(result, "fastapi lowercase")
+
+    def test_delete_action_skips_blacklist(self):
+        """delete 操作无需 content，不触发黑名单校验。"""
+        result = self._call("delete", "系统架构")
+        # delete 应正常入队（不校验 content）
+        self.assertTrue(result.startswith("已加入待合并队列"))
+        self.assertEqual(len(self.consolidation.enqueued), 1)
+        self.assertEqual(self.consolidation.enqueued[0][0], "delete")
+
+
+# ---------------------------------------------------------------------------
+# 0b.9 长度上限测试
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateLengthLimit(_ProfileToolTestBase):
+    """长度上限 MAX_PROFILE_CONTENT_LEN=4000 测试。
+
+    注：P0 信号池改造后上限从 2000 调整到 4000（配合信号池累积机制放宽）。
+    """
+
+    def test_exactly_4000_chars_accepted(self):
+        """恰好 4000 字符的合法用户信息正常入队（边界值）。"""
+        content = "用户偏好：" + "x" * (4000 - len("用户偏好："))
+        self.assertEqual(len(content), 4000)
+        result = self._call("add", "偏好", content)
+        self.assertTrue(result.startswith("已加入待合并队列"))
+        self.assertEqual(len(self.consolidation.enqueued), 1)
+
+    def test_4001_chars_rejected(self):
+        """4001 字符触发拒绝（>上限）。"""
+        content = "x" * 4001
+        result = self._call("add", "偏好", content)
+        self.assertTrue(result.startswith("拒绝：内容长度 4001 超过上限 4000"))
+        self.assertEqual(len(self.consolidation.enqueued), 0)
+
+    def test_5000_chars_rejected(self):
+        """5000 字符的合法用户信息仍被拒绝（长度优先于黑名单）。"""
+        # 13 字 × 400 = 5200 字符，确保 > 4000
+        content = "用户喜欢 Python 和 Go 语言。" * 400
+        self.assertGreater(len(content), 4000)
+        result = self._call("replace", "偏好", content)
+        self.assertIn("超过上限 4000", result)
+        self.assertEqual(len(self.consolidation.enqueued), 0)
+
+    def test_length_check_before_blacklist(self):
+        """长度校验先于黑名单：长 content 含系统关键词时返回长度错误而非黑名单错误。"""
+        # 构造一条既超长又含系统关键词的 content
+        content = "系统架构" + "x" * 5000
+        result = self._call("add", "test", content)
+        # 应返回长度错误（先校验），而非黑名单错误
+        self.assertIn("超过上限", result)
+        self.assertNotIn("系统架构或项目实现细节", result)
+
+
+# ---------------------------------------------------------------------------
+# 0b.10 per-session 频次上限测试
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateSessionFrequency(_ProfileToolTestBase):
+    """MAX_PROFILE_WRITES_PER_SESSION=5 测试。
+
+    注：P0 信号池改造后上限从 3 调整到 5（配合信号池累积机制放宽）。
+    """
+
+    def test_five_writes_allowed_in_same_session(self):
+        """同一会话连续 5 次写入均成功入队。"""
+        self._set_session("sess_freq_5")
+        for i in range(5):
+            result = self._call("add", f"section_{i}", f"content_{i}")
+            self.assertTrue(
+                result.startswith("已加入待合并队列"),
+                f"第 {i + 1} 次应成功，实际: {result!r}",
+            )
+        self.assertEqual(len(self.consolidation.enqueued), 5)
+
+    def test_sixth_write_rejected_in_same_session(self):
+        """第 6 次写入触发频次上限拒绝。"""
+        self._set_session("sess_freq_6")
+        # 前 5 次正常
+        for i in range(5):
+            self._call("add", f"s{i}", f"c{i}")
+        # 第 6 次应被拒绝（注：P0 改造后消息为"add 上限"而非"写入上限"，
+        # 因为频次限制仅约束 add，replace/delete 不受限）
+        result = self._call("add", "s5", "c5")
+        self.assertTrue(result.startswith("拒绝：会话 sess_freq_6 已达单会话 add 上限 5 次"))
+        # 入队总数仍为 5
+        self.assertEqual(len(self.consolidation.enqueued), 5)
+
+    def test_frequency_limit_isolated_between_sessions(self):
+        """不同会话的频次计数相互独立。"""
+        # 会话 A 写入 5 次（显式管理 token，避免污染 ContextVar 栈）
+        token_a = current_session_id.set("sess_A")
+        try:
+            for i in range(5):
+                self._call("add", f"a{i}", f"c{i}")
+        finally:
+            current_session_id.reset(token_a)
+
+        # 切换到会话 B（独立计数）
+        token_b = current_session_id.set("sess_B")
+        try:
+            # 会话 B 也应能写入 5 次（独立计数）
+            for i in range(5):
+                result = self._call("add", f"b{i}", f"c{i}")
+                self.assertTrue(result.startswith("已加入待合并队列"))
+        finally:
+            current_session_id.reset(token_b)
+        # 总入队 10 次
+        self.assertEqual(len(self.consolidation.enqueued), 10)
+
+    def test_no_session_id_skips_frequency_limit(self):
+        """session_id 为 None 时（测试/cron 路径）跳过频次限制。"""
+        # 不设置 ContextVar，session_id 默认 None
+        for i in range(10):
+            result = self._call("add", f"s{i}", f"c{i}")
+            self.assertTrue(result.startswith("已加入待合并队列"))
+        self.assertEqual(len(self.consolidation.enqueued), 10)
+
+    def test_frequency_count_increments_only_after_enqueue_success(self):
+        """入队失败时不累加频次计数（避免失败调用浪费配额）。"""
+        self._set_session("sess_fail")
+
+        # 构造一个会让 enqueue 抛异常的 consolidation engine
+        class _FailingConsolidation:
+            def __init__(self):
+                self.call_count = 0
+
+            def enqueue_profile_update(self, action, section, content):
+                self.call_count += 1
+                raise RuntimeError("mock enqueue failure")
+
+        # 重新注册工具，使用 failing consolidation
+        registry = ToolRegistry()
+        failing = _FailingConsolidation()
+        _register_update_profile(registry, failing)
+        handler = registry._core_tools["profile_update"].handler
+
+        # 第一次调用就失败
+        result = handler(action="add", section="s", content="c")
+        self.assertIn("入队失败", result)
+        self.assertEqual(failing.call_count, 1)
+
+        # 第二次调用仍应被允许（频次计数未累加）
+        # 但 failing consolidation 仍会失败，所以再次返回"入队失败"
+        result2 = handler(action="add", section="s2", content="c2")
+        self.assertIn("入队失败", result2)
+        self.assertEqual(failing.call_count, 2)
+
+
+# ---------------------------------------------------------------------------
+# 0b.11 正常入队不误伤测试
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateNormalEnqueue(_ProfileToolTestBase):
+    """合法用户信息不误伤测试。
+
+    验证含"后端"/"前端"/"框架"等敏感词但语义属于合法用户画像的 content
+    不被黑名单误拒。
+    """
+
+    def test_backend_engineer_not_rejected(self):
+        """"用户是后端工程师" 含"后端"但属合法用户画像，应正常入队。"""
+        result = self._call("add", "背景", "用户是后端工程师，主力语言 Python 和 Go")
+        self.assertTrue(result.startswith("已加入待合并队列"))
+        self.assertEqual(len(self.consolidation.enqueued), 1)
+        self.assertEqual(self.consolidation.enqueued[0][1], "背景")
+
+    def test_frontend_preference_not_rejected(self):
+        """"偏好前端开发" 含"前端"但属合法偏好，应正常入队。"""
+        result = self._call("replace", "偏好", "用户偏好前端开发，使用 React 框架")
+        self.assertTrue(result.startswith("已加入待合并队列"))
+
+    def test_tech_stack_personal_not_rejected(self):
+        """"用户技术栈包括 Python" 不含系统描述关键词，应正常入队。"""
+        result = self._call("add", "技术栈", "用户技术栈包括 Python、Go、JavaScript")
+        self.assertTrue(result.startswith("已加入待合并队列"))
+
+    def test_personal_habits_not_rejected(self):
+        """用户个人习惯描述，无系统关键词，应正常入队。"""
+        result = self._call(
+            "add", "习惯",
+            "习惯早上 9 点开始工作，下午 5 点结束。喜欢使用 Vim 编辑器。"
+        )
+        self.assertTrue(result.startswith("已加入待合并队列"))
+
+    def test_empty_content_add_rejected_at_param_check(self):
+        """add 操作空 content 在参数校验阶段被拒绝（早于黑名单）。"""
+        result = self._call("add", "测试", "")
+        self.assertIn("需要 content", result)
+        self.assertEqual(len(self.consolidation.enqueued), 0)
+
+    def test_invalid_action_rejected(self):
+        """非法 action 在参数校验阶段被拒绝。"""
+        result = self._call("invalid_action", "测试", "content")
+        self.assertIn("action 必须是 add/replace/delete", result)
+
+    def test_empty_section_rejected(self):
+        """空 section 在参数校验阶段被拒绝。"""
+        result = self._call("add", "", "content")
+        self.assertIn("section 不能为空", result)
+
+    def test_delete_action_enqueued_without_content(self):
+        """delete 操作忽略 content，正常入队。"""
+        result = self._call("delete", "测试")
+        self.assertTrue(result.startswith("已加入待合并队列"))
+        # 验证入队的 content 为空串
+        self.assertEqual(self.consolidation.enqueued[0], ("delete", "测试", ""))
+
+
+# ---------------------------------------------------------------------------
+# 0b.12 ContextVar session_id 透传测试
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateContextVar(_ProfileToolTestBase):
+    """验证 current_session_id ContextVar 透传到 handler。"""
+
+    def test_session_id_visible_in_handler(self):
+        """设置 ContextVar 后 handler 能读取 session_id 并应用频次限制。"""
+        self._set_session("ctx_test_sess")
+        # 前 5 次正常
+        for i in range(5):
+            result = self._call("add", f"s{i}", f"c{i}")
+            self.assertTrue(result.startswith("已加入待合并队列"))
+        # 第 6 次因频次上限拒绝，错误消息含 session_id
+        result = self._call("add", "s5", "c5")
+        self.assertIn("ctx_test_sess", result)
+
+    def test_no_session_id_no_frequency_limit(self):
+        """未设置 ContextVar 时 session_id 为 None，跳过频次限制。"""
+        # 默认 current_session_id.get() 返回 None
+        self.assertIsNone(current_session_id.get())
+        # 调用 6 次都应成功
+        for i in range(6):
+            result = self._call("add", f"s{i}", f"c{i}")
+            self.assertTrue(result.startswith("已加入待合并队列"))
+
+    def test_session_id_reset_after_token_reset(self):
+        """reset token 后 session_id 恢复 None，频次限制不再生效。"""
+        token = current_session_id.set("reset_test")
+        try:
+            # 写入 5 次（达到上限）
+            for i in range(5):
+                self._call("add", f"s{i}", f"c{i}")
+            # 第 6 次应被拒绝（P0 改造后消息为"add 上限"）
+            result = self._call("add", "s5", "c5")
+            self.assertIn("已达单会话 add 上限", result)
+        finally:
+            current_session_id.reset(token)
+            # 从 self._session_tokens 移除，避免 tearDown 重复 reset
+            if token in self._session_tokens:
+                self._session_tokens.remove(token)
+
+        # reset 后 session_id 为 None
+        self.assertIsNone(current_session_id.get())
+        # 现在再调用应跳过频次限制（session_id 为 None）
+        result = self._call("add", "after_reset", "content")
+        self.assertTrue(result.startswith("已加入待合并队列"))
+
+    def test_session_id_isolated_between_threads(self):
+        """不同线程的 ContextVar 互不影响（线程隔离性）。"""
+        import threading
+
+        results = {}
+
+        def worker(thread_name, count):
+            token = current_session_id.set(thread_name)
+            try:
+                for i in range(count):
+                    r = self._call("add", f"{thread_name}_{i}", f"c{i}")
+                    results.setdefault(thread_name, []).append(r)
+            finally:
+                current_session_id.reset(token)
+
+        # 线程 A 写入 6 次（第 6 次应失败）
+        t_a = threading.Thread(target=worker, args=("thread_A", 6))
+        # 线程 B 写入 6 次（第 6 次应失败）
+        t_b = threading.Thread(target=worker, args=("thread_B", 6))
+
+        t_a.start()
+        t_b.start()
+        t_a.join()
+        t_b.join()
+
+        # 每个线程前 5 次成功，第 6 次失败
+        for thread_name in ("thread_A", "thread_B"):
+            thread_results = results[thread_name]
+            self.assertEqual(len(thread_results), 6)
+            for i in range(5):
+                self.assertTrue(
+                    thread_results[i].startswith("已加入待合并队列"),
+                    f"{thread_name} 第 {i + 1} 次应成功",
+                )
+            self.assertIn(
+                "已达单会话 add 上限", thread_results[5],
+                f"{thread_name} 第 6 次应被频次限制拒绝",
+            )
+
+
+# ---------------------------------------------------------------------------
+# 端到端：通过 execute_tool 调用（验证完整链路）
+# ---------------------------------------------------------------------------
+
+
+class TestProfileUpdateViaExecuteTool(_ProfileToolTestBase):
+    """通过 ToolRegistry.execute_tool 调用，验证完整链路（含参数校验层）。"""
+
+    def test_execute_tool_blacklist_rejection(self):
+        """execute_tool 路径下黑名单仍生效。"""
         result = self.registry.execute_tool(
             "profile_update",
-            {"action": "delete", "section": "过时信息"},
+            {
+                "action": "add",
+                "section": "架构",
+                "content": "系统采用 FastAPI + ChromaDB 三层架构",
+            },
+        )
+        self.assertIn("系统架构或项目实现细节", result)
+        self.assertEqual(len(self.consolidation.enqueued), 0)
+
+    def test_execute_tool_normal_enqueue(self):
+        """execute_tool 路径下正常 content 入队。"""
+        result = self.registry.execute_tool(
+            "profile_update",
+            {
+                "action": "add",
+                "section": "背景",
+                "content": "用户是后端工程师",
+            },
         )
         self.assertIn("已加入待合并队列", result)
-        self.assertEqual(len(self.engine.pending_profile_updates), 1)
-
-
-# ===========================================================================
-# 3. consolidate 合并 pending 队列
-# ===========================================================================
-
-
-class TestConsolidateMergesPendingQueue(unittest.TestCase):
-    """验证 consolidate() 时 pending_profile_updates 被合并到 memory.md 并清空。"""
-
-    def test_consolidate_applies_pending_and_clears_queue(self):
-        """入队 2 条 add 操作，consolidate 后 memory.md 更新且队列清空。"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            memory_md_path = os.path.join(tmpdir, "memory.md")
-            memory_md_manager = MemoryMdManager(file_path=memory_md_path)
-
-            # 写入初始 memory.md
-            memory_md_manager._write_raw_text(
-                "# 用户画像\n\n## 背景\n- 用户是 Python 开发者\n"
-            )
-
-            # 构造 mock LLM 返回空 facts（只测试 pending 合并路径）
-            llm_client = MagicMock()
-            llm_client.chat_consolidation.return_value = _make_llm_response("[]")
-            chroma_store = MagicMock()
-
-            engine = ConsolidationEngine(
-                llm_client=llm_client,
-                chroma_store=chroma_store,
-                memory_md_manager=memory_md_manager,
-                threshold=1,
-            )
-            engine.add_info({"role": "user", "content": "msg"})
-
-            # 入队 2 条 add 操作
-            engine.enqueue_profile_update(
-                "add", "背景", "- 用户也是 Rust 爱好者"
-            )
-            engine.enqueue_profile_update(
-                "add", "偏好", "- 偏好函数式编程"
-            )
-            self.assertEqual(len(engine.pending_profile_updates), 2)
-
-            # 调用 consolidate
-            stats = engine.consolidate()
-
-            # 队列已清空
-            self.assertEqual(engine.pending_profile_updates, [])
-
-            # memory.md 包含两条新增内容
-            content = memory_md_manager.read()
-            self.assertIn("用户也是 Rust 爱好者", content)
-            self.assertIn("偏好函数式编程", content)
-            # 原 "背景" section 与 "用户是 Python 开发者" 仍保留
-            self.assertIn("用户是 Python 开发者", content)
-            self.assertIn("## 背景", content)
-            self.assertIn("## 偏好", content)
-
-            # consolidate 正常完成（LLM 返回空 facts，统计为 0）
-            self.assertEqual(stats["facts_extracted"], 0)
-
-    def test_consolidate_without_memory_md_manager_warns_and_clears(self):
-        """未注入 memory_md_manager 时 pending 队列被丢弃并清空（向后兼容）。"""
-        llm_client = MagicMock()
-        llm_client.chat_consolidation.return_value = _make_llm_response("[]")
-        chroma_store = MagicMock()
-
-        engine = ConsolidationEngine(
-            llm_client=llm_client,
-            chroma_store=chroma_store,
-            memory_md_manager=None,  # 未注入
-            threshold=1,
-        )
-        engine.add_info({"role": "user", "content": "msg"})
-        engine.enqueue_profile_update("add", "背景", "x")
-        self.assertEqual(len(engine.pending_profile_updates), 1)
-
-        engine.consolidate()
-
-        # 队列已清空（即使未实际写入文件）
-        self.assertEqual(engine.pending_profile_updates, [])
-
-
-# ===========================================================================
-# 4. apply_profile_updates 的 add/replace/delete 操作
-# ===========================================================================
-
-
-class TestApplyProfileUpdatesOperations(unittest.TestCase):
-    """验证 MemoryMdManager.apply_profile_updates 的 add/replace/delete 语义。"""
-
-    def setUp(self):
-        """每个测试创建独立的临时 memory.md。"""
-        self.tmpdir = tempfile.mkdtemp(prefix="update_profile_test_")
-        self.memory_md_path = os.path.join(self.tmpdir, "memory.md")
-        self.manager = MemoryMdManager(file_path=self.memory_md_path)
-        # 初始 memory.md 含两个 section
-        self.manager._write_raw_text(
-            "# 用户画像\n"
-            "\n"
-            "## 背景\n"
-            "- 用户是 Python 开发者\n"
-            "\n"
-            "## 偏好\n"
-            "- 喜欢简洁的代码\n"
-            "- 偏好暗色主题\n"
-        )
-
-    def tearDown(self):
-        """清理临时目录。"""
-        import shutil
-
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_add_to_existing_section(self):
-        """add 在已存在 section 末尾追加内容，保留原 body。"""
-        self.manager.apply_profile_updates(
-            [{"action": "add", "section": "背景", "content": "- 也写 TypeScript"}]
-        )
-        content = self.manager.read()
-        # 原 "用户是 Python 开发者" 仍存在
-        self.assertIn("用户是 Python 开发者", content)
-        # 新内容已追加
-        self.assertIn("也写 TypeScript", content)
-        # "## 背景" 标题仍只有一个
-        self.assertEqual(content.count("## 背景"), 1)
-        # "偏好" section 未受影响
-        self.assertIn("喜欢简洁的代码", content)
-
-    def test_add_to_nonexistent_section_creates_new(self):
-        """add 到不存在的 section 时新建该 section。"""
-        self.manager.apply_profile_updates(
-            [{"action": "add", "section": "技术栈", "content": "- Rust\n- Go"}]
-        )
-        content = self.manager.read()
-        self.assertIn("## 技术栈", content)
-        self.assertIn("Rust", content)
-        self.assertIn("Go", content)
-        # 原 section 仍保留
-        self.assertIn("## 背景", content)
-        self.assertIn("## 偏好", content)
-
-    def test_replace_existing_section(self):
-        """replace 替换已存在 section 的全部 body，保留标题行。"""
-        self.manager.apply_profile_updates(
-            [
-                {
-                    "action": "replace",
-                    "section": "偏好",
-                    "content": "- 只喜欢函数式编程",
-                }
-            ]
-        )
-        content = self.manager.read()
-        # 标题仍存在
-        self.assertIn("## 偏好", content)
-        # 新内容存在
-        self.assertIn("只喜欢函数式编程", content)
-        # 原 body 被替换掉
-        self.assertNotIn("喜欢简洁的代码", content)
-        self.assertNotIn("偏好暗色主题", content)
-        # "## 偏好" 标题仍只有一个
-        self.assertEqual(content.count("## 偏好"), 1)
-
-    def test_replace_nonexistent_section_creates_new(self):
-        """replace 到不存在的 section 时新建该 section。"""
-        self.manager.apply_profile_updates(
-            [
-                {
-                    "action": "replace",
-                    "section": "目标",
-                    "content": "- 学完 Rust",
-                }
-            ]
-        )
-        content = self.manager.read()
-        self.assertIn("## 目标", content)
-        self.assertIn("学完 Rust", content)
-
-    def test_delete_existing_section(self):
-        """delete 删除已存在 section 的标题与全部 body。"""
-        self.manager.apply_profile_updates(
-            [{"action": "delete", "section": "偏好"}]
-        )
-        content = self.manager.read()
-        # "偏好" section 整体被删除
-        self.assertNotIn("## 偏好", content)
-        self.assertNotIn("喜欢简洁的代码", content)
-        self.assertNotIn("偏好暗色主题", content)
-        # 其他 section 未受影响
-        self.assertIn("## 背景", content)
-        self.assertIn("用户是 Python 开发者", content)
-
-    def test_delete_nonexistent_section_noop(self):
-        """delete 不存在的 section 时为 no-op，不影响其他内容。"""
-        original = self.manager.read()
-        self.manager.apply_profile_updates(
-            [{"action": "delete", "section": "不存在的 section"}]
-        )
-        content = self.manager.read()
-        self.assertEqual(content, original)
-
-    def test_batch_operations_in_order(self):
-        """批量操作按顺序应用：先 add，再 replace，最后 delete。"""
-        self.manager.apply_profile_updates(
-            [
-                # 在 "背景" 追加一条
-                {"action": "add", "section": "背景", "content": "- 新条目"},
-                # 替换 "偏好" 全部内容
-                {
-                    "action": "replace",
-                    "section": "偏好",
-                    "content": "- 替换后的偏好",
-                },
-                # 删除 "背景"（包含刚才 add 的条目）
-                {"action": "delete", "section": "背景"},
-            ]
-        )
-        content = self.manager.read()
-        # "背景" 已被删除（包括 add 进去的 "新条目"）
-        self.assertNotIn("## 背景", content)
-        self.assertNotIn("用户是 Python 开发者", content)
-        self.assertNotIn("新条目", content)
-        # "偏好" 已被替换
-        self.assertIn("## 偏好", content)
-        self.assertIn("替换后的偏好", content)
-        self.assertNotIn("喜欢简洁的代码", content)
-
-    def test_add_multiline_content(self):
-        """add 多行 content 时全部行被追加到 section。"""
-        self.manager.apply_profile_updates(
-            [
-                {
-                    "action": "add",
-                    "section": "背景",
-                    "content": "- 第二行\n- 第三行",
-                }
-            ]
-        )
-        content = self.manager.read()
-        self.assertIn("第二行", content)
-        self.assertIn("第三行", content)
-        # 原 "用户是 Python 开发者" 仍保留
-        self.assertIn("用户是 Python 开发者", content)
-
-
-# ===========================================================================
-# 5. PolicyEngine 决策
-# ===========================================================================
-
-
-class TestPolicyEngineUpdateProfileDecision(unittest.TestCase):
-    """验证 PolicyEngine 对 update_profile 返回 confirm / high 决策。"""
-
-    def test_default_rules_confirm_update_profile(self):
-        """DEFAULT_RULES 中 update_profile 为 confirm。"""
-        engine = PolicyEngine()
-        decision = engine.check(
-            "profile_update",
-            {"action": "add", "section": "背景", "content": "x"},
-        )
-        self.assertEqual(decision.action, "confirm")
-        self.assertEqual(decision.risk_level, "high")
-
-    def test_default_rules_contains_update_profile(self):
-        """DEFAULT_RULES 列表中包含 update_profile 规则。"""
-        rules_for_update = [r for r in DEFAULT_RULES if r.get("tool") == "profile_update"]
-        self.assertEqual(len(rules_for_update), 1)
-        self.assertEqual(rules_for_update[0]["risk"], "confirm")
-
-    def test_disabled_policy_allows_update_profile(self):
-        """enabled=False 时 update_profile 一律放行（与其它工具一致）。"""
-        engine = PolicyEngine(enabled=False)
-        decision = engine.check(
-            "profile_update",
-            {"action": "delete", "section": "背景"},
-        )
-        self.assertEqual(decision.action, "allow")
-        self.assertEqual(decision.risk_level, "low")
-
-    def test_call_tool_introspection_update_profile(self):
-        """call_tool 内省：内层为 update_profile 时返回 confirm 决策。"""
-        engine = PolicyEngine()
-        decision = engine.check(
-            "tool_call",
-            {"name": "profile_update", "arguments": {}},
-        )
-        self.assertEqual(decision.action, "confirm")
-        self.assertEqual(decision.risk_level, "high")
-
-
-# ===========================================================================
-# 6. register_builtin_tools 向后兼容
-# ===========================================================================
-
-
-class TestRegisterBuiltinToolsBackwardCompat(unittest.TestCase):
-    """验证 consolidation_engine=None 时不注册 update_profile（向后兼容）。"""
-
-    def test_no_consolidation_engine_no_update_profile(self):
-        """consolidation_engine=None 时 update_profile 工具未注册。"""
-        registry = ToolRegistry()
-        register_builtin_tools(registry, consolidation_engine=None)
-        schemas = registry.get_tools_schema()
-        names = [s["name"] for s in schemas]
-        self.assertNotIn("profile_update", names)
-        # 其他内置工具仍正常注册
-        self.assertIn("file_read", names)
-        self.assertIn("file_write", names)
-
-    def test_with_consolidation_engine_registers_update_profile(self):
-        """consolidation_engine 非 None 时 update_profile 工具被注册为 Core Tier。"""
-        registry = ToolRegistry()
-        engine = _FakeConsolidationEngine()
-        register_builtin_tools(registry, consolidation_engine=engine)
-        schemas = registry.get_tools_schema()
-        names = [s["name"] for s in schemas]
-        self.assertIn("profile_update", names)
-        # 验证是完整 schema（Core Tier，含 input_schema）
-        update_profile_schema = next(
-            s for s in schemas if s["name"] == "profile_update"
-        )
-        self.assertIn("input_schema", update_profile_schema)
-        self.assertNotIn("defer_loading", update_profile_schema)
-
-
-# ===========================================================================
-# 7. 端到端：handler 入队 + consolidate 合并到 memory.md
-# ===========================================================================
-
-
-class TestEndToEndEnqueueAndConsolidate(unittest.TestCase):
-    """端到端验证：handler 入队 → consolidate 合并 → memory.md 落盘。"""
-
-    def test_handler_enqueue_then_consolidate_writes_to_memory_md(self):
-        """通过 handler 入队，consolidate 后 memory.md 反映修改。"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            memory_md_path = os.path.join(tmpdir, "memory.md")
-            memory_md_manager = MemoryMdManager(file_path=memory_md_path)
-            memory_md_manager._write_raw_text(
-                "# 用户画像\n\n## 背景\n- 用户是 Python 开发者\n"
-            )
-
-            llm_client = MagicMock()
-            llm_client.chat_consolidation.return_value = _make_llm_response("[]")
-            chroma_store = MagicMock()
-
-            engine = ConsolidationEngine(
-                llm_client=llm_client,
-                chroma_store=chroma_store,
-                memory_md_manager=memory_md_manager,
-                threshold=1,
-            )
-
-            # 通过 ToolRegistry + handler 入队（端到端路径）
-            registry = ToolRegistry()
-            register_builtin_tools(registry, consolidation_engine=engine)
-
-            registry.execute_tool(
-                "profile_update",
-                {
-                    "action": "add",
-                    "section": "背景",
-                    "content": "- 也写 Rust",
-                },
-            )
-            registry.execute_tool(
-                "profile_update",
-                {
-                    "action": "replace",
-                    "section": "偏好",
-                    "content": "- 偏好简洁代码",
-                },
-            )
-
-            # 入队后但 consolidate 前，memory.md 不应被修改（延迟合并）
-            pre_content = memory_md_manager.read()
-            self.assertNotIn("也写 Rust", pre_content)
-            self.assertNotIn("## 偏好", pre_content)
-
-            # 触发 consolidate
-            engine.add_info({"role": "user", "content": "msg"})
-            engine.consolidate()
-
-            # consolidate 后 memory.md 反映修改
-            post_content = memory_md_manager.read()
-            self.assertIn("也写 Rust", post_content)
-            self.assertIn("## 偏好", post_content)
-            self.assertIn("偏好简洁代码", post_content)
-            # 原 "用户是 Python 开发者" 仍保留
-            self.assertIn("用户是 Python 开发者", post_content)
-            # 队列已清空
-            self.assertEqual(engine.pending_profile_updates, [])
+        self.assertEqual(len(self.consolidation.enqueued), 1)
 
 
 if __name__ == "__main__":
