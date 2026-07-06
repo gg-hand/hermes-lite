@@ -86,7 +86,7 @@ class UploadManager:
         self._init_table()
 
     def _init_table(self) -> None:
-        """创建 uploaded_files 表与索引（若不存在）。"""
+        """创建 uploaded_files 与 session_file_association 表及索引（若不存在）。"""
         with self._lock:
             self.conn.executescript(
                 """
@@ -113,7 +113,35 @@ class UploadManager:
                     ON uploaded_files(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_files_accessed
                     ON uploaded_files(last_accessed);
+
+                CREATE TABLE IF NOT EXISTS session_file_association (
+                    session_id TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    associated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, file_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_assoc_session
+                    ON session_file_association(session_id);
                 """
+            )
+            self.conn.commit()
+        self._backfill_associations()
+
+    def _backfill_associations(self) -> None:
+        """为旧数据回填 session_file_association 关联记录。
+
+        仅在关联表为空时执行（首次升级），幂等安全。
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT COUNT(*) FROM session_file_association"
+            )
+            if cur.fetchone()[0] > 0:
+                return
+            self.conn.execute(
+                "INSERT OR IGNORE INTO session_file_association "
+                "(session_id, file_id, associated_at) "
+                "SELECT session_id, file_id, uploaded_at FROM uploaded_files"
             )
             self.conn.commit()
 
@@ -171,7 +199,7 @@ class UploadManager:
             count = self._get_file_count(session_id)
         else:
             cur = self.conn.execute(
-                "SELECT COUNT(*) FROM uploaded_files WHERE session_id = ?",
+                "SELECT COUNT(*) FROM session_file_association WHERE session_id = ?",
                 (session_id,),
             )
             count = cur.fetchone()[0]
@@ -230,6 +258,12 @@ class UploadManager:
                 )
                 existing = cur.fetchone()
                 if existing is not None:
+                    # 去重命中：为当前会话建立关联（即使文件物理记录属于其他会话）
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO session_file_association "
+                        "(session_id, file_id, associated_at) VALUES (?, ?, ?)",
+                        (session_id, existing["file_id"], now),
+                    )
                     self.conn.commit()
                     logger.info(
                         "文件去重命中: %s (hash=%s...) (existing_file_id=%s, status=%s)",
@@ -267,6 +301,12 @@ class UploadManager:
                         len(content), ext, session_id, now, now,
                     ),
                 )
+                # 建立会话-文件关联
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO session_file_association "
+                    "(session_id, file_id, associated_at) VALUES (?, ?, ?)",
+                    (session_id, file_id, now),
+                )
                 self.conn.commit()
                 logger.info(
                     "文件已保存: %s -> %s (file_id=%s, session=%s, size=%d)",
@@ -300,20 +340,41 @@ class UploadManager:
         return dict(row)
 
     def get_session_files(self, session_id: str) -> List[Dict[str, Any]]:
-        """获取指定会话的所有上传文件（按上传时间倒序）。
+        """获取指定会话关联的所有上传文件（按上传时间倒序）。
+
+        通过 session_file_association 关联表查询，包含本会话上传的文件
+        以及跨会话去重命中后关联到本会话的文件。同名文件标记版本号
+        (version_seq) 和是否最新 (is_latest)。
 
         Args:
             session_id: 会话 ID。
 
         Returns:
-            文件元数据列表。
+            文件元数据列表，每项额外含 version_seq / is_latest 字段。
         """
         cur = self.conn.execute(
-            "SELECT * FROM uploaded_files WHERE session_id = ? "
-            "ORDER BY uploaded_at DESC",
+            "SELECT uf.* FROM uploaded_files uf "
+            "JOIN session_file_association sfa ON uf.file_id = sfa.file_id "
+            "WHERE sfa.session_id = ? "
+            "ORDER BY uf.uploaded_at ASC",
             (session_id,),
         )
-        return [dict(row) for row in cur.fetchall()]
+        files = [dict(row) for row in cur.fetchall()]
+
+        # 版本标记：按 original_name 分组，组内按 uploaded_at ASC（SQL 已保证）
+        # 最新版本 is_latest=True，version_seq 从 1 递增
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for f in files:
+            groups.setdefault(f.get("original_name", ""), []).append(f)
+        for group in groups.values():
+            total = len(group)
+            for i, f in enumerate(group):
+                f["version_seq"] = i + 1
+                f["is_latest"] = (i == total - 1)
+
+        # 重新按 uploaded_at DESC 排序返回（保持原有返回顺序约定）
+        files.sort(key=lambda f: f.get("uploaded_at", ""), reverse=True)
+        return files
 
     def list_all(self) -> List[Dict[str, Any]]:
         """列出所有上传文件（按上传时间倒序）。
@@ -441,7 +502,7 @@ class UploadManager:
     # ------------------------------------------------------------------
 
     def delete_record(self, file_id: str) -> bool:
-        """从 SQLite 中删除文件记录（仅供管理端点使用）。
+        """从 SQLite 中删除文件记录及其所有会话关联（仅供管理端点使用）。
 
         Args:
             file_id: 文件 ID。
@@ -453,11 +514,56 @@ class UploadManager:
             cur = self.conn.execute(
                 "DELETE FROM uploaded_files WHERE file_id = ?", (file_id,)
             )
+            # 同步清理 session_file_association 中的关联记录
+            self.conn.execute(
+                "DELETE FROM session_file_association WHERE file_id = ?",
+                (file_id,),
+            )
             self.conn.commit()
             deleted = cur.rowcount > 0
             if deleted:
                 logger.info("已删除文件记录: %s", file_id)
             return deleted
+
+    def associate_file(self, session_id: str, file_id: str) -> None:
+        """关联文件到会话（幂等）。
+
+        用于跨会话引用场景：LLM 可通过 file_attach 工具把已有文件
+        关联到当前会话，使其出现在 file_list_uploads / 文件面板 /
+        FileContextInjector 注入中。
+
+        Args:
+            session_id: 会话 ID。
+            file_id: 文件 ID。
+        """
+        now = self._now_iso()
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO session_file_association "
+                "(session_id, file_id, associated_at) VALUES (?, ?, ?)",
+                (session_id, file_id, now),
+            )
+            self.conn.commit()
+
+    def cleanup_session(self, session_id: str) -> int:
+        """清理会话的所有文件关联（删除会话时调用）。
+
+        注意：仅清理 session_file_association 中的关联记录，不删除
+        uploaded_files 中的文件物理记录（文件可能被其他会话引用）。
+
+        Args:
+            session_id: 会话 ID。
+
+        Returns:
+            删除的关联记录数。
+        """
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM session_file_association WHERE session_id = ?",
+                (session_id,),
+            )
+            self.conn.commit()
+            return cur.rowcount
 
     def read_content(self, file_id: str) -> Optional[bytes]:
         """读取文件的原始内容。

@@ -2069,7 +2069,7 @@ def register_file_tools(
                 return "错误：无法获取 session_id"
             files = upload_manager.get_session_files(session_id)
             if not files:
-                return "（当前会话无已上传文件）"
+                return "（当前会话暂无已上传文件。如刚上传文件，可能正在处理中，请参考上下文注入的'本会话已上传文件'信息。）"
             output = [
                 {
                     "file_id": f["file_id"],

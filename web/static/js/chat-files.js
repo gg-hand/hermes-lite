@@ -24,6 +24,20 @@ async function uploadFile(file) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || data.message || 'HTTP ' + res.status);
     showToast(data.is_dup ? '文件已在知识库中' : '上传成功: ' + file.name, data.is_dup ? '' : 'success');
+
+    // 即时反馈：在聊天区插入上传消息气泡（纯前端 DOM，刷新后由后端消息/合成消息接管）
+    if (window.HermesChatCore && window.HermesChatCore.appendMessage) {
+      const file_type = '.' + (file.name.split('.').pop() || '').toLowerCase();
+      const is_image = ['.png', '.jpg', '.jpeg', '.gif'].includes(file_type);
+      window.HermesChatCore.appendMessage(
+        'user',
+        data.is_dup ? `文件已在知识库中：${file.name}` : `已上传文件：${file.name}`,
+        [{ file_id: data.file_id, name: file.name, type: file_type, size: file.size,
+           category: is_image ? 'image' : 'document',
+           etl_status: data.is_dup ? 'done' : 'pending' }]
+      );
+    }
+
     addToQueue(file);
     loadFiles();
   } catch (e) {
@@ -37,10 +51,15 @@ async function loadFiles() {
     const sid = currentSessionId || '__none__';
     const res = await fetch('/sessions/' + sid + '/files');
     if (!res.ok) {
-      fileListEl.innerHTML = '<div class="file-empty">获取文件列表失败</div>';
+      // 竞态保护：fetch 完成时会话可能已切换，避免旧会话响应覆盖新会话面板
+      if (sid === (currentSessionId || '__none__')) {
+        fileListEl.innerHTML = '<div class="file-empty">获取文件列表失败</div>';
+      }
       return;
     }
     const data = await res.json();
+    // 竞态保护：解析响应时会话可能已切换，丢弃过期响应
+    if (sid !== (currentSessionId || '__none__')) return;
     const files = data.files || [];
     if (!files.length) {
       fileListEl.innerHTML = '<div class="file-empty">无已上传文件</div>';
@@ -142,13 +161,34 @@ if (messageInputEl) {
 const _origSelectSession = selectSession;
 selectSession = async function (sessionId) {
   await _origSelectSession(sessionId);
+  // 清空上传队列（旧会话的 chip 不应残留）
+  uploadQueue = [];
+  renderQueue();
+  // 停止旧会话的 ETL 轮询，避免竞态
+  stopFilePolling();
   setTimeout(loadFiles, 200);
 };
 
 const _origNewSession = newSession;
 newSession = function () {
   _origNewSession();
+  uploadQueue = [];
+  renderQueue();
+  stopFilePolling();
   setTimeout(loadFiles, 500);
+};
+
+// 删除当前会话时同步清理文件面板/队列/轮询（包装原函数）
+const _origDeleteSession = deleteSession;
+deleteSession = async function (sessionId) {
+  await _origDeleteSession(sessionId);
+  // 若删除的是当前会话，清理文件相关状态（与 newSession 行为一致）
+  if (!currentSessionId) {
+    uploadQueue = [];
+    renderQueue();
+    stopFilePolling();
+    if (fileListEl) fileListEl.innerHTML = '<div class="file-empty">无已上传文件</div>';
+  }
 };
 
 // 暴露给其他模块

@@ -21,15 +21,19 @@ function renderToolValue(value) {
 }
 
 // ========== 消息渲染 ==========
-function appendMessage(role, content) {
+function appendMessage(role, content, attachments) {
   welcomeScreenEl.style.display = 'none';
   const msg = document.createElement('div');
   msg.className = 'message ' + (role === 'user' ? 'user' : 'assistant');
   const roleLabel = role === 'user' ? 'You' : 'Assistant';
   if (role === 'user') {
+    let bubbleContent = escapeHtml(content || '');
+    if (attachments) {
+      bubbleContent += renderAttachments(attachments);
+    }
     msg.innerHTML = `
       <div class="message-role ${role}">${roleLabel}</div>
-      <div class="message-bubble">${escapeHtml(content)}</div>
+      <div class="message-bubble">${bubbleContent}</div>
     `;
   } else {
     const bubble = document.createElement('div');
@@ -42,6 +46,50 @@ function appendMessage(role, content) {
   messagesEl.appendChild(msg);
   scrollMessagesToBottom();
   return msg;
+}
+
+// ========== 附件渲染（图片缩略图 / 文档卡片） ==========
+function renderAttachments(attachments) {
+  if (!attachments) return '';
+  let atts = attachments;
+  if (typeof atts === 'string') atts = safeParseJSON(atts) || [];
+  if (!Array.isArray(atts) || !atts.length) return '';
+  let html = '<div class="message-attachments">';
+  for (const a of atts) {
+    const fid = escapeHtml(a.file_id || '');
+    const name = escapeHtml(a.name || '');
+    const sizeLabel = a.size > 1048576
+      ? (a.size / 1048576).toFixed(1) + 'MB'
+      : (a.size / 1024).toFixed(1) + 'KB';
+    if (a.category === 'image') {
+      html += `<div class="attachment-image">` +
+        `<img src="/files/${fid}/raw" alt="${name}" loading="lazy" ` +
+        `class="attachment-thumb" data-file-id="${fid}" data-name="${name}">` +
+        `</div>`;
+    } else {
+      const iconMap = { '.pdf': 'PDF', '.docx': 'DOC', '.txt': 'TXT', '.md': 'MD' };
+      const icon = iconMap[a.type] || 'FILE';
+      html += `<div class="attachment-file">` +
+        `<span class="attachment-icon">${icon}</span>` +
+        `<span class="attachment-name">${name}</span>` +
+        `<span class="attachment-size">${sizeLabel}</span>` +
+        `</div>`;
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+// ========== 图片放大弹窗 ==========
+function openImageModal(src, caption) {
+  const modal = document.getElementById('imageModal');
+  const img = document.getElementById('imageModalImg');
+  const cap = document.getElementById('imageModalCaption');
+  if (modal && img) {
+    img.src = src;
+    if (cap) cap.textContent = caption || '';
+    modal.classList.add('show');
+  }
 }
 
 // ========== 工具动作描述 ==========

@@ -156,6 +156,16 @@ function bindEvents() {
       handleCodeCopyClick(e);
     });
   }
+
+  // 图片缩略图点击放大（事件委托）
+  if (messagesEl) {
+    messagesEl.addEventListener('click', (e) => {
+      const thumb = e.target.closest('.attachment-thumb');
+      if (thumb) {
+        openImageModal(thumb.src, thumb.dataset.name || '');
+      }
+    });
+  }
 }
 
 // ========== 启动 ==========
