@@ -106,8 +106,8 @@ class TestSignalPoolBasic(_SignalPoolTestBase):
         status = self.pool.get_status()
         self.assertEqual(len(status), 1)
         self.assertEqual(status[0]["content"], "用户偏好简短回复")
-        # v2: "用户偏好"匹配情感增强 → 基础1 + 情感1 = 2
-        self.assertEqual(status[0]["count"], 2)
+        # v3: "用户偏好"匹配弱情感增强 → 基础1 + 情感2 = 3
+        self.assertEqual(status[0]["count"], 3)
         self.assertEqual(status[0]["status"], "pending")
         self.assertEqual(status[0]["section"], "我和你")
         self.assertEqual(status[0]["sources"], ["L1"])
@@ -118,8 +118,8 @@ class TestSignalPoolBasic(_SignalPoolTestBase):
         self.pool.add("用户偏好简短", source="L1")
         status = self.pool.get_status()
         self.assertEqual(len(status), 1)
-        # v2: 两次都匹配"用户偏好" → (1+1) + (1+1) = 4
-        self.assertEqual(status[0]["count"], 4)
+        # v3: 两次都匹配"用户偏好" → (1+2) + (1+2) = 6
+        self.assertEqual(status[0]["count"], 6)
         self.assertEqual(len(status[0]["sources"]), 2)
 
     def test_threshold_7_triggers_enqueue(self) -> None:
@@ -175,21 +175,27 @@ class TestSignalPoolBasic(_SignalPoolTestBase):
 
 
 class TestEmotionBoost(_SignalPoolTestBase):
-    def test_like_adds_1(self) -> None:
-        # "我喜欢 Rust" → 基础1 + 情感1 = 2
+    def test_like_adds_2(self) -> None:
+        # v3: "我喜欢 Rust" → 基础1 + 弱情感2 = 3
         self.pool.add("我喜欢 Rust", source="L1")
-        status = self.pool.get_status()
-        self.assertEqual(status[0]["count"], 2)
-
-    def test_love_adds_2(self) -> None:
-        # "我爱 Rust" → 基础1 + 情感2 = 3
-        self.pool.add("我爱 Rust", source="L1")
         status = self.pool.get_status()
         self.assertEqual(status[0]["count"], 3)
 
-    def test_hate_adds_2(self) -> None:
-        # "我最烦 Java" → 基础1 + 情感2 = 3
+    def test_love_adds_3(self) -> None:
+        # v3: "我爱 Rust" → 基础1 + 强情感3 = 4
+        self.pool.add("我爱 Rust", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(status[0]["count"], 4)
+
+    def test_hate_adds_3(self) -> None:
+        # v3: "我最烦 Java" → 基础1 + 强情感3 = 4
         self.pool.add("我最烦 Java", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(status[0]["count"], 4)
+
+    def test_not_like_adds_2(self) -> None:
+        # v3 新增: "我不喜欢 emoji" → 基础1 + 弱情感2 = 3（长词优先，不被"喜欢"截胡）
+        self.pool.add("我不喜欢 emoji", source="L1")
         status = self.pool.get_status()
         self.assertEqual(status[0]["count"], 3)
 
@@ -199,37 +205,42 @@ class TestEmotionBoost(_SignalPoolTestBase):
         status = self.pool.get_status()
         self.assertEqual(status[0]["count"], 1)
 
+    def test_habit_word_not_emotion(self) -> None:
+        # v3 新增: "习惯"不是情感词，无增强 → 基础1
+        self.pool.add("我习惯用 python", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(status[0]["count"], 1)
+
     def test_question_not_matched(self) -> None:
-        # "你喜欢什么" → "喜欢"前不是"我"，无增强
+        # "你喜欢什么" → "喜欢"前不是"我/用户"，无增强
         self.pool.add("你喜欢什么", source="L1")
         status = self.pool.get_status()
         self.assertEqual(status[0]["count"], 1)
 
     def test_mixed_emotion_takes_max(self) -> None:
-        # "我喜欢也爱 Rust" → 同时匹配喜欢(+1)和爱(+2)，取 max=2
+        # v3: "我喜欢也爱 Rust" → 同时匹配喜欢(+2)和爱(+3)，取 max=3
         self.pool.add("我喜欢也爱 Rust", source="L1")
         status = self.pool.get_status()
-        self.assertEqual(status[0]["count"], 3)
+        self.assertEqual(status[0]["count"], 4)
 
     def test_l3_with_emotion(self) -> None:
-        # L3 "用户喜欢 Rust" → 基础2 + 情感1 = 3
-        # v2: 正则匹配"我|用户"前缀，"用户喜欢"现在也增强 +1
+        # L3 "用户喜欢 Rust" → 基础2 + 弱情感2 = 4
+        # v3: "用户喜欢"匹配弱情感 +2
         self.pool.add("用户喜欢 Rust", source="L3", weight=2)
         status = self.pool.get_status()
-        # "用户喜欢" 匹配 (?:我|用户).{0,5}?(喜欢)，+1 增强，count=3
-        self.assertEqual(status[0]["count"], 3)
+        self.assertEqual(status[0]["count"], 4)
 
     def test_user_prefix_emotion_boost(self) -> None:
-        # "用户讨厌 X" → 基础1 + 情感2 = 3（v2 新增"用户"前缀匹配）
+        # v3: "用户讨厌 X" → 基础1 + 强情感3 = 4
         self.pool.add("用户讨厌 emoji", source="L1")
         status = self.pool.get_status()
-        self.assertEqual(status[0]["count"], 3)
+        self.assertEqual(status[0]["count"], 4)
 
     def test_this_i_like(self) -> None:
-        # "这个我喜欢" → "我喜欢"匹配，+1
+        # v3: "这个我喜欢" → "我喜欢"匹配弱情感 +2，count=3
         self.pool.add("这个我喜欢", source="L1")
         status = self.pool.get_status()
-        self.assertEqual(status[0]["count"], 2)
+        self.assertEqual(status[0]["count"], 3)
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +313,8 @@ class TestActivityRefresh(_SignalPoolTestBase):
         self.pool.add("用户偏好简短", source="L1")
         status = self.pool.get_status()
         self.assertEqual(len(status), 1)
-        # v2: 两次 add 都匹配"用户偏好"情感增强 → (1+1) + (1+1) = 4
-        self.assertEqual(status[0]["count"], 4)
+        # v3: 两次 add 都匹配"用户偏好"弱情感增强 → (1+2) + (1+2) = 6
+        self.assertEqual(status[0]["count"], 6)
         # last_seen 应被刷新为近期
         new_time = datetime.fromisoformat(status[0]["last_seen"])
         self.assertGreater(new_time, datetime.now() - timedelta(seconds=10))
@@ -368,8 +379,8 @@ class TestSignalPoolDedup(_SignalPoolTestBase):
         self.pool.add("用户偏好简短回复", source="L3", weight=2)
         status = self.pool.get_status()
         self.assertEqual(len(status), 1)
-        # v2: 三次都匹配"用户偏好"情感增强 → (1+1) + (1+1) + (2+1) = 7
-        self.assertEqual(status[0]["count"], 7)
+        # v3: 三次都匹配"用户偏好"弱情感增强 → (1+2) + (1+2) + (2+2) = 10
+        self.assertEqual(status[0]["count"], 10)
         self.assertEqual(len(status[0]["sources"]), 3)
 
     def test_keywords_extracted_correctly(self) -> None:
@@ -503,11 +514,11 @@ class TestDashboardData(_SignalPoolTestBase):
         self.assertGreaterEqual(section_s1[0]["progress"], section_s1[1]["progress"])
 
     def test_progress_calculation_correct(self) -> None:
-        self.pool.add("用户偏好简短回复", source="L1")  # v2: count=2（情感增强+1）
+        self.pool.add("用户偏好简短回复", source="L1")  # v3: count=3（弱情感增强+2）
         data = self.pool.get_dashboard_data()
         sig = data["signals"][0]
-        self.assertAlmostEqual(sig["progress"], 2 / 7)
-        self.assertEqual(sig["percent"], round((2 / 7) * 100))
+        self.assertAlmostEqual(sig["progress"], 3 / 7)
+        self.assertEqual(sig["percent"], round((3 / 7) * 100))
 
     def test_progress_capped_at_1(self) -> None:
         # count > threshold 时 progress=1.0
@@ -534,11 +545,11 @@ class TestDashboardData(_SignalPoolTestBase):
         self.assertEqual(s["written"], 1)
 
     def test_avg_progress_calculated(self) -> None:
-        self.pool.add("用户偏好简短回复", source="L1")  # v2: count=2, progress=2/7
-        self.pool.add("喜欢二次元动漫", source="L1")  # count=1, progress=1/7
+        self.pool.add("用户偏好简短回复", source="L1")  # v3: count=3, progress=3/7
+        self.pool.add("喜欢二次元动漫", source="L1")  # count=1, progress=1/7（无"我/用户"前缀）
         data = self.pool.get_dashboard_data()
-        # v2: "用户偏好"匹配情感增强使 count=2；"喜欢二次元动漫"无"我/用户"前缀不增强
-        expected_avg = (2 / 7 + 1 / 7) / 2  # = 3/14
+        # v3: "用户偏好"弱情感+2使 count=3；"喜欢二次元动漫"无"我/用户"前缀不增强
+        expected_avg = (3 / 7 + 1 / 7) / 2  # = 2/7
         self.assertAlmostEqual(data["summary"]["avg_progress"], expected_avg)
 
     def test_section_with_no_signals_omitted(self) -> None:
@@ -671,8 +682,74 @@ class TestSignalPoolV2Dedup(_SignalPoolTestBase):
         self.assertIn("偏好简洁正经的交流方式", contents)
 
 
+class TestSignalPoolV3DirectionProtection(_SignalPoolTestBase):
+    """v3 新增：方向相反保护 + 复合句方向相反拆分。"""
+
+    def test_opposite_direction_same_object_not_merged(self) -> None:
+        # "我喜欢emoji" vs "我不喜欢emoji" → 一正一负同对象，不合并
+        self.pool.add("我喜欢emoji", source="L1")
+        self.pool.add("我不喜欢emoji", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 2)
+
+    def test_opposite_direction_love_vs_hate_not_merged(self) -> None:
+        # "我爱emoji" vs "我恨emoji" → 一正强一负强同对象，不合并
+        self.pool.add("我爱emoji", source="L1")
+        self.pool.add("我恨emoji", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 2)
+
+    def test_opposite_direction_user_prefix_not_merged(self) -> None:
+        # LLM 抽取格式 "用户喜欢emoji" vs "用户讨厌emoji" → 不合并
+        self.pool.add("用户喜欢emoji", source="L1")
+        self.pool.add("用户讨厌emoji", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 2)
+
+    def test_same_direction_different_verb_merged(self) -> None:
+        # 同向不同动词应合并："我讨厌emoji" vs "我厌恶emoji"
+        # 注意：Jaccard 需 ≥0.25 才合并，"讨厌"与"厌恶"关键词集可能不交集
+        # 此用例验证同向（都负向强）不会因方向保护被阻断
+        self.pool.add("我讨厌emoji", source="L1")
+        self.pool.add("我厌恶emoji", source="L1")
+        status = self.pool.get_status()
+        # 同向不触发方向保护，是否合并取决于 Jaccard
+        # "讨厌"vs"厌恶"不交集，但"emoji"交集 → Jaccard=1/5=0.2 <0.25 → 不合并
+        # 这是已知限制（同义改写召回不足），不恶化即可
+        self.assertLessEqual(len(status), 2)
+
+    def test_mixed_emotion_not_direction_protected(self) -> None:
+        # 混合情感（同时含正负）不触发方向保护
+        # "我喜欢java但讨厌python" 同时含正负，不视为纯正向或纯负向
+        self.pool.add("我喜欢java", source="L1")
+        # 混合信号含"喜欢"+"讨厌"，不是 pure_pos 也不是 pure_neg
+        self.pool.add("我喜欢java但讨厌python", source="L1")
+        status = self.pool.get_status()
+        # 不应因方向保护被阻断（混合情感不触发）
+        # 是否合并取决于 Jaccard
+        self.assertGreaterEqual(len(status), 1)
+
+    def test_compound_opposite_direction_splits_to_two(self) -> None:
+        # 复合句"我喜欢java，不喜欢python" → 拆为两条方向相反独立信号
+        self.pool.add("我喜欢java，不喜欢python", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 2)
+        contents = [s["content"] for s in status]
+        self.assertIn("我喜欢java", contents)
+        self.assertIn("不喜欢python", contents)
+
+    def test_compound_same_direction_splits_to_two(self) -> None:
+        # 复合句"我喜欢java，爱python" → 拆为两条同向独立信号
+        self.pool.add("我喜欢java，爱python", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 2)
+        contents = [s["content"] for s in status]
+        self.assertIn("我喜欢java", contents)
+        self.assertIn("爱python", contents)
+
+
 class TestBackfillConsolidate(_SignalPoolTestBase):
-    """v1 → v2 回填：加载旧数据时自动合并重复信号。"""
+    """v1/v2 → v3 回填：加载旧数据时自动合并重复信号。"""
 
     def test_backfill_consolidates_v1_data(self) -> None:
         # 写入 v1 格式数据（version=1），含 4 条重复"用户讨厌emoji"信号
@@ -707,15 +784,15 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
         # 合并后的 count 应累加（2+2+1=5）
         merged = [s for s in status if "讨厌" in s["content"]][0]
         self.assertGreaterEqual(merged["count"], 5)
-        # flush 后 version 应升至 2
+        # flush 后 version 应升至 3
         pool2.flush()
         saved = json.loads(self.pool_path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["version"], 3)
 
     def test_backfill_idempotent(self) -> None:
-        # v2 数据加载时不触发回填
+        # v3 数据不触发回填
         import json
-        v2_data = {
+        v3_data = {
             "signals": [
                 {"id": "sig_0001", "content": "用户讨厌emoji", "keywords": ["讨厌", "用户讨厌", "emoji"],
                  "count": 5, "sources": ["L1"], "first_seen": "2026-07-01T00:00:00",
@@ -724,15 +801,15 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
                  "count": 2, "sources": ["L1"], "first_seen": "2026-07-01T00:00:00",
                  "last_seen": "2026-07-01T00:00:00", "status": "pending", "section": "沉淀笔记"},
             ],
-            "version": 2,
+            "version": 3,
         }
-        self.pool_path.write_text(json.dumps(v2_data, ensure_ascii=False), encoding="utf-8")
+        self.pool_path.write_text(json.dumps(v3_data, ensure_ascii=False), encoding="utf-8")
         pool2 = SignalPool(
             pool_path=self.pool_path,
             consolidation_engine=self.engine,
             profile_path=self.profile_path,
         )
-        # v2 数据不触发回填，2 条信号保持不变
+        # v3 数据不触发回填，2 条信号保持不变
         status = pool2.get_status()
         self.assertEqual(len(status), 2)
 

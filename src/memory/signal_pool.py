@@ -20,7 +20,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from .consolidation import ConsolidationEngine
@@ -85,12 +85,78 @@ def _parse_iso(s: str) -> datetime:
 
 
 # 情感动词词表（独立抽取为 token，提升"喜欢 X vs 讨厌 X"区分度）
-# 用于 _extract_keywords 第 1 步 + _find_similar 对象区分保护
-_EMOTION_VERBS: Set[str] = {
-    "喜欢", "偏好", "倾向", "习惯", "常用", "主要用",
-    "爱", "最爱", "讨厌", "最烦", "恨", "受不了", "极其", "特别",
-    "希望", "接受", "要求", "不爱", "不喜欢", "不想",
+# 用于 _extract_keywords 第 1 步 + _find_similar 对象区分保护 + 方向相反保护
+#
+# 按情感强度 + 方向分四类：
+# - 正向强（+3）：爱/最爱/酷爱/痴迷/沉迷/狂热/崇尚/钟爱
+# - 正向弱（+2）：喜欢/偏好/倾向/看好/认可/偏爱
+# - 负向强（+3）：讨厌/最烦/恨/受不了/厌恶/反感/嫌弃/排斥/憎恶/烦死/鄙视/痛恨
+# - 负向弱（+2）：不爱/不喜欢/不想/不要/拒绝/回避/无感
+#
+# 修复 v2 bug：原词表把"极其/特别"（程度副词）、"希望/接受/要求"（非情感词）混入，
+# 且单一集合导致 _extract_keywords 子串截胡（"不喜欢"含"喜欢"被双重计数）。
+# 拆分后 _find_similar 可通过 _POSITIVE_EMOTIONS/_NEGATIVE_EMOTIONS 判断方向，
+# 防止"我喜欢 X" 与 "我不喜欢 X" 误合并。
+_POSITIVE_STRONG: Set[str] = {
+    "爱", "最爱", "酷爱", "痴迷", "沉迷", "狂热", "崇尚", "钟爱",
 }
+_POSITIVE_WEAK: Set[str] = {
+    "喜欢", "偏好", "倾向", "看好", "认可", "偏爱",
+}
+_NEGATIVE_STRONG: Set[str] = {
+    "讨厌", "最烦", "恨", "受不了", "厌恶", "反感",
+    "嫌弃", "排斥", "憎恶", "烦死", "鄙视", "痛恨",
+}
+_NEGATIVE_WEAK: Set[str] = {
+    "不爱", "不喜欢", "不想", "不要", "拒绝", "回避", "无感",
+}
+_EMOTION_VERBS: Set[str] = (
+    _POSITIVE_WEAK | _POSITIVE_STRONG
+    | _NEGATIVE_WEAK | _NEGATIVE_STRONG
+)
+# 方向集合：用于 _find_similar 方向相反保护
+_POSITIVE_EMOTIONS: Set[str] = _POSITIVE_WEAK | _POSITIVE_STRONG
+_NEGATIVE_EMOTIONS: Set[str] = _NEGATIVE_WEAK | _NEGATIVE_STRONG
+
+# 情感权重表（强+3 / 弱+2）
+# 用于 _detect_emotion_boost 计算额外权重
+_EMOTION_WEIGHTS: Dict[str, int] = {
+    # 强情感（+3）
+    "讨厌": 3, "最烦": 3, "恨": 3, "受不了": 3, "厌恶": 3, "反感": 3,
+    "嫌弃": 3, "排斥": 3, "憎恶": 3, "烦死": 3, "鄙视": 3, "痛恨": 3,
+    "爱": 3, "最爱": 3, "酷爱": 3, "痴迷": 3, "沉迷": 3, "狂热": 3,
+    "崇尚": 3, "钟爱": 3,
+    # 弱情感（+2）
+    "不爱": 2, "不喜欢": 2, "不想": 2, "不要": 2, "拒绝": 2, "回避": 2, "无感": 2,
+    "喜欢": 2, "偏好": 2, "倾向": 2, "看好": 2, "认可": 2, "偏爱": 2,
+}
+# 按长度降序排列，模块级常量避免每次调用重算
+_EMOTION_VERBS_SORTED: List[str] = sorted(
+    _EMOTION_WEIGHTS.keys(), key=len, reverse=True
+)
+
+
+def _scan_emotion_verbs(content: str) -> List[Tuple[str, int]]:
+    """扫描 content 中的情感动词，长词优先匹配，返回 [(verb, position), ...]。
+
+    匹配后占用字符区间，短词不在已占用区间重复匹配，避免"不喜欢"被"喜欢"截胡。
+    用于 _extract_keywords（抽取 token）和 _detect_emotion_boost（计算权重）。
+    """
+    matches: List[Tuple[str, int]] = []
+    occupied: List[Tuple[int, int]] = []
+    for verb in _EMOTION_VERBS_SORTED:
+        start = 0
+        while True:
+            idx = content.find(verb, start)
+            if idx == -1:
+                break
+            end = idx + len(verb)
+            # 检查是否与已匹配区间重叠：双否定等价"无重叠才占用"
+            if not any(not (end <= s or idx >= e) for s, e in occupied):
+                matches.append((verb, idx))
+                occupied.append((idx, end))
+            start = idx + 1
+    return matches
 
 # 复合句拆分正则：在中文/英文标点处切分（逗号/顿号/分号/句号/感叹/问号/换行）
 _ATOMIC_SPLIT_RE = re.compile(r"[，,、；;。！!？?\n]+")
@@ -131,15 +197,15 @@ def _split_atomic(content: str) -> List[str]:
 def _extract_keywords(content: str) -> Set[str]:
     """从文本提取关键词集合（用于 Jaccard 去重匹配）。
 
-    策略（v2，移除 2 字滑窗噪音）：
-    - 情感动词：扫描 _EMOTION_VERBS 词表，独立成 token（提升"喜欢 X vs 讨厌 X"区分度）
+    策略（v3，长词优先匹配）：
+    - 情感动词：通过 _scan_emotion_verbs 长词优先匹配，避免子串截胡
+      （"不喜欢"含"喜欢"不再被双重计数）
     - 中文整段：连续汉字段（长度≥2）作为整段关键词，过滤停用词
     - 4 字滑窗：长段（≥6 字）补 4 字子串，捕捉"用户讨厌"这类核心短语
     - 英文：连续字母段（长度≥2），lowercase，过滤停用词
 
-    v1 → v2 变更：移除 2 字滑窗（噪音过大，稀释 Jaccard），
-    改用 4 字滑窗 + 情感动词独立 token，配合 DEDUP_THRESHOLD=0.25
-    与 _find_similar 对象区分保护。
+    v2 → v3 变更：情感动词抽取改用 _scan_emotion_verbs（长词优先 + 区间占用），
+    防止"不喜欢"被"喜欢"截胡导致正负方向未区分。
 
     参数:
         content: 原始文本。
@@ -152,10 +218,9 @@ def _extract_keywords(content: str) -> Set[str]:
 
     keywords: Set[str] = set()
 
-    # 1. 情感动词：扫描词表中每个词是否出现（独立 token）
-    for verb in _EMOTION_VERBS:
-        if verb in content:
-            keywords.add(verb)
+    # 1. 情感动词：长词优先匹配，避免子串截胡
+    for verb, _idx in _scan_emotion_verbs(content):
+        keywords.add(verb)
 
     # 2. 中文整段（连续汉字，len≥2，过滤停用词）+ 4 字滑窗
     for match in re.finditer(r"[\u4e00-\u9fa5]+", content):
@@ -254,13 +319,10 @@ class SignalPool:
 
     THRESHOLD = 7  # 统一阈值，所有信号平等
 
-    # 情感强度增强器：检测"我/用户+情感词"模式，额外加权
-    # 弱情感（喜欢/偏好/习惯）+1，强情感（爱/讨厌/恨）+2
+    # 情感强度增强器：通过 _scan_emotion_verbs 长词优先匹配 + "我/用户"前缀检查
+    # 弱情感（喜欢/偏好/不喜欢/不爱 等）+2，强情感（爱/讨厌/恨/厌恶 等）+3
     # 匹配"我喜欢X"与 LLM 抽取的"用户讨厌X"两种前缀
-    _EMOTION_BOOST_PATTERNS: Dict[Any, int] = {
-        re.compile(r"(?:我|用户).{0,5}?(喜欢|偏好|倾向|习惯|常用|主要用)"): 1,
-        re.compile(r"(?:我|用户).{0,5}?(爱|最爱|讨厌|最烦|恨|受不了|极其|特别)"): 2,
-    }
+    # v3: 删除 _EMOTION_BOOST_PATTERNS dict，改用 _scan_emotion_verbs 避免子串截胡
 
     # Jaccard 相似度阈值，≥此值视为重复信号
     # v2: 4 字窗 + 情感动词独立 token 召回提升，配合 _find_similar 对象区分保护
@@ -454,16 +516,23 @@ class SignalPool:
     def _detect_emotion_boost(self, content: str) -> int:
         """检测情感强度词，返回额外权重。取最高值不叠加。
 
-        匹配模式：r"(?:我|用户).{0,5}?(情感词)"，要求"我"或"用户"前缀且间距 ≤5 字。
-        - "我喜欢 Rust" → +1
-        - "用户讨厌 emoji" → +2
+        v3: 改用 _scan_emotion_verbs 长词优先匹配，避免子串截胡。
+        匹配模式：要求"我"或"用户"前缀且间距 ≤5 字。
+        - "我喜欢 Rust" → +2（弱情感）
+        - "用户讨厌 emoji" → +3（强情感）
+        - "我不喜欢 emoji" → +2（弱情感，"不喜欢"长词优先匹配，不再被"喜欢"截胡）
         - "你喜欢什么" → 0（"喜欢"前不是"我/用户"）
-        - "这个我喜欢" → +1（"我喜欢"匹配）
+        - "这个我喜欢" → +2（"我喜欢"匹配）
+
+        prefix 长度 7：覆盖"用户"+5字 或 "我"+6字。
         """
         boost = 0
-        for pattern, weight in self._EMOTION_BOOST_PATTERNS.items():
-            if pattern.search(content):
-                boost = max(boost, weight)
+        for verb, idx in _scan_emotion_verbs(content):
+            # prefix 长度 7：覆盖"用户"+5字 或 "我"+6字
+            prefix_start = max(0, idx - 7)
+            prefix = content[prefix_start:idx]
+            if re.search(r"(?:我|用户).{0,5}$", prefix):
+                boost = max(boost, _EMOTION_WEIGHTS[verb])
         return boost
 
     # ------------------------------------------------------------------
@@ -475,6 +544,10 @@ class SignalPool:
         对象区分保护：两信号含相同情感动词但英文对象完全不交集时不合并
         （防止"喜欢rust" vs "喜欢go" 误合并）。
 
+        方向相反保护：一边纯正、一边纯负，且同对象有交集 → 不合并
+        （防止"我喜欢emoji" vs "我不喜欢emoji" 误合并）。
+        混合情感（同时含正负）不触发保护，避免误判。
+
         参数:
             new_keywords: 新信号的关键词集合。
 
@@ -485,6 +558,11 @@ class SignalPool:
             return None
         new_verbs = new_keywords & _EMOTION_VERBS
         new_objs = {k for k in new_keywords if k.isascii() and k not in _EMOTION_VERBS}
+        # 预计算新信号的方向纯正/纯负（用于方向相反保护）
+        new_pos = new_verbs & _POSITIVE_EMOTIONS
+        new_neg = new_verbs & _NEGATIVE_EMOTIONS
+        new_pure_pos = bool(new_pos and not new_neg)
+        new_pure_neg = bool(new_neg and not new_pos)
         for signal in self._signals:
             if signal.status == "written":
                 continue
@@ -497,24 +575,53 @@ class SignalPool:
             if new_verbs and sig_verbs and (new_verbs & sig_verbs):
                 if new_objs and sig_objs and not (new_objs & sig_objs):
                     continue
+            # 方向相反保护：一边纯正、一边纯负，且同对象有交集 → 不合并
+            sig_pos = sig_verbs & _POSITIVE_EMOTIONS
+            sig_neg = sig_verbs & _NEGATIVE_EMOTIONS
+            sig_pure_pos = bool(sig_pos and not sig_neg)
+            sig_pure_neg = bool(sig_neg and not sig_pos)
+            if (new_pure_pos and sig_pure_neg) or (new_pure_neg and sig_pure_pos):
+                if new_objs and sig_objs and (new_objs & sig_objs):
+                    continue
             jaccard = _jaccard(new_keywords, sig_kw)
             if jaccard >= self.DEDUP_THRESHOLD:
                 return signal
         return None
 
     def _has_distinct_objects(self, a: Set[str], b: Set[str]) -> bool:
-        """两信号都含情感动词但英文对象完全不交集 → 视为不同对象，不合并。
+        """两信号应视为不同对象不合并。返回 True 表示不应合并。
 
-        用于 _backfill_consolidate 合并前的预检查，防止"喜欢rust" vs "喜欢go"
-        在回填阶段被误合并（_find_similar 的对象区分保护仅在 add 路径生效）。
+        用于 _backfill_consolidate 合并前的预检查，防止以下情况误合并：
+        - 对象区分：两信号含相同情感动词但英文对象完全不交集（"喜欢rust" vs "喜欢go"）
+        - 方向相反：一边纯正、一边纯负，且同对象有交集（"我喜欢emoji" vs "我不喜欢emoji"）
+
+        混合情感（同时含正负）不视为方向相反，避免误判。
         """
         a_verbs = a & _EMOTION_VERBS
         b_verbs = b & _EMOTION_VERBS
-        if not (a_verbs and b_verbs and (a_verbs & b_verbs)):
+        if not (a_verbs and b_verbs):
             return False
-        a_objs = {k for k in a if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
-        b_objs = {k for k in b if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
-        return bool(a_objs and b_objs and not (a_objs & b_objs))
+        # 对象区分：共同情感动词但英文对象完全不交集 → 不合并
+        if a_verbs & b_verbs:
+            a_objs = {k for k in a if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
+            b_objs = {k for k in b if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
+            if a_objs and b_objs and not (a_objs & b_objs):
+                return True
+        # 方向相反：一边纯正、一边纯负，且同对象有交集 → 不合并
+        a_pos = a_verbs & _POSITIVE_EMOTIONS
+        a_neg = a_verbs & _NEGATIVE_EMOTIONS
+        b_pos = b_verbs & _POSITIVE_EMOTIONS
+        b_neg = b_verbs & _NEGATIVE_EMOTIONS
+        a_pure_pos = bool(a_pos and not a_neg)
+        a_pure_neg = bool(a_neg and not a_pos)
+        b_pure_pos = bool(b_pos and not b_neg)
+        b_pure_neg = bool(b_neg and not b_pos)
+        if (a_pure_pos and b_pure_neg) or (a_pure_neg and b_pure_pos):
+            a_objs = {k for k in a if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
+            b_objs = {k for k in b if k.isascii() and k not in _EMOTION_VERBS and len(k) >= 2}
+            if a_objs and b_objs and (a_objs & b_objs):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # 阈值触发
@@ -703,8 +810,9 @@ class SignalPool:
     def _load(self) -> None:
         """从 JSON 文件加载信号池。文件不存在或解析失败时初始化空池。
 
-        v1 → v2 回填：version < 2 时用新抽取器重算 keywords 并合并重复信号。
-        幂等：v2 数据加载时 version >= 2 不会触发回填。
+        v1/v2 → v3 回填：version < 3 时用新抽取器（长词优先匹配）重算 keywords
+        并合并重复信号（含方向相反保护）。
+        幂等：v3 数据加载时 version >= 3 不会触发回填。
         """
         try:
             if not self._pool_path.exists():
@@ -726,8 +834,9 @@ class SignalPool:
                     except ValueError:
                         pass
             self._id_counter = max_num
-            # v1 → v2 回填：重新抽取 keywords + 合并重复信号
-            if version < 2:
+            # v1/v2 → v3 回填：重新抽取 keywords（去除旧子串重复如"不喜欢"+"喜欢"并存）
+            # + 合并重复信号（含新方向相反保护）
+            if version < 3:
                 self._backfill_consolidate()
             logger.info("信号池已加载: %d 条信号 (v%d)", len(self._signals), version)
         except (OSError, json.JSONDecodeError) as e:
@@ -736,10 +845,13 @@ class SignalPool:
             self._id_counter = 0
 
     def _backfill_consolidate(self) -> None:
-        """v1 → v2 回填：重新抽取 keywords + 合并重复信号。
+        """v1/v2 → v3 回填：重新抽取 keywords + 合并重复信号。
 
         在 _load（__init__）中调用，此时单线程，_save_debounced 内部加锁安全。
-        幂等：v2 数据加载时 version >= 2 不会触发本方法。
+        幂等：v3 数据加载时 version >= 3 不会触发本方法。
+
+        v3 变更：_extract_keywords 改用 _scan_emotion_verbs 长词优先匹配，
+        _has_distinct_objects 新增方向相反保护。
         """
         for s in self._signals:
             s.keywords = sorted(_extract_keywords(s.content))
@@ -790,7 +902,7 @@ class SignalPool:
         with self._lock:
             data = {
                 "signals": [s.to_dict() for s in self._signals],
-                "version": 2,
+                "version": 3,
             }
         try:
             self._pool_path.parent.mkdir(parents=True, exist_ok=True)

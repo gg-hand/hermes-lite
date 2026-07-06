@@ -25,6 +25,10 @@ function renderSettingsForm(config) {
   const tools = config.tools || {};
   const storage = config.storage || {};
   const files = config.files || {};
+  const ocrCfg = (files.ocr) || {};
+  const paddleCfg = ocrCfg.paddle || {};
+  const tesseractCfg = ocrCfg.tesseract || {};
+  const visionCfg = ocrCfg.vision_llm || {};
   const security = config.security || {};
   const interrupt = config.interrupt || {};
   const securityEnabled = security.enabled === true || security.enabled === 'true';
@@ -37,8 +41,14 @@ function renderSettingsForm(config) {
   const inputScanEnabled = inputScanCfg.enabled !== false;
   const sanitizerEnabled = sanitizerCfg.enabled !== false;
   const outputFilterEnabled = outputFilterCfg.enabled !== false;
+  const readPaths = security.read_paths || {};
+  const readPathsMode = readPaths.mode || 'deny_first';
+  const readPathsDeny = Array.isArray(readPaths.deny) ? readPaths.deny.join('\n') : '';
+  const readPathsAllow = Array.isArray(readPaths.allow) ? readPaths.allow.join('\n') : '';
+  const readPathsWs = Array.isArray(readPaths.workspace_dirs) ? readPaths.workspace_dirs.join('\n') : '';
 
-  settingsBodyEl.innerHTML = `
+  // ---------- 基础分类 sections ----------
+  const secLLM = `
     <div class="form-section">
       <div class="form-section-title">LLM 配置<span class="config-tag restart">需重启</span></div>
       <div class="form-row">
@@ -79,8 +89,9 @@ function renderSettingsForm(config) {
         <label>Consolidation API Key</label>
         <input class="form-input" type="password" data-cfg="llm.consolidation_api_key" value="${llm.consolidation_api_key || ''}" placeholder="留空则同主对话 Key">
       </div>
-    </div>
+    </div>`;
 
+  const secMemory = `
     <div class="form-section">
       <div class="form-section-title">记忆系统<span class="config-tag hot">即时生效</span></div>
       <div class="form-row">
@@ -104,8 +115,9 @@ function renderSettingsForm(config) {
           <input class="form-input" type="number" step="0.01" data-cfg="memory.dedup_similarity_threshold" value="${memory.dedup_similarity_threshold || 0.85}">
         </div>
       </div>
-    </div>
+    </div>`;
 
+  const secTools = `
     <div class="form-section">
       <div class="form-section-title">工具配置<span class="config-tag hot">即时生效</span></div>
       <div class="form-row">
@@ -119,16 +131,10 @@ function renderSettingsForm(config) {
           <input class="form-input" type="number" data-cfg="tools.max_react_loops" value="${tools.max_react_loops || 10}">
         </div>
       </div>
-    </div>
+    </div>`;
 
-    <div class="form-section">
-      <div class="form-section-title">存储路径<span class="config-tag restart">需重启</span></div>
-      <div class="form-group">
-        <label>SQLite 路径</label>
-        <input class="form-input" data-cfg="storage.sqlite_path" value="${storage.sqlite_path || 'data/sessions.db'}">
-      </div>
-    </div>
-
+  // ---------- 安全分类 sections ----------
+  const secSecurity = `
     <div class="form-section">
       <div class="form-section-title">安全配置</div>
       <div class="form-group">
@@ -142,8 +148,9 @@ function renderSettingsForm(config) {
           当前规则数：${rulesCount} 条。规则配置需编辑 config.yaml 后重启服务生效，暂不支持页面编辑。
         </div>
       </div>
-    </div>
+    </div>`;
 
+  const secGuardrail = `
     <div class="form-section">
       <div class="form-section-title">防护系统<span class="config-tag hot">即时生效</span></div>
       <div class="switch-row">
@@ -174,8 +181,47 @@ function renderSettingsForm(config) {
         </div>
         <label class="switch"><input type="checkbox" data-guardrail="guardrails.output_filter.enabled" ${outputFilterEnabled?'checked':''}><span class="slider"></span></label>
       </div>
-    </div>
+    </div>`;
 
+  const secReadPaths = `
+    <div class="form-section">
+      <div class="form-section-title">路径策略<span class="config-tag hot">即时生效</span></div>
+      <div class="form-group">
+        <label>拦截模式</label>
+        <select class="form-select" data-cfg="security.read_paths.mode">
+          <option value="deny_first" ${readPathsMode === 'deny_first' ? 'selected' : ''}>deny_first（黑名单优先，未列出默认允许）</option>
+          <option value="whitelist_only" ${readPathsMode === 'whitelist_only' ? 'selected' : ''}>whitelist_only（严格白名单，未列出默认拒绝）</option>
+        </select>
+        <div class="hint">对 file_read/file_listdir/file_glob/file_grep/file_query 生效，热更新即时生效</div>
+      </div>
+      <div class="form-group">
+        <label>工作空间目录<span class="config-tag hot">即时生效</span></label>
+        <textarea class="settings-textarea" data-cfg="security.read_paths.workspace_dirs" data-list="true" placeholder="每行一条路径，如 /home/user/myproject">${escapeHtml(readPathsWs)}</textarea>
+        <div class="hint">该目录下文件完全可读，优先级高于黑名单。便于 agent 读取用户项目代码</div>
+      </div>
+      <div class="form-group">
+        <label>黑名单 deny<span class="config-tag hot">即时生效</span></label>
+        <textarea class="settings-textarea" data-cfg="security.read_paths.deny" data-list="true" placeholder="每行一条，如 src/ 或 *.pyc">${escapeHtml(readPathsDeny)}</textarea>
+        <div class="hint">命中即拦截，支持目录前缀(src/)、文件名(config.yaml)和通配(*.pyc)。绝对路径与相对路径均生效</div>
+      </div>
+      <div class="form-group">
+        <label>白名单 allow<span class="config-tag hot">即时生效</span></label>
+        <textarea class="settings-textarea" data-cfg="security.read_paths.allow" data-list="true" placeholder="每行一条，如 data/ 或 web/">${escapeHtml(readPathsAllow)}</textarea>
+        <div class="hint">whitelist_only 模式下仅这些路径可读；deny_first 模式下此项不强制</div>
+      </div>
+    </div>`;
+
+  // ---------- 存储分类 sections ----------
+  const secStorage = `
+    <div class="form-section">
+      <div class="form-section-title">存储路径<span class="config-tag restart">需重启</span></div>
+      <div class="form-group">
+        <label>SQLite 路径</label>
+        <input class="form-input" data-cfg="storage.sqlite_path" value="${storage.sqlite_path || 'data/sessions.db'}">
+      </div>
+    </div>`;
+
+  const secFiles = `
     <div class="form-section">
       <div class="form-section-title">文件上传<span class="config-tag restart">需重启</span></div>
       <div class="form-group">
@@ -220,8 +266,113 @@ function renderSettingsForm(config) {
           <input class="form-input" type="number" data-cfg="files.etl_max_queue" value="${files.etl_max_queue || 100}">
         </div>
       </div>
-    </div>
+    </div>`;
 
+  const secOCR = `
+    <div class="form-section">
+      <div class="form-section-title">OCR 分层配置<span class="config-tag hot">分层降级</span></div>
+      <div class="hint" style="margin-bottom:12px;padding:8px 10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);">
+        图片走 PaddleOCR(L1) → Tesseract+预处理(L2) → 视觉LLM(L3) 三层降级通道，前层失败自动降级到下层
+      </div>
+      <div class="form-group">
+        <label>主引擎选择<span class="config-tag restart">需重启</span></label>
+        <select class="form-select" data-cfg="files.ocr.primary_engine">
+          <option value="paddle" ${ocrCfg.primary_engine === 'paddle' ? 'selected' : ''}>PaddleOCR（中文优先）</option>
+          <option value="tesseract" ${ocrCfg.primary_engine === 'tesseract' ? 'selected' : ''}>Tesseract（轻量兜底）</option>
+          <option value="none" ${ocrCfg.primary_engine === 'none' ? 'selected' : ''}>none（禁用 OCR）</option>
+        </select>
+        <div class="hint">缺依赖时自动降级；切换主引擎需重启重建 PaddleOCR 实例</div>
+      </div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">PaddleOCR（L1 主引擎）</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>语言<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" data-cfg="files.ocr.paddle.lang" value="${paddleCfg.lang || 'ch'}" placeholder="ch / en / korean / japan">
+          <div class="hint">PaddleOCR 模型语言，切换需重启重建实例</div>
+        </div>
+        <div class="form-group">
+          <label>GPU 加速<span class="config-tag restart">需重启</span></label>
+          <select class="form-select" data-cfg="files.ocr.paddle.use_gpu" data-type="boolean">
+            <option value="true" ${paddleCfg.use_gpu === true ? 'selected' : ''}>开启</option>
+            <option value="false" ${paddleCfg.use_gpu === false ? 'selected' : ''}>关闭</option>
+          </select>
+          <div class="hint">需安装 GPU 版 paddlepaddle</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>最低置信度<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" step="0.01" min="0" max="1" data-cfg="files.ocr.paddle.min_confidence" value="${paddleCfg.min_confidence !== undefined ? paddleCfg.min_confidence : 0.6}">
+          <div class="hint">低于此值触发 L2 降级（0-1）</div>
+        </div>
+        <div class="form-group">
+          <label>推理软超时(秒)<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" type="number" data-cfg="files.ocr.paddle.infer_timeout" value="${paddleCfg.infer_timeout !== undefined ? paddleCfg.infer_timeout : 30}">
+          <div class="hint">超时仅记 warning 不强制终止（避免 Lock 死锁）</div>
+        </div>
+      </div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">Tesseract（L2 兜底）</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>语言<span class="config-tag hot">即时生效</span></label>
+          <input class="form-input" data-cfg="files.ocr.tesseract.lang" value="${tesseractCfg.lang || 'chi_sim+eng'}" placeholder="chi_sim+eng / eng / chi_sim">
+          <div class="hint">需提前安装对应语言包；多语言用 + 连接</div>
+        </div>
+        <div class="form-group">
+          <label>预处理<span class="config-tag hot">即时生效</span></label>
+          <select class="form-select" data-cfg="files.ocr.tesseract.preprocess" data-type="boolean">
+            <option value="true" ${tesseractCfg.preprocess !== false ? 'selected' : ''}>开启</option>
+            <option value="false" ${tesseractCfg.preprocess === false ? 'selected' : ''}>关闭</option>
+          </select>
+          <div class="hint">灰度+Otsu 二值化+中值滤波（需 opencv-python）</div>
+        </div>
+      </div>
+      <div class="form-section-title" style="margin-top:16px;font-size:11px">视觉 LLM（L3 终极兜底）</div>
+      <div class="form-group">
+        <label>启用视觉 LLM<span class="config-tag hot">即时生效</span></label>
+        <select class="form-select" data-cfg="files.ocr.vision_llm.enabled" data-type="boolean">
+          <option value="true" ${visionCfg.enabled === true ? 'selected' : ''}>开启</option>
+          <option value="false" ${visionCfg.enabled !== true ? 'selected' : ''}>关闭</option>
+        </select>
+        <div class="hint">开启后 L1/L2 均失败时调用视觉模型识别；当前默认关闭</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Provider<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" data-cfg="files.ocr.vision_llm.provider" value="${visionCfg.provider || 'qwen'}" placeholder="qwen / openai">
+        </div>
+        <div class="form-group">
+          <label>Model<span class="config-tag restart">需重启</span></label>
+          <input class="form-input" data-cfg="files.ocr.vision_llm.model" value="${visionCfg.model || 'qwen-vl-max'}" placeholder="qwen-vl-max / gpt-4o">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>API Key<span class="config-tag restart">需重启</span></label>
+        <input class="form-input" type="password" data-cfg="files.ocr.vision_llm.api_key" value="${visionCfg.api_key || ''}" placeholder="sk-...">
+      </div>
+      <div class="form-group">
+        <label>Base URL<span class="config-tag restart">需重启</span></label>
+        <input class="form-input" data-cfg="files.ocr.vision_llm.base_url" value="${visionCfg.base_url || ''}" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+      </div>
+    </div>`;
+
+  const secStorageAdv = `
+    <div class="form-section">
+      <div class="form-section-title">存储进阶<span class="config-tag restart">需重启</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>会话保留天数</label>
+          <input class="form-input" type="number" data-cfg="storage.session_ttl_days" value="${storage.session_ttl_days || 30}">
+        </div>
+        <div class="form-group">
+          <label>清理间隔(小时)</label>
+          <input class="form-input" type="number" data-cfg="storage.cleanup_interval_hours" value="${storage.cleanup_interval_hours || 24}">
+        </div>
+      </div>
+    </div>`;
+
+  // ---------- 进阶分类 sections ----------
+  const secLLMAdv = `
     <div class="form-section">
       <div class="form-section-title">LLM 进阶<span class="config-tag restart">需重启</span></div>
       <div class="form-row">
@@ -244,8 +395,9 @@ function renderSettingsForm(config) {
           <input class="form-input" type="number" step="0.01" data-cfg="llm.context_threshold" value="${llm.context_threshold || 0.8}">
         </div>
       </div>
-    </div>
+    </div>`;
 
+  const secMemoryAdv = `
     <div class="form-section">
       <div class="form-section-title">记忆系统进阶</div>
       <div class="form-section-title" style="margin-top:16px;font-size:11px">记忆衰减</div>
@@ -303,16 +455,18 @@ function renderSettingsForm(config) {
           <input class="form-input" type="number" data-cfg="memory.condenser.llm_summary_threshold" value="${condenser.llm_summary_threshold || 100000}">
         </div>
       </div>
-    </div>
+    </div>`;
 
+  const secToolsAdv = `
     <div class="form-section">
       <div class="form-section-title">工具进阶</div>
       <div class="form-group">
         <label>Bash 超时(秒)<span class="config-tag hot">即时生效</span></label>
         <input class="form-input" type="number" data-cfg="tools.bash_timeout" value="${tools.bash_timeout || 120}">
       </div>
-    </div>
+    </div>`;
 
+  const secInterrupt = `
     <div class="form-section">
       <div class="form-section-title">流中断<span class="config-tag hot">即时生效</span></div>
       <div class="form-row">
@@ -327,23 +481,46 @@ function renderSettingsForm(config) {
           <div class="hint">超过此时间未检测到断点时强制中断</div>
         </div>
       </div>
-    </div>
+    </div>`;
 
-    <div class="form-section">
-      <div class="form-section-title">存储进阶<span class="config-tag restart">需重启</span></div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>会话保留天数</label>
-          <input class="form-input" type="number" data-cfg="storage.session_ttl_days" value="${storage.session_ttl_days || 30}">
-        </div>
-        <div class="form-group">
-          <label>清理间隔(小时)</label>
-          <input class="form-input" type="number" data-cfg="storage.cleanup_interval_hours" value="${storage.cleanup_interval_hours || 24}">
-        </div>
-      </div>
-    </div>
-  `;
+  // ---------- 分类配置 ----------
+  const categories = [
+    { key: 'basic', label: '基础', icon: '⚙️', sections: [secLLM, secMemory, secTools] },
+    { key: 'security', label: '安全', icon: '🛡️', sections: [secSecurity, secGuardrail, secReadPaths] },
+    { key: 'storage', label: '存储', icon: '💾', sections: [secStorage, secFiles, secOCR, secStorageAdv] },
+    { key: 'advanced', label: '进阶', icon: '🎛️', sections: [secLLMAdv, secMemoryAdv, secToolsAdv, secInterrupt] },
+  ];
+
+  const navHtml = categories.map((c, i) => `
+    <div class="settings-nav-item ${i === 0 ? 'active' : ''}" data-pane="${c.key}">
+      <span class="settings-nav-icon">${c.icon}</span><span>${c.label}</span>
+    </div>`).join('');
+
+  const panesHtml = categories.map((c, i) => `
+    <div class="settings-pane ${i === 0 ? 'active' : ''}" data-pane="${c.key}">${c.sections.join('')}</div>`).join('');
+
+  settingsBodyEl.innerHTML = `
+    <div class="settings-layout">
+      <nav class="settings-nav">${navHtml}</nav>
+      <div class="settings-content">${panesHtml}</div>
+    </div>`;
+
   bindGuardrailToggles();
+  bindSettingsNav();
+}
+
+// ========== 设置导航切换 ==========
+function bindSettingsNav() {
+  document.querySelectorAll('.settings-nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const target = item.dataset.pane;
+      document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+      document.querySelectorAll('.settings-pane').forEach(p => p.classList.remove('active'));
+      item.classList.add('active');
+      const pane = document.querySelector(`.settings-pane[data-pane="${target}"]`);
+      if (pane) pane.classList.add('active');
+    });
+  });
 }
 
 // ========== 保存配置 ==========
@@ -357,16 +534,27 @@ async function saveConfig() {
       obj = obj[path[i]];
     }
     let val = el.value;
-    if (el.type === 'number') val = parseFloat(val) || 0;
-    if (el.dataset.type === 'boolean') val = (val === 'true');
+    // textarea 标记为 data-list 时，按行拆分为数组（空行/空白行过滤）
+    if (el.dataset.list === 'true') {
+      val = val.split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (el.type === 'number') {
+      val = parseFloat(val) || 0;
+    } else if (el.dataset.type === 'boolean') {
+      val = (val === 'true');
+    }
     obj[path[path.length - 1]] = val;
   });
 
   try {
     const data = await api('/config', { method: 'PUT', body: { config: newConfig } });
+    // 同步 currentConfig，保证后续开关切换/再次保存基于最新值
+    currentConfig = newConfig;
     showToast(data.message, data.needs_restart ? '' : 'success');
     if (data.needs_restart) {
       setTimeout(() => showToast('请重启服务使配置生效', ''), 3000);
+    } else {
+      // 路径策略等热更新项即时生效提示
+      setTimeout(() => showToast('配置已即时生效', 'success'), 1500);
     }
     closeModal('settingsModal');
   } catch (e) {
@@ -425,6 +613,14 @@ async function onGuardrailToggle(el) {
   const cfg = nestPath(path, enabled);
   try {
     await api('/config', { method: 'PUT', body: { config: cfg } });
+    // 同步 currentConfig，避免后续 saveConfig 全量保存时用旧值覆盖
+    const parts = path.split('.');
+    let obj = currentConfig;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!obj[parts[i]]) obj[parts[i]] = {};
+      obj = obj[parts[i]];
+    }
+    obj[parts[parts.length - 1]] = enabled;
     const label = path.split('.').pop();
     showToast(`${label} 已${enabled ? '开启' : '关闭'}`, 'success');
   } catch (e) {

@@ -2,89 +2,101 @@
 
 > ⚠️ **个人 Demo 项目** — 本框架为个人学习和实验用途，非生产级产品。
 
-个人长期 AI Agent 框架——面向长期对话与记忆管理的轻量级 Agent 系统。
-
-Hermes Lite 是一个自托管的个人 AI Agent，专注于**长期记忆管理**和**自主工具调用**。它通过三层记忆架构、定期记忆巩固（Consolidation）、前缀缓存优化等技术，实现了低成本、可持续的长期对话能力。
+一个自托管的个人 AI Agent，专注于长期对话、记忆沉淀与自主任务执行。
 
 ---
 
-## 核心特性
+## 功能点
 
-### 三层记忆架构
+### 记忆系统
+- **三层架构**：短期对话缓冲 → ChromaDB 向量长期记忆 → memory.md 持久化画像
+- **记忆巩固**：N 轮自动提取事实，surprise-gating 双阈值过滤后沉淀
+- **历史冷凝**：Masking + LLM Summary 双策略压缩超长上下文
+- **记忆衰减**：近因 × 频率 × 重要性 三因子动态评分
+- **JSONL 持久化**：会话历史落盘，重启可恢复
 
-```
-短期对话 ──→ 历史缓冲 ──→ 长期记忆 ──→ 持久化画像
-HistoryBuffer   Condenser   ChromaDB向量库   memory.md
-```
+### 用户画像信号池
+- **阈值沉淀**：同一信号累计 7 次才写入画像，过滤偶发表达
+- **三层来源**：L1 用户主动告知 / L2 行为推断 / L3 情感信号
+- **Jaccard 去重**：相似度 ≥ 0.25 视为同义，计数累加 + 续期
+- **情感增强**：明确喜欢/讨厌等强情感 ×2 加权
+- **原子化**：复合句拆分为原子事实，避免大段重复
 
-- **短期记忆**：会话内的对话历史，FIFO 环形缓冲区，超限触发归档
-- **长期记忆**：ChromaDB 向量存储 + ONNX MiniLM 本地嵌入，语义检索
-- **持久化画像**：`memory.md` 文件存储用户偏好、背景等结构化信息，自动注入系统提示
+### AI 护栏（Guardrails）
+- **输入扫描**：Prompt 注入检测，命中 warn/block
+- **工具脱敏**：工具返回值过滤（可信工具白名单豁免）
+- **输出过滤**：PII 过滤（银行卡、手机号、身份证等）
+- **fail-open 软护栏**：与 PolicyEngine fail-closed 硬拦截构成 defense in depth
+- **前端开关**：iOS 风格 toggle，关闭触发二次确认
 
-### 记忆巩固（Consolidation）
+### ReAct 工具链
+- **Core/Deferred 双层注册**：Core 字节级稳定缓存命中，Deferred 按需发现
+- **HIL 审批**：高危操作拦截确认，超时自动拒绝
+- **统一错误处理**：17 种结构化异常，三阶段分流
+- **卡死检测**：两阶段处理，首次软警告 → 二次硬终止
+- **结果缓存**：7 个读取类工具 per-run 缓存
+- **路径安全**：read_paths 黑白名单，deny_first 保护源码/配置
 
-对话轮次达到阈值时，自动通过轻量模型提取事实，经 surprise-gating 双重阈值过滤后沉淀为长期记忆。采用 **延迟合并写入** 策略，减少向量库写放大。
-
-### 前缀缓存优化
-
-- **Core/Deferred 双层工具注册**：Core Tier 工具字节级稳定，100% 缓存命中
-- **system prompt 分层设计**：稳定内容（画像、工具 schema）在前，动态内容（检索记忆、历史）在后
-- **Anthropic 前缀缓存友好**：减少延迟与 token 成本
-
-### 工具调用（ReAct）
-
-- 支持工具延迟加载（Deferred Tier），按需发现
-- HIL 审批（Human-in-the-Loop）：高危操作经 PolicyEngine 评估后需用户确认
-- 工具卡死检测（滑动窗口 + 重试阈值）
-- 审计日志（JSONL 记录所有工具调用，支持按调度/批次追溯）
-
-### 多模型协作
-
-- 主对话模型 + 巩固模型分离
-- 关键任务用强模型，巩固/摘要用轻量模型
-- 多 LLM 提供商支持（Anthropic、OpenAI 兼容）
-
-### MCP 扩展
-
-支持 MCP Server 工具注册，三种传输方式：
-- **stdio**：子进程通信
-- **SSE**：服务端推送
-- **HTTP**：标准 REST
-
-### Skill 系统
-
-动态加载本地 Skill 扩展工具，支持热重载、启用/禁用管理。每个 Skill 通过三层结构定义：
-- `SKILL.md`（L1 元数据）：name/version/description/requires
-- `body`（L2 注入）：激活后注入 LLM 上下文的 Markdown 内容
-- `scripts/`（L3 资源）：可执行的 Python 脚本，通过 `skill__resource` 读取或 `bash_exec` 调用
-LLM 调用 `skill__{name}` 激活按钮后，body 内容注入上下文。
-
-## MCP 扩展
-
-MCP 工具遵循 `mcp__{server}__{tool}` 双下划线命名规范，注册为 Core Tier。
-
-### HIL 配置
-- 可信 server（`config.yaml` 中 `skills.mcp[*].hil=false`）：直接放行，LLM 可自由调用
-- 陌生 server（`hil=true`，默认）：调用走 HIL 审批，用户确认后执行
-
-### advertise_threshold 降级
-当 MCP 工具总数超过 `advertise_threshold`（默认 30）时，降级为摘要模式，仅注入 server 名 + 工具数，需调用 `mcp__list` 工具查看详情。
+### 通用 Workflow 引擎
+- **拓扑执行**：自动按 depends_on 排序，含环检测
+- **错误策略**：retry / fallback / skip / abort 四种
+- **重试预算**：fixed / linear / exponential backoff
+- **条件跳过**：condition 字段简化正则
+- **执行追踪**：StepTrace 记录每步，注入 LLM 上下文
 
 ### Cron 调度
-
-- 定时任务调度（标准 cron 表达式）
-- **提议-确认协议**：LLM 提议调度项 → 用户审查确认 → 创建调度
-- **cron_tool 子进程隔离**：独立 TOOL.md 描述 + run.py 执行
+- **提议-确认协议**：LLM 提议 → 用户审查 → 创建调度
+- **cron_tool 隔离**：独立 TOOL.md + run.py 子进程
+- **工具快照锁定**：避免运行时竞态
+- **会话隔离**：`cron:{schedule_id}` 与用户会话独立
+- **独立页面**：从 chat 内嵌拆为 `/scheduler`
 
 ### 流式对话
+- **SSE 实时推送**：文本增量 + 工具事件
+- **立即/优雅中断**：断点检测在自然边界切出
+- **per-token 超时**：60 秒可热更新
+- **流式总超时**：300 秒
+- **主动取消**：调用 stream.close()
 
-- SSE 实时推送 LLM 文本增量与工具调用事件
-- 支持立即中断与优雅中断（等待自然断点）
-- 断点检测：在输出边界自动中断
+### MCP 扩展
+- **三种传输**：stdio / SSE / HTTP
+- **命名规范**：`mcp__{server}__{tool}`，注册为 Core Tier
+- **HIL 分级**：可信 server 直接放行，陌生 server 走审批
+- **降级模式**：超过 30 个工具时摘要模式，需调用 mcp__list 查看
 
-### 配置热更新
+### Skill 系统
+- **三层结构**：SKILL.md 元数据 / body 注入 / scripts 脚本
+- **热重载**：运行时启用/禁用
+- **降级模式**：超过 20 个时单 skill__load 元工具
+- **B 站 Skill**：热门、搜索、视频详情、UP 主、分区榜
 
-运行时更新多数配置项无需重启（`PUT /config`），原子写入 + Schema 校验 + 备份回滚。
+### 监控与可观测性
+- **独立监控页**：`/monitor`，Canvas 直方图 + 健康检查 + 审计日志
+- **信号池可视化**：攻略进度条按 section 分组、进度降序
+- **指标持久化**：SQLite 增量写入，每日合并支持趋势查询
+- **探索率指标**：跟踪工具调用方向
+
+### 多模型协作
+- **主/巩固分离**：强模型对话 + 轻量模型巩固
+- **多提供商**：Anthropic / OpenAI / DeepSeek 兼容
+- **全链路异步**：AsyncOpenAI / AsyncAnthropic，避免阻塞事件循环
+
+### 配置与持久化
+- **热更新**：timeout / enabled / rules 即时生效，结构性变更需重启
+- **原子写入 + Schema 校验 + 备份回滚**
+- **TodoList 持久化**：磁盘原子写 + 懒加载恢复
+- **会话标题**：首轮异步生成 5-10 字精炼标题
+
+### 文件 ETL 与知识库
+- **格式支持**：PDF / DOCX / TXT / MD / PNG / JPG
+- **自动分块**：chunk_size=512, overlap=64
+- **OCR 识别**：chi_sim+eng
+- **自动注入**：上传后下一轮注入 LLM 上下文
+
+### 前缀缓存优化
+- **Core Tier 字节级稳定**：100% 缓存命中
+- **分层 system prompt**：稳定内容在前，动态内容在后
+- **Anthropic 前缀缓存友好**：减少延迟与 token 成本
 
 ---
 
@@ -94,7 +106,7 @@ MCP 工具遵循 `mcp__{server}__{tool}` 双下划线命名规范，注册为 Co
 |------|------|
 | 语言 | Python 3.10+ |
 | Web 框架 | FastAPI + Uvicorn |
-| LLM 客户端 | Anthropic SDK + OpenAI SDK |
+| LLM 客户端 | AsyncAnthropic + AsyncOpenAI |
 | 向量存储 | ChromaDB + ONNX MiniLM-L6-v2 |
 | 结构化存储 | SQLite + FTS5 全文搜索 |
 | 前端 | 纯 HTML/CSS/JS（暗色主题，无框架依赖） |
@@ -116,7 +128,7 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# 编辑 .env，设置 ANTHROPIC_API_KEY 或 OPENAI_API_KEY
+# 编辑 .env，设置 ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY
 ```
 
 ### 3. 启动服务
@@ -127,118 +139,28 @@ python src/server.py
 uvicorn src.server:app --host 0.0.0.0 --port 8000
 ```
 
-服务默认监听 `http://localhost:8000`，打开浏览器即可开始对话。
+服务默认监听 `http://localhost:8000`。
+
+- 首页：`/`
+- 对话：`/chat`
+- 监控：`/monitor`
+- 调度：`/scheduler`
 
 ---
 
 ## 配置说明
 
-所有配置集中在 `config.yaml`：
+所有配置集中在 `config.yaml`，环境变量通过 `${VAR}` 占位注入。关键段：
 
-```yaml
-llm:
-  main_provider: anthropic           # 主对话模型提供商
-  main_model: claude-sonnet-5        # 主对话模型
-  consolidation_provider: anthropic  # 巩固模型提供商
-  consolidation_model: claude-haiku-4-5-20251001  # 巩固模型（轻量）
-
-memory:
-  chroma_path: data/chroma           # 向量库持久化路径
-  consolidation_threshold: 15        # 多少轮对话后触发巩固
-  retrieval_top_k: 5                 # 记忆检索返回条数
-  surprise_gate_enabled: true        # surprise-gating 开关
-
-server:
-  host: 0.0.0.0
-  port: 8000
-```
-
-环境变量使用 `${VAR}` 语法在 YAML 中占位，运行时自动注入。
-
----
-
-## 项目结构
-
-```
-hermes-lite/
-├── src/
-│   ├── agent/           # Agent 核心（工具注册、ReactLoop、策略、审计、审批）
-│   │   ├── tool_registry.py    # Core/Deferred 双层工具注册
-│   │   ├── react_loop.py       # ReAct 循环（同步 + 流式）
-│   │   ├── policy.py           # 策略引擎（文件权限、命令分类）
-│   │   ├── approval.py         # HIL 审批管理器
-│   │   ├── audit.py            # 审计日志（JSONL 环形缓冲区）
-│   │   ├── builtin_tools.py    # 内置工具（文件、HTTP、命令）
-│   │   ├── file_registry.py    # 会话级文件操作记录
-│   │   ├── cron_tools.py       # Cron 调度工具
-│   │   ├── cron_proposals.py   # 提议-确认协议
-│   │   ├── cron_tool_registry.py  # cron_tool 独立注册
-│   │   └── skill_tools.py      # Skill 管理工具
-│   ├── llm/             # LLM 客户端
-│   ├── memory/          # 三层记忆管理
-│   │   ├── consolidation.py    # 记忆巩固引擎
-│   │   ├── context_manager.py  # 提示词构建（缓存优化）
-│   │   ├── retriever.py        # 记忆检索（bucket 排序、可选 LLM 重排）
-│   │   ├── condenser.py        # 历史冷凝（Masking + LLM Summary）
-│   │   ├── decay.py            # 记忆衰减（近因×频率×重要性）
-│   │   └── memory_md.py        # 持久化画像文件管理
-│   ├── storage/         # 持久化存储
-│   │   ├── chroma_store.py     # ChromaDB + ONNX 嵌入
-│   │   ├── sqlite_log.py       # SQLite + FTS5 会话日志
-│   │   └── history_buffer.py   # 短期历史缓冲（FIFO + JSONL 持久化）
-│   ├── mcp/             # MCP 协议支持
-│   ├── tasks/           # 任务编排
-│   │   ├── scheduler.py        # Cron 调度器
-│   │   ├── cron_tool_loader.py # cron_tool 加载器
-│   │   └── workflow/           # 工作流模板
-│   ├── skill/           # Skill 加载器
-│   ├── monitoring/      # 监控（指标、健康检查）
-│   ├── orchestrator.py  # 全局编排器
-│   ├── server.py        # FastAPI HTTP 服务
-│   └── config.py        # 配置加载（YAML + 环境变量注入）
-├── web/
-│   ├── index.html        # 首页
-│   ├── chat.html         # 对话
-│   ├── monitor.html      # 监控
-│   └── scheduler.html    # 调度
-├── skills/              # 本地 Skill 扩展
-├── cron_tool/           # cron_tool 子进程工具
-├── tests/               # 100+ 单元与集成测试
-├── config.yaml          # 主配置文件
-└── requirements.txt     # Python 依赖
-```
-
----
-
-## API 概览
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/chat` | POST | 同步对话 |
-| `/chat/stream` | POST | SSE 流式对话 |
-| `/chat/cancel` | POST | 中断流式对话 |
-| `/consolidation/flush` | POST | 手动触发记忆巩固 |
-| `/sessions` | GET/POST | 会话管理 |
-| `/sessions/{id}/messages` | GET | 会话消息历史 |
-| `/memories` | GET | 向量记忆搜索 |
-| `/memories/all` | GET | 列出所有记忆 |
-| `/memories/{id}` | DELETE | 删除单条记忆 |
-| `/profile` | GET | 用户画像 |
-| `/health` | GET | 深度健康检查 |
-| `/tools` | GET | 工具清单 |
-| `/audit/logs` | GET | 审计日志 |
-| `/approvals` | GET | 待审批请求 |
-| `/approvals/{id}/resolve` | POST | 提交审批决定 |
-| `/config` | GET/PUT | 配置读写 |
-| `/schedules` | GET/POST | Cron 调度 |
-| `/schedules/{id}/trigger` | POST | 立即触发调度 |
-| `/proposals` | GET | 调度提议 |
-| `/skills` | GET | Skill 管理 |
-| `/skills/{name}` | GET | 获取 Skill 详情 |
-| `/skills/{name}/reload` | POST | 重载 Skill |
-| `/skills/{name}/toggle` | POST | 启用/禁用 Skill |
-| `/skills/{name}` | DELETE | 删除 Skill |
-| `/metrics` | GET | 指标快照 |
+- `llm`：模型提供商、模型名、API Key、超时
+- `memory`：向量库路径、巩固阈值、检索 top_k、surprise_gate
+- `storage`：SQLite 路径、会话 TTL
+- `files`：上传目录、分块参数、OCR
+- `tools`：max_react_loops、bash_timeout
+- `guardrails`：input_scan / sanitizer / output_filter 三组件独立开关
+- `security`：approval_timeout、read_paths 黑白名单
+- `skills.mcp`：MCP server HIL 配置
+- `tasks.schedules`：Cron 调度项
 
 ---
 
@@ -250,21 +172,4 @@ hermes-lite/
 pytest tests/ -v
 ```
 
-### 测试覆盖
-
-100+ 测试用例，覆盖：
-- 工具注册与执行
-- 记忆巩固与检索
-- 策略引擎与权限
-- ReAct 循环与流式
-- 配置热更新
-- SQLite + ChromaDB 持久化
-- MCP 客户端
-- Skill 加载
-- Cron 调度与 cron_tool
-
----
-
-## 许可证
-
-MIT
+100+ 测试用例，覆盖工具注册、记忆巩固、策略引擎、ReAct 循环、配置热更新、SQLite/ChromaDB 持久化、MCP 客户端、Skill 加载、Cron 调度、Workflow 引擎、信号池、Guardrails 等。

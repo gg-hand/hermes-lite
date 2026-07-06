@@ -72,6 +72,10 @@ class MetricsCollector:
         self._tool_retries_total: Dict[str, int] = {}
         # Phase 2 反馈监控：审批决策计数器
         self._approval_decisions_total: Dict[str, int] = {}
+        # OCR 分层引擎指标：按 engine 分桶（paddle/tesseract/vision_llm）
+        self._ocr_calls_total: Dict[str, int] = {}
+        self._ocr_errors_total: Dict[str, int] = {}
+        self._ocr_latency_ms: Dict[str, Dict[str, float]] = {}
 
     # ------------------------------------------------------------------
     # 公开采集方法
@@ -185,6 +189,37 @@ class MetricsCollector:
                 self._approval_decisions_total.get(decision, 0) + 1
             )
 
+    def observe_ocr_call(self, engine: str, success: bool, latency_ms: float) -> None:
+        """记录一次 OCR 引擎调用结果与延迟。
+
+        按 engine 分桶（paddle/tesseract/vision_llm），用于监控分层 OCR
+        各引擎命中率、错误率与延迟分布。
+
+        参数:
+            engine: OCR 引擎名（paddle/tesseract/vision_llm）。
+            success: 是否调用成功；失败时同时累加 ocr_errors_total。
+            latency_ms: 本次 OCR 调用延迟（毫秒）。
+        """
+        with self._lock:
+            self._ocr_calls_total[engine] = (
+                self._ocr_calls_total.get(engine, 0) + 1
+            )
+            if not success:
+                self._ocr_errors_total[engine] = (
+                    self._ocr_errors_total.get(engine, 0) + 1
+                )
+            stats = self._ocr_latency_ms.setdefault(
+                engine, {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0}
+            )
+            stats["count"] += 1
+            stats["sum"] += latency_ms
+            if stats["count"] == 1:
+                stats["min"] = latency_ms
+                stats["max"] = latency_ms
+            else:
+                stats["min"] = min(stats["min"], latency_ms)
+                stats["max"] = max(stats["max"], latency_ms)
+
     # ------------------------------------------------------------------
     # 导出与重置
     # ------------------------------------------------------------------
@@ -226,6 +261,9 @@ class MetricsCollector:
                 "tool_error_classes_total": copy.deepcopy(self._tool_error_classes_total),
                 "tool_retries_total": copy.deepcopy(self._tool_retries_total),
                 "approval_decisions_total": copy.deepcopy(self._approval_decisions_total),
+                "ocr_calls_total": copy.deepcopy(self._ocr_calls_total),
+                "ocr_errors_total": copy.deepcopy(self._ocr_errors_total),
+                "ocr_latency_ms": copy.deepcopy(self._ocr_latency_ms),
             }
 
     def reset(self) -> None:
@@ -246,6 +284,9 @@ class MetricsCollector:
             self._tool_error_classes_total = {}
             self._tool_retries_total = {}
             self._approval_decisions_total = {}
+            self._ocr_calls_total = {}
+            self._ocr_errors_total = {}
+            self._ocr_latency_ms = {}
 
     # ------------------------------------------------------------------
     # 内部辅助方法

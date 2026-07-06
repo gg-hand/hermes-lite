@@ -501,11 +501,40 @@ class PolicyEngine:
         self._read_paths_mode = cfg.get("mode", "deny_first")
         self._read_deny = tuple(cfg.get("deny") or READ_PATH_DEFAULT_DENY)
         self._read_allow = tuple(cfg.get("allow") or READ_PATH_DEFAULT_ALLOW)
+        # 工作空间目录：优先级最高，目录内文件完全 allow（黑名单不生效）
+        # 供用户指定额外项目目录，便于 agent 读取项目代码
+        self._read_workspace_dirs = tuple(
+            Path(d).resolve() for d in (cfg.get("workspace_dirs") or []) if d
+        )
 
         # P1-7: MCP HIL 配置（server_name → hil bool）
         # hil=False 的 server 调用 mcp__{server}__* 时直接 allow
         # hil=True（默认）走 confirm（由后续规则匹配处理）
         self._mcp_hil_config: Dict[str, bool] = mcp_hil_config or {}
+
+    def set_read_paths(self, mode: str, deny: list, allow: list, workspace_dirs: list) -> None:
+        """热更新读路径策略。
+
+        tuple 替换是原子的，遍历读旧值安全，无需加锁。供 ``server.py``
+        ``_apply_runtime_config`` 在前端修改 ``security.read_paths`` 后即时调用。
+
+        参数:
+            mode: ``"deny_first"`` 或 ``"whitelist_only"``
+            deny: 黑名单路径列表（目录前缀或通配符）
+            allow: 白名单路径列表
+            workspace_dirs: 工作空间目录列表，目录内完全 allow
+        """
+        self._read_paths_mode = mode or "deny_first"
+        self._read_deny = tuple(deny or [])
+        self._read_allow = tuple(allow or [])
+        self._read_workspace_dirs = tuple(
+            Path(d).resolve() for d in (workspace_dirs or []) if d
+        )
+        logger.info(
+            "热更新 read_paths: mode=%s, deny=%d, allow=%d, ws=%d",
+            self._read_paths_mode, len(self._read_deny),
+            len(self._read_allow), len(self._read_workspace_dirs),
+        )
 
     def set_mcp_hil_config(self, mcp_hil_config: Optional[Dict[str, bool]]) -> None:
         """注入或更新 MCP HIL 配置。
@@ -680,6 +709,14 @@ class PolicyEngine:
             # 同时检查原始路径（相对路径形式）
             raw_norm = raw_path.replace("\\", "/")
 
+            # 工作空间目录优先级最高：完全 allow，黑名单不生效
+            for ws_dir in self._read_workspace_dirs:
+                try:
+                    p.relative_to(ws_dir)
+                    return None  # 路径在工作空间内，放行
+                except ValueError:
+                    continue
+
             # 检查是否命中黑名单
             for pattern in self._read_deny:
                 pat_norm = pattern.replace("\\", "/")
@@ -725,6 +762,12 @@ class PolicyEngine:
                 return True
             # 精确匹配文件名（如 config.yaml）
             if path_str.endswith("/" + pattern) or raw_norm == pattern:
+                return True
+            # 路径段包含匹配：处理目录型 pattern（如 src/）作为路径中间段出现的情况
+            # 跨平台通用：标准化后 Linux /home/u/src/x.py 和 Windows e:/x/src/y.py
+            # 均含 "/src/" 段；相对路径 src/x.py 已由上游 startswith 覆盖
+            seg = pattern.rstrip("/")
+            if seg and (("/" + seg + "/") in path_str or ("/" + seg + "/") in raw_norm):
                 return True
             return False
         # 通配符匹配
