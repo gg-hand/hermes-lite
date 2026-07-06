@@ -108,10 +108,16 @@ async function selectSession(sessionId) {
 
 // ========== 历史消息加载 ==========
 // 修复点：plan_create/plan_update_step 工具消息特殊处理，重建 todo 卡片
+// 增强：并行拉取消息+文件，末尾追加未展示文件合成消息（跨会话/历史回填）
 async function loadMessages(sessionId) {
   try {
-    const data = await api(`/sessions/${sessionId}/messages`);
-    const messages = data.messages || [];
+    // 并行拉取消息 + 文件列表（文件列表失败降级为空，不阻塞消息渲染）
+    const [msgData, filesData] = await Promise.all([
+      api(`/sessions/${sessionId}/messages`),
+      api(`/sessions/${sessionId}/files`).catch(() => ({ files: [] })),
+    ]);
+    const messages = msgData.messages || [];
+    const files = filesData.files || [];
     welcomeScreenEl.style.display = messages.length ? 'none' : 'flex';
     messagesEl.innerHTML = '';
     _prevTodoStepStatuses = {};
@@ -162,10 +168,10 @@ async function loadMessages(sessionId) {
           // 孤立的 tool_result（无前置 tool_use 配对）
           appendToolResultCard(m.tool_name, m.content, m.is_error);
         } else {
-          // 普通文本消息
+          // 普通文本消息：传递 attachments（后端 file_upload 消息有附件）
           const contentStr = (m.content || '').trim();
           if (contentStr) {
-            appendMessage(m.role, m.content);
+            appendMessage(m.role, m.content, m.attachments);
           }
         }
       }
@@ -174,6 +180,47 @@ async function loadMessages(sessionId) {
     } else {
       messagesEl.appendChild(welcomeScreenEl);
       welcomeScreenEl.style.display = 'flex';
+    }
+
+    // === 第二遍：为未展示的文件合成消息，追加到末尾 ===
+    // 收集后端消息已展示的 file_id（去重用，避免与 Stage 4 后端消息重复）
+    const attachedFileIds = new Set();
+    for (const m of messages) {
+      if (m.attachments) {
+        const atts = safeParseJSON(m.attachments) || [];
+        for (const a of atts) if (a.file_id) attachedFileIds.add(a.file_id);
+      }
+    }
+    // 筛选未被后端消息展示的文件（历史回填 / 跨会话去重关联文件）
+    const unrepresented = files.filter(f => !attachedFileIds.has(f.file_id));
+    if (unrepresented.length) {
+      // 边界情况：messages.length === 0 时 else 分支已重新 append welcomeScreen，
+      // 此处需隐藏欢迎屏避免与历史文件同时显示
+      if (welcomeScreenEl && welcomeScreenEl.parentNode === messagesEl) {
+        welcomeScreenEl.style.display = 'none';
+      }
+      // 插入分隔线，区分后端消息与合成消息
+      const sep = document.createElement('div');
+      sep.className = 'timeline-separator';
+      sep.textContent = '历史文件';
+      messagesEl.appendChild(sep);
+      // 为每个文件合成 user 消息
+      for (const f of unrepresented) {
+        const file_type = f.type || '';
+        const is_image = ['.png', '.jpg', '.jpeg', '.gif'].includes(file_type);
+        const attachment = {
+          file_id: f.file_id,
+          name: f.original_name,
+          type: file_type,
+          size: f.size,
+          category: is_image ? 'image' : 'document',
+          etl_status: f.etl_status,
+        };
+        const versionLabel = (f.version_seq && f.is_latest === false)
+          ? `（v${f.version_seq}，旧版）` : '';
+        appendMessage('user', `已上传文件：${f.original_name}${versionLabel}`, [attachment]);
+      }
+      scrollMessagesToBottom(true);
     }
   } catch (e) {
     showToast('加载消息失败: ' + e.message, 'error');

@@ -817,6 +817,104 @@ pre:hover .copy-btn { opacity: 1; }
   }
 }
 
+/* ========== 附件渲染 ========== */
+.message-attachments {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.attachment-image img,
+.attachment-thumb {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: var(--radius-md);
+  cursor: zoom-in;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  transition: transform var(--transition) ease;
+}
+.attachment-thumb:hover {
+  transform: scale(1.02);
+}
+.attachment-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  font-size: var(--text-sm);
+}
+.attachment-icon {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: var(--text-xs);
+}
+.attachment-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-size {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* ========== 图片放大弹窗 ========== */
+.image-modal {
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-4);
+}
+.image-modal img {
+  max-width: 85vw;
+  max-height: 75vh;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+.image-modal-caption {
+  margin-top: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+.image-modal .modal-close {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  font-size: 28px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  z-index: 2;
+}
+
+/* ========== 时间线分隔线 ========== */
+.timeline-separator {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  margin: var(--space-3) 0;
+  position: relative;
+}
+.timeline-separator::before,
+.timeline-separator::after {
+  content: '';
+  display: inline-block;
+  width: 80px;
+  height: 1px;
+  background: var(--border);
+  vertical-align: middle;
+  margin: 0 var(--space-2);
+}
+
 /* 极窄屏 480：小屏手机 */
 @media (max-width: 480px) {
   .message {

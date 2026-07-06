@@ -62,11 +62,15 @@ try:
         _p = _os.path.join(_base, "Tesseract-OCR", "tesseract.exe")
         if _p not in _tesseract_candidates:
             _tesseract_candidates.append(_p)
+    _tesseract_found = False
     for _p in _tesseract_candidates:
         if _os.path.exists(_p):
             pytesseract.pytesseract.tesseract_cmd = _p
+            _tesseract_found = True
             break
-    _TESSERACT_AVAILABLE = True
+    # 仅当找到可执行文件时才标记可用，避免 Python 包 import 成功但
+    # 可执行文件不存在导致 image_to_string 调用时才报错
+    _TESSERACT_AVAILABLE = _tesseract_found
 except ImportError:
     pass
 
@@ -80,6 +84,11 @@ except ImportError:
 
 _PADDLE_AVAILABLE = False
 try:
+    # PaddlePaddle 3.x oneDNN 在某些 CPU 上触发 NotImplementedError:
+    # ConvertPirAttribute2RuntimeAttribute。模块级关闭 mkldnn 避免该 bug。
+    # 必须在 import paddle 前设置。
+    os.environ.setdefault('FLAGS_use_mkldnn', 'false')
+    import paddle  # noqa: F401  验证 paddlepaddle 可用
     from paddleocr import PaddleOCR  # noqa: F401
     _PADDLE_AVAILABLE = True
 except ImportError:
@@ -100,11 +109,22 @@ _paddle_poisoned = False  # 上次推理异常崩溃标志，下次调用前重�
 
 
 def _get_paddle_singleton(lang: str, use_gpu: bool):
-    """懒加载 PaddleOCR 单例。poisoned 时重建实例。"""
+    """懒加载 PaddleOCR 单例。poisoned 时重建实例。
+
+    PaddleOCR 3.x 兼容性：
+    - ``use_gpu`` 参数已移除（3.x 通过 device 推断）
+    - ``use_angle_cls`` 重命名为 ``use_textline_orientation``
+    - ``enable_mkldnn=False`` 规避 PaddlePaddle 3.3.x oneDNN 的
+      NotImplementedError: ConvertPirAttribute2RuntimeAttribute
+    """
     global _paddle_singleton, _paddle_poisoned
     with _paddle_lock:
         if _paddle_singleton is None or _paddle_poisoned:
-            _paddle_singleton = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu)
+            _paddle_singleton = PaddleOCR(
+                use_textline_orientation=True,
+                lang=lang,
+                enable_mkldnn=False,
+            )
             _paddle_poisoned = False
         return _paddle_singleton
 
@@ -322,6 +342,11 @@ class WaterfallParser:
         使用模块级单例 + threading.Lock 串行调用。软超时记 warning 不强制终止
         （避免 ThreadPoolExecutor 超时后 Lock 不释放导致下次调用永久卡死）。
         异常时设 _paddle_poisoned=True，下次调用前重建实例。
+
+        PaddleOCR 3.x 兼容性：
+        - ``ocr.ocr(image, cls=True)`` 已弃用，改用 ``ocr.predict(image)``
+        - 返回格式从 ``[[bbox, (text, conf)], ...]`` 改为 list[OCRResult]
+          OCRResult 是 dict 子类，含 rec_texts / rec_scores / dt_polys 等键
         """
         global _paddle_poisoned
         if not _PADDLE_AVAILABLE:
@@ -333,33 +358,46 @@ class WaterfallParser:
             import time
             import numpy as np
             pil_image = Image.open(io.BytesIO(content))
-            # PaddleOCR 2.x 不支持 PIL.Image，需转 numpy.ndarray
+            # PaddleOCR 不支持 PIL.Image，需转 numpy.ndarray
             image = np.array(pil_image.convert("RGB"))
             ocr = _get_paddle_singleton(self.ocr_paddle_lang, self.ocr_paddle_use_gpu)
             start = time.time()
-            result = ocr.ocr(image, cls=True)
+            # 3.x: predict() 替代 ocr()；不传 cls 参数
+            result = ocr.predict(image)
             latency = time.time() - start
             if latency > self.ocr_paddle_infer_timeout:
                 logger.warning(
                     "PaddleOCR 推理耗时 %.1fs 超过软超时 %ds（不强制终止）",
                     latency, self.ocr_paddle_infer_timeout,
                 )
-            # PaddleOCR 返回 [[bbox, (text, conf)], ...]，可能为 None
             if not result:
                 self._record_ocr_metric("paddle", True, latency * 1000)
                 return "", 0.0
             texts = []
             confs = []
-            for line in result:
-                if line is None:
+            # 3.x: result 是 list[OCRResult]，OCRResult 为 dict 子类
+            # 支持同时兼容 3.x dict 访问与 2.x 嵌套列表的边缘情况
+            for item in result:
+                if item is None:
                     continue
-                for item in line:
-                    if item is None or len(item) < 2:
-                        continue
-                    text_part = item[1][0]
-                    conf_part = float(item[1][1])
-                    texts.append(text_part)
-                    confs.append(conf_part)
+                # 3.x: dict-like 访问 rec_texts / rec_scores
+                if isinstance(item, dict) or hasattr(item, 'keys'):
+                    rec_texts = item.get('rec_texts') or []
+                    rec_scores = item.get('rec_scores') or []
+                    for txt, score in zip(rec_texts, rec_scores):
+                        if txt is None:
+                            continue
+                        texts.append(str(txt))
+                        confs.append(float(score))
+                else:
+                    # 兼容 2.x 格式 [[bbox, (text, conf)], ...]
+                    for line in item:
+                        if line is None or len(line) < 2:
+                            continue
+                        text_part = line[1][0]
+                        conf_part = float(line[1][1])
+                        texts.append(text_part)
+                        confs.append(conf_part)
             text = "\n".join(texts)
             avg_conf = sum(confs) / len(confs) if confs else 0.0
             self._record_ocr_metric("paddle", True, latency * 1000)

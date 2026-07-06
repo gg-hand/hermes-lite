@@ -60,9 +60,11 @@ class FileContextInjector:
 
         # 取 etl_status 为 done/pending/processing 的文件（failed/disk_expired 排除）
         # 放宽原 done-only 过滤：让用户上传后第一轮（ETL 处理中）即可被 LLM 感知
+        # 版本过滤：同名文件只注入最新版（is_latest），旧版通过 file_query 仍可检索
         active_files = [
             f for f in files
             if f.get("etl_status") in ("done", "pending", "processing")
+            and f.get("is_latest", True)
         ]
         if not active_files:
             return ""
@@ -74,10 +76,11 @@ class FileContextInjector:
         done_count = sum(1 for f in active_files if f.get("etl_status") == "done")
         pending_count = len(active_files) - done_count
         lines = [
-            f"📚 已上传文件 {len(active_files)} 个（已处理 {done_count}，处理中 {pending_count}）",
-            f"可通过 file_query 搜索已处理文件内容",
+            f"📚 本会话已上传文件 {len(active_files)} 个（已处理 {done_count}，处理中 {pending_count}）",
+            f"以下文件由用户在当前会话上传，可直接引用其内容，无需再调用 file_list_uploads 确认。",
+            f"file_query 搜索的是全局知识库（不限会话）；此处列出的是本会话上传的文件。",
             "",
-            "## 已上传文件",
+            "## 本会话已上传文件",
         ]
         total_chars = sum(len(l) for l in lines)
 
@@ -112,7 +115,7 @@ class FileContextInjector:
             lines.append(line)
             total_chars += len(line)
 
-        if len(lines) == 4:
+        if len(lines) == 5:
             return ""  # 只有标题，没有实际文件（token 预算耗尽）
 
         return "\n".join(lines)

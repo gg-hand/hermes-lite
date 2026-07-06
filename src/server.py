@@ -424,6 +424,8 @@ class MessageItem(BaseModel):
     与 ``role`` 联合判断（详见前端 loadMessages 渲染逻辑）。
     ``is_error`` 仅对 tool_result 有意义，标识工具执行是否出错；
     老消息（无此列）或非工具消息返回 None。
+    ``attachments`` 为附件 JSON 字符串（如文件上传消息），老消息为 None。
+    ``message_type`` 为消息类型标记（如 'file_upload'），普通消息为 None。
     """
 
     role: str
@@ -432,6 +434,8 @@ class MessageItem(BaseModel):
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
     is_error: Optional[bool] = None
+    attachments: Optional[str] = None
+    message_type: Optional[str] = None
 
 
 class MessageListResponse(BaseModel):
@@ -563,6 +567,8 @@ class FileItem(BaseModel):
     chunk_count: int = 0
     uploaded_at: str
     last_accessed: str
+    version_seq: Optional[int] = None
+    is_latest: Optional[bool] = None
 
 
 class FileListResponse(BaseModel):
@@ -3074,6 +3080,8 @@ def get_session_messages(
                 tool_name=r.get("tool_name"),
                 tool_call_id=r.get("tool_call_id"),
                 is_error=bool(r["is_error"]) if "is_error" in r.keys() else None,
+                attachments=r.get("attachments"),
+                message_type=r.get("message_type"),
             )
             for r in rows
         ]
@@ -3104,6 +3112,12 @@ def delete_session(session_id: str):
                 orchestrator.todo_registry.delete(session_id)
             except Exception as e:
                 logger.warning("清理会话 todo 文件失败 %s: %s", session_id, e)
+        # 同步清理会话文件关联（uploaded_files 物理记录保留，可能被其他会话引用）
+        if upload_manager is not None:
+            try:
+                upload_manager.cleanup_session(session_id)
+            except Exception as e:
+                logger.warning("清理会话文件关联失败 %s: %s", session_id, e)
         logger.info("已删除会话: %s", session_id)
         return DeleteSessionResponse(status="deleted", session_id=session_id)
     except HTTPException:
@@ -3162,6 +3176,29 @@ async def upload_file(
     file_id, is_dup = upload_manager.save(filename, content, session_id)
     if file_id is None:
         raise HTTPException(status_code=400, detail="文件上传失败（校验未通过）")
+
+    # 写入文件上传消息到会话历史（仅首次上传，去重命中不写避免重复）
+    if not is_dup and session_logger is not None:
+        meta = upload_manager.get_metadata(file_id)
+        if meta is not None:
+            import json as _json
+            file_type = meta.get("type", "")
+            is_image = file_type in (".png", ".jpg", ".jpeg", ".gif")
+            attachment = {
+                "file_id": file_id,
+                "name": filename,
+                "type": file_type,
+                "size": meta.get("size", 0),
+                "category": "image" if is_image else "document",
+                "etl_status": meta.get("etl_status", "pending"),
+            }
+            session_logger.log_message(
+                session_id=session_id,
+                role="user",
+                content=f"已上传文件：{filename}",
+                attachments=_json.dumps([attachment], ensure_ascii=False),
+                message_type="file_upload",
+            )
 
     # 后台 ETL
     if not is_dup and etl_engine is not None:
@@ -3230,6 +3267,40 @@ def get_file_metadata(file_id: str):
         raise HTTPException(status_code=500, detail=f"内部错误: {e}")
 
 
+@app.get("/files/{file_id}/raw")
+def get_file_raw(file_id: str):
+    """返回文件原始内容（图片缩略图/文档下载用）。"""
+    if upload_manager is None:
+        raise HTTPException(status_code=503, detail="文件模块未初始化")
+    try:
+        meta = upload_manager.get_metadata(file_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        if meta.get("etl_status") == "disk_expired" or not meta.get("saved_path"):
+            raise HTTPException(status_code=410, detail="文件已过期")
+        saved_path = meta["saved_path"]
+        if not os.path.exists(saved_path):
+            raise HTTPException(status_code=404, detail="磁盘文件丢失")
+        content_types = {
+            ".png": "image/png", ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg", ".gif": "image/gif",
+            ".pdf": "application/pdf", ".txt": "text/plain",
+            ".md": "text/markdown",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        media_type = content_types.get(meta.get("type", ""), "application/octet-stream")
+        return FileResponse(
+            saved_path,
+            media_type=media_type,
+            filename=meta.get("original_name", ""),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("获取文件内容失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
 @app.get("/sessions/{session_id}/files", response_model=FileListResponse)
 def get_session_files(session_id: str):
     """获取指定会话的上传文件列表。"""
@@ -3248,6 +3319,8 @@ def get_session_files(session_id: str):
                 chunk_count=f.get("chunk_count", 0),
                 uploaded_at=f.get("uploaded_at", ""),
                 last_accessed=f.get("last_accessed", ""),
+                version_seq=f.get("version_seq"),
+                is_latest=f.get("is_latest"),
             )
             for f in files
         ]
