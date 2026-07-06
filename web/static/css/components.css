@@ -246,6 +246,107 @@
   background: var(--bg-hover);
 }
 
+/* 设置弹窗：VSCode 风格侧边导航布局 */
+#settingsModal .modal {
+  max-width: min(880px, 92vw);
+}
+/* 覆盖通用 modal-body：禁止整体滚动，由 nav/content 各自独立滚动 */
+#settingsModal .modal-body {
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  grid-template-rows: 1fr;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-2);
+}
+.settings-nav {
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding: var(--space-3) var(--space-2);
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+.settings-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings-nav-item.active {
+  background: var(--accent-bg, rgba(99, 102, 241, 0.1));
+  color: var(--accent, #6366f1);
+  font-weight: var(--weight-semibold);
+}
+.settings-nav-icon {
+  font-size: var(--text-base);
+  line-height: 1;
+}
+.settings-content {
+  min-height: 0;
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  overflow-y: auto;
+}
+.settings-pane {
+  display: none;
+}
+.settings-pane.active {
+  display: block;
+  animation: fade-in var(--transition-fast) ease;
+}
+.settings-textarea {
+  width: 100%;
+  min-height: 90px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  resize: vertical;
+  transition: border-color var(--transition-fast);
+}
+.settings-textarea:focus {
+  outline: none;
+  border-color: var(--accent, #6366f1);
+}
+@media (max-width: 640px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .settings-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--space-2);
+  }
+  .settings-nav-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+}
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;

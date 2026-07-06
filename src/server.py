@@ -1039,10 +1039,13 @@ async def lifespan(app: FastAPI):
             # WaterfallParser
             llm_fallback = bool(files_cfg.get("llm_fallback_enabled", False))
             parse_timeouts = files_cfg.get("parse_timeout_seconds", {})
+            ocr_cfg = files_cfg.get("ocr", {}) or {}
             water_parser = WaterfallParser(
                 llm_fallback_enabled=llm_fallback,
                 llm_client=orchestrator.llm_client if llm_fallback else None,
                 parse_timeouts=parse_timeouts,
+                ocr_config=ocr_cfg,
+                metrics_collector=metrics_collector,
             )
             logger.info("WaterfallParser 已初始化 (llm_fallback=%s)", llm_fallback)
 
@@ -3450,6 +3453,15 @@ _RESTART_REQUIRED_KEYS = {
     # history.persistence_dir 涉及 HistoryBuffer 磁盘持久化路径，运行中切换
     # 无法迁移已写入的 JSONL，需重启重建 HistoryBuffer
     "history.persistence_dir",
+    # OCR 分层：primary_engine/paddle.use_gpu/paddle.lang 涉及 PaddleOCR 实例重建，
+    # vision_llm.* 涉及视觉客户端重建，均需重启
+    "files.ocr.primary_engine",
+    "files.ocr.paddle.use_gpu",
+    "files.ocr.paddle.lang",
+    "files.ocr.vision_llm.provider",
+    "files.ocr.vision_llm.model",
+    "files.ocr.vision_llm.api_key",
+    "files.ocr.vision_llm.base_url",
 }
 
 # 配置取值哨兵：用于区分「配置项缺失」与「配置项值为 None / 空容器」
@@ -3772,6 +3784,24 @@ def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
             logger.warning("热更新 memory.condenser 失败: %s", e)
             applied["memory.condenser"] = False
 
+    # read_paths 专项热更新（dict 结构，不走 _RUNTIME_HOTUPDATE_MAP 标量映射）
+    # 前端修改 security.read_paths 后即时生效，无需重启
+    sec_cfg_rp = new_config.get("security") or {}
+    rp_cfg = sec_cfg_rp.get("read_paths")
+    if isinstance(rp_cfg, dict) and orchestrator is not None:
+        try:
+            orchestrator.policy_engine.set_read_paths(
+                mode=rp_cfg.get("mode", "deny_first"),
+                deny=rp_cfg.get("deny", []),
+                allow=rp_cfg.get("allow", []),
+                workspace_dirs=rp_cfg.get("workspace_dirs", []),
+            )
+            applied["security.read_paths"] = True
+            logger.info("热更新 security.read_paths")
+        except Exception as e:
+            logger.warning("热更新 security.read_paths 失败: %s", e)
+            applied["security.read_paths"] = False
+
     # 防护开关专项：关闭 HIL 时批量 deny pending 审批，唤醒所有
     # wait_for_decision 协程，避免它们傻等 approval_manager.timeout 秒超时。
     # 仅在 security.enabled 被热更新且新值为 False 时触发。
@@ -3797,6 +3827,39 @@ def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
                         )
             except Exception as e:
                 logger.warning("HIL 关闭专项处理失败: %s", e)
+
+    # OCR 配置热更新专项：parser 持有在 etl_engine.parser（模块级全局），
+    # 不在 orchestrator 属性链，无法走 _RUNTIME_HOTUPDATE_MAP，需专项分支写入。
+    # 仅处理可热更新字段（tesseract.lang/preprocess、paddle.min_confidence、
+    # vision_llm.enabled）；结构性字段（primary_engine/paddle.use_gpu 等）已由
+    # _RESTART_REQUIRED_KEYS 拦截要求重启。
+    ocr_cfg = new_config.get("files", {}).get("ocr", {}) or {}
+    if etl_engine is not None and hasattr(etl_engine, "parser"):
+        parser_obj = etl_engine.parser
+        try:
+            t_cfg = ocr_cfg.get("tesseract", {}) or {}
+            if "lang" in t_cfg:
+                parser_obj.ocr_tesseract_lang = t_cfg["lang"]
+                applied["files.ocr.tesseract.lang"] = True
+            if "preprocess" in t_cfg:
+                parser_obj.ocr_tesseract_preprocess = bool(t_cfg["preprocess"])
+                applied["files.ocr.tesseract.preprocess"] = True
+            p_cfg = ocr_cfg.get("paddle", {}) or {}
+            if "min_confidence" in p_cfg:
+                parser_obj.ocr_paddle_min_confidence = float(p_cfg["min_confidence"])
+                applied["files.ocr.paddle.min_confidence"] = True
+            if "infer_timeout" in p_cfg:
+                parser_obj.ocr_paddle_infer_timeout = int(p_cfg["infer_timeout"])
+                applied["files.ocr.paddle.infer_timeout"] = True
+            v_cfg = ocr_cfg.get("vision_llm", {}) or {}
+            if "enabled" in v_cfg:
+                parser_obj.ocr_vision_llm_enabled = bool(v_cfg["enabled"])
+                applied["files.ocr.vision_llm.enabled"] = True
+            ocr_applied = {k: v for k, v in applied.items() if k.startswith("files.ocr")}
+            if ocr_applied:
+                logger.info("热更新 files.ocr: %s", ocr_applied)
+        except Exception as e:
+            logger.warning("热更新 files.ocr 失败: %s", e)
 
     return applied
 

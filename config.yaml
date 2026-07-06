@@ -1,11 +1,11 @@
 llm:
   main_provider: deepseek
   main_model: deepseek-v4-flash
-  main_api_key: ${DEEPSEEK_API_KEY}
+  main_api_key: sk-9c77bc376f584e9ebe2869d9a05cffb0
   main_base_url: https://api.deepseek.com
   consolidation_provider: deepseek
   consolidation_model: deepseek-v4-flash
-  consolidation_api_key: ${DEEPSEEK_API_KEY}
+  consolidation_api_key: sk-9c77bc376f584e9ebe2869d9a05cffb0
   consolidation_base_url: https://api.deepseek.com
   max_context_tokens: 200000
   context_threshold: 0.8
@@ -57,10 +57,26 @@ files:
   chunk_size: 512
   chunk_overlap: 64
   chroma_namespace: file
-  query_min_score: 0.30
+  query_min_score: 0.3
   llm_fallback_enabled: false
   ocr_enabled: true
   ocr_lang: chi_sim+eng
+  ocr:
+    primary_engine: paddle
+    paddle:
+      lang: ch
+      use_gpu: false
+      min_confidence: 0.6
+      infer_timeout: 30
+    tesseract:
+      lang: chi_sim+eng
+      preprocess: true
+    vision_llm:
+      enabled: false
+      provider: qwen
+      model: qwen-vl-max
+      api_key: ''
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   max_injected_files: 5
   max_file_injection_tokens: 1000
   etl_max_queue: 100
@@ -90,41 +106,35 @@ interrupt:
   graceful_timeout_seconds: 5
 skills:
   mcp: []
-  # P1-6: MCP HIL 配置
-  # 每个 MCP server 可配置 hil 字段：true(默认)=走 confirm 审批；false=直接 allow(可信 server)
-  # 注：hil 是结构性变更，需重启生效（加入 _RESTART_REQUIRED_KEYS）
-  # mcp_advertise_threshold: 30  # MCP 工具数超过此值降级为 stub 模式（默认 30）
 security:
   enabled: true
   api_key: ''
   workspace_root: .
   approval_timeout_seconds: 300
   rules: []
-  # P0 止血：读路径策略（对 file_read/file_listdir/file_glob/file_grep/file_query 生效）
-  # mode=deny_first: 黑名单优先，未列出路径默认 allow
-  # mode=whitelist_only: 严格白名单，未列出路径默认 deny
   read_paths:
     mode: deny_first
+    workspace_dirs: []
     deny:
-      - "src/"
-      - "tests/"
-      - ".git/"
-      - ".trae/"
-      - "__pycache__/"
-      - "config.yaml"
-      - "config.yaml.bak"
-      - "config.yaml.example"
-      - ".env"
-      - ".env.example"
-      - "requirements.txt"
-      - ".server.pid"
-      - "*.pyc"
+    - src/
+    - tests/
+    - .git/
+    - .trae/
+    - __pycache__/
+    - config.yaml
+    - config.yaml.bak
+    - config.yaml.example
+    - .env
+    - .env.example
+    - requirements.txt
+    - .server.pid
+    - '*.pyc'
     allow:
-      - "data/"
-      - "web/"
-      - "cron_tool/"
-      - "tmp/"
-      - "uploads/"
+    - data/
+    - web/
+    - cron_tool/
+    - tmp/
+    - uploads/
 guardrails:
   input_scan:
     enabled: true
@@ -137,10 +147,10 @@ guardrails:
     - memory_query
     max_output_length: 20000
   output_filter:
-    enabled: true
+    enabled: false
     enable_bank_card: true
 web_search:
-  bing_api_key: ${BING_API_KEY}
-  baidu_api_key: ${BAIDU_API_KEY}
+  bing_api_key: ''
+  baidu_api_key: BAIDU_API_KEY_PLACEHOLDER
 tasks: {}
 schedules: []

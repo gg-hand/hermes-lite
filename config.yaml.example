@@ -70,7 +70,23 @@ files:
   query_min_score: 0.30
   llm_fallback_enabled: false
   ocr_enabled: true
-  ocr_lang: chi_sim+eng
+  ocr_lang: chi_sim+eng      # 旧字段（保留，迁移到 ocr.tesseract.lang）
+  ocr:
+    primary_engine: paddle   # paddle | tesseract | none（缺依赖自动降级）
+    paddle:
+      lang: ch
+      use_gpu: false
+      min_confidence: 0.6    # 低于此置信度触发 L2 降级
+      infer_timeout: 30      # 软超时（秒），超时记 warning 不强制终止
+    tesseract:
+      lang: chi_sim+eng      # 修复：从配置读取，不再硬编码
+      preprocess: true       # 灰度+Otsu 二值化+中值滤波
+    vision_llm:              # 视觉 LLM 终极兜底（本次 enabled=false，仅预留）
+      enabled: false
+      provider: qwen
+      model: qwen-vl-max
+      api_key: ${DASHSCOPE_API_KEY}
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   max_injected_files: 5
   max_file_injection_tokens: 1000
   etl_max_queue: 100

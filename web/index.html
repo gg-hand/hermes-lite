@@ -65,8 +65,8 @@
       <div class="home-hero-eyebrow">Personal · Lightweight · Agent</div>
       <h1 class="home-hero-title">经纬交织的<br><em>记忆台</em></h1>
       <p class="home-hero-subtitle">
-        一个轻量级个人 AI Agent。长期记忆沉淀、知识库向量检索、ReAct 工具链、Cron 定时调度——
-        在你的本地环境里织出一张持续生长的知识网络。
+        长期记忆沉淀 · 信号池画像 · AI 护栏 · 通用 Workflow · ReAct 工具链 · Cron 调度——
+        在本地环境织出一张持续生长、安全可控的知识网络。
       </p>
       <div class="home-hero-actions">
         <a href="/chat" class="home-btn-primary">开始对话</a>
@@ -80,38 +80,53 @@
     <div class="home-section-header">
       <div class="home-section-label">Capabilities</div>
       <h2 class="home-section-title">能力矩阵</h2>
-      <p class="home-section-desc">六项核心能力，构建从对话到调度、从记忆到安全的完整闭环。</p>
+      <p class="home-section-desc">九项核心能力，从对话到调度、从记忆到护栏的完整闭环。</p>
     </div>
     <div class="capability-grid">
       <div class="capability-card">
         <div class="capability-icon">M</div>
         <div class="capability-title">长期记忆</div>
-        <div class="capability-desc">向量库 + SQLite 双层存储，对话自动沉淀为记忆，衰减调度与惊喜门控兼顾频率与新知。</div>
+        <div class="capability-desc">三层架构：短期缓冲 → ChromaDB 向量库 → memory.md 画像。巩固 + 衰减 + surprise-gating。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">K</div>
-        <div class="capability-title">知识库</div>
-        <div class="capability-desc">PDF/DOCX/TXT/MD 文件上传，ETL 自动分块向量化，OCR 图片识别，LLM 摘要兜底。</div>
+        <div class="capability-icon">●</div>
+        <div class="capability-title">信号池画像</div>
+        <div class="capability-desc">L1/L2/L3 三层信号统一入口，阈值 7 次才写入，Jaccard 去重 + 情感增强，过滤偶发噪音。</div>
+      </div>
+      <div class="capability-card">
+        <div class="capability-icon">G</div>
+        <div class="capability-title">AI 护栏</div>
+        <div class="capability-desc">输入扫描 + 工具脱敏 + 输出 PII 过滤三层 fail-open 软护栏，与硬拦截构成 defense in depth。</div>
+      </div>
+      <div class="capability-card">
+        <div class="capability-icon">W</div>
+        <div class="capability-title">Workflow 引擎</div>
+        <div class="capability-desc">拓扑执行 + retry/fallback/skip/abort 四策略 + 条件跳过 + StepTrace 追踪，多步任务编排。</div>
       </div>
       <div class="capability-card">
         <div class="capability-icon">R</div>
         <div class="capability-title">ReAct 工具链</div>
-        <div class="capability-desc">文件读写、命令执行、HTTP 请求等内置工具，Plan/Todo 任务拆分，多轮推理循环。</div>
+        <div class="capability-desc">Core/Deferred 双层注册，17 种结构化错误，卡死两阶段检测，路径黑白名单保护。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">S</div>
-        <div class="capability-title">安全审批</div>
-        <div class="capability-desc">读取类命令直放，高危操作拦截确认。超时自动拒绝，规则热更新即时生效。</div>
+        <div class="capability-icon">K</div>
+        <div class="capability-title">知识库</div>
+        <div class="capability-desc">PDF/DOCX/TXT/MD/图片上传，自动分块向量化 + OCR，上传后自动注入 LLM 上下文。</div>
       </div>
       <div class="capability-card">
         <div class="capability-icon">C</div>
         <div class="capability-title">Cron 调度</div>
-        <div class="capability-desc">定时执行任务，隔离会话与记忆，提议确认流程，cron_tool 审查机制防止越权。</div>
+        <div class="capability-desc">提议-确认协议 + cron_tool 子进程隔离 + 工具快照锁定，独立 /scheduler 页。</div>
       </div>
       <div class="capability-card">
         <div class="capability-icon">I</div>
         <div class="capability-title">流式中断</div>
-        <div class="capability-desc">生成中可即时停止或优雅中断，断点检测在自然语句边界切出，续接无缝。</div>
+        <div class="capability-desc">SSE 推送 + 立即/优雅中断，断点检测在自然边界切出，per-token 60s 超时。</div>
+      </div>
+      <div class="capability-card">
+        <div class="capability-icon">◎</div>
+        <div class="capability-title">监控可观测</div>
+        <div class="capability-desc">/monitor 独立页 Canvas 直方图 + 信号池攻略进度条 + Metrics SQLite 持久化趋势。</div>
       </div>
     </div>
   </section>
@@ -206,8 +221,8 @@
   <!-- 页脚 -->
   <footer class="home-footer">
     <p>hermes-lite · 个人轻量 AI Agent</p>
-    <p>长期记忆 · 知识库 · ReAct · Cron 调度 · 安全审批</p>
-    <p style="margin-top:8px"><a href="/chat">→ 进入对话</a> · <a href="/monitor">监控面板</a></p>
+    <p>长期记忆 · 信号池画像 · AI 护栏 · Workflow · ReAct · Cron 调度 · 监控可观测</p>
+    <p style="margin-top:8px"><a href="/chat">→ 进入对话</a> · <a href="/monitor">监控面板</a> · <a href="/scheduler">调度面板</a></p>
   </footer>
 
 </div>
