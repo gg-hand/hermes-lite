@@ -160,3 +160,33 @@ web_search:
 
 tasks: {}
 schedules: []
+cron:
+  # inject_history: cron 触发时是否注入上次 run 的 llm_summary 摘要到上下文
+  #   true: 注入 type=summary/fact 摘要（已过滤完整 conversation_turn，避免原文污染）
+  #   false: 完全跳过检索，messages[0] 仅含运行环境段（最严格隔离）
+  # 支持热更新即时生效（无需重启）
+  inject_history: true
+  # max_concurrency: 并发触发的最大 schedule 数（Phase 3 Task 15 限流用）
+  # 超过阈值的触发排队等待，避免 100 schedule 同触发雪崩
+  max_concurrency: 10
+
+# Workflow 编排配置（可选，未配置时使用默认值）
+# 访问 http://127.0.0.1:8000/workflow 可视化编排
+workflow:
+  # workflow 级默认超时（秒），单 step 可在 spec 中覆盖
+  default_timeout_seconds: 3600
+  # step 级默认重试策略（spec 中 on_failure.retry 可覆盖）
+  default_retry:
+    max_attempts: 3
+    backoff_strategy: fixed  # fixed / linear / exponential
+    base_delay_ms: 1000
+    max_delay_ms: 30000
+  # 内置模板白名单（deterministic step 的 template 字段只能用这些）
+  # 不在此列表的 template 名会被 WorkflowValidator 拒绝
+  allowed_templates:
+    - directory_watch
+    - summary
+    - email_notify
+    - cleanup_suggest
+    - research
+    - custom

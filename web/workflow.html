@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="violet">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>hermes-lite · Workflow 编排</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
+
+  <!-- CSS: tokens → base → components → monitor (顶栏复用) → workflow layout -->
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/monitor.css">
+  <link rel="stylesheet" href="/static/css/workflow.css">
+
+  <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
+  <script src="/static/js/theme.js"></script>
+</head>
+<body>
+
+<div class="monitor-app">
+
+  <!-- 顶栏 -->
+  <nav class="monitor-topbar">
+    <div class="monitor-brand">
+      <a href="/" class="monitor-back" title="返回首页">←</a>
+      <h1 class="monitor-title">Workflow 编排 <span class="text-muted mono">/workflow</span></h1>
+    </div>
+
+    <div class="monitor-topbar-actions">
+      <button class="btn btn-ghost btn-sm" id="btnNewWorkflow" title="清空编辑器，从头创建">+ 新建</button>
+      <button class="btn btn-ghost btn-sm" id="btnFromTemplate" title="从模板库选择一个预设开始">从模板创建</button>
+      <button class="btn btn-primary btn-sm" id="btnSaveSchedule" title="保存为调度项并绑定 cron">保存为调度</button>
+
+      <a href="/scheduler" class="monitor-link-chat">调度 →</a>
+      <a href="/chat" class="monitor-link-chat">对话 →</a>
+      <a href="/monitor" class="monitor-link-chat">监控 →</a>
+
+      <!-- 主题切换器 -->
+      <button class="theme-toggle icon-btn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
+    </div>
+  </nav>
+
+  <!-- 主体内容（三栏布局） -->
+  <main class="monitor-main workflow-main">
+
+    <!-- ========== 左栏：模板库 ========== -->
+    <aside class="workflow-templates" id="workflowTemplates">
+      <div class="workflow-templates-header">
+        <h2 class="workflow-col-title">模板库</h2>
+        <input type="search" id="templateSearch" class="template-search-input"
+               placeholder="搜索模板..." title="按名称/描述/标签过滤">
+      </div>
+
+      <div class="workflow-templates-body">
+        <div class="template-group" data-difficulty="beginner">
+          <div class="template-group-label">
+            <span class="difficulty-badge difficulty-beginner">入门</span>
+            <span class="template-group-count" id="beginnerCount">0</span>
+          </div>
+          <div class="template-cards" id="templateCardsBeginner"></div>
+        </div>
+
+        <div class="template-group" data-difficulty="intermediate">
+          <div class="template-group-label">
+            <span class="difficulty-badge difficulty-intermediate">进阶</span>
+            <span class="template-group-count" id="intermediateCount">0</span>
+          </div>
+          <div class="template-cards" id="templateCardsIntermediate"></div>
+        </div>
+
+        <div class="template-group" data-difficulty="advanced">
+          <div class="template-group-label">
+            <span class="difficulty-badge difficulty-advanced">高级</span>
+            <span class="template-group-count" id="advancedCount">0</span>
+          </div>
+          <div class="template-cards" id="templateCardsAdvanced"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== 中栏：编辑器 ========== -->
+    <section class="workflow-editor" id="workflowEditor">
+      <div class="workflow-editor-header">
+        <h2 class="workflow-col-title">YAML 编辑器</h2>
+        <div class="workflow-editor-actions">
+          <button class="btn btn-ghost btn-sm" id="btnAdvancedMode" title="切换到 JSON/YAML 直接编辑模式">高级模式</button>
+          <button class="btn btn-ghost btn-sm" id="btnAddStep" title="添加一个新的 step">+ 添加 step</button>
+          <button class="btn btn-ghost btn-sm" id="btnValidate" title="校验当前 YAML 配置">校验</button>
+        </div>
+      </div>
+
+      <!-- 空状态：3 步引导卡片 -->
+      <div class="workflow-empty-state" id="workflowEmptyState">
+        <div class="empty-state-title">欢迎使用 Workflow 编排</div>
+        <div class="empty-state-subtitle">三步创建你的第一个工作流</div>
+
+        <div class="empty-state-steps">
+          <div class="empty-state-step">
+            <div class="empty-state-step-icon">1</div>
+            <div class="empty-state-step-body">
+              <div class="empty-state-step-title">选模板</div>
+              <div class="empty-state-step-desc">从左侧模板库选一个预设，一键加载到编辑器</div>
+            </div>
+          </div>
+
+          <div class="empty-state-arrow">→</div>
+
+          <div class="empty-state-step">
+            <div class="empty-state-step-icon">2</div>
+            <div class="empty-state-step-body">
+              <div class="empty-state-step-title">配 step</div>
+              <div class="empty-state-step-desc">在下方表单填写每个 step 的参数，或切高级模式改 YAML</div>
+            </div>
+          </div>
+
+          <div class="empty-state-arrow">→</div>
+
+          <div class="empty-state-step">
+            <div class="empty-state-step-icon">3</div>
+            <div class="empty-state-step-body">
+              <div class="empty-state-step-title">绑定 cron</div>
+              <div class="empty-state-step-desc">点"保存为调度"设置 cron 表达式，自动定时执行</div>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-lg" id="btnStartFromTemplate">从模板开始</button>
+      </div>
+
+      <!-- 编辑器主体（默认隐藏，加载模板或新建后显示） -->
+      <div class="workflow-editor-body" id="workflowEditorBody" hidden>
+        <!-- YAML textarea（高级模式时显示） -->
+        <textarea class="workflow-yaml-textarea" id="workflowYamlTextarea"
+                  placeholder="# 在此粘贴或编辑 YAML&#10;name: my_workflow&#10;steps:&#10;  - id: s1&#10;    type: llm&#10;    prompt: ..."
+                  spellcheck="false" hidden></textarea>
+
+        <!-- 结构化表单（默认显示） -->
+        <div class="workflow-form-container" id="workflowFormContainer">
+          <div class="workflow-meta-form">
+            <div class="form-field">
+              <label class="form-field-label">workflow 名称</label>
+              <input type="text" id="workflowName" class="form-field-input"
+                     placeholder="如：每日新闻两步流" title="workflow 的 name 字段">
+            </div>
+            <div class="form-field">
+              <label class="form-field-label">超时（秒）</label>
+              <input type="number" id="workflowTimeout" class="form-field-input"
+                     placeholder="3600" min="1" title="整个 workflow 的 timeout_seconds">
+            </div>
+          </div>
+
+          <div class="workflow-steps-container" id="workflowStepsContainer">
+            <!-- step 卡片由 workflow.js 动态渲染 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 校验结果区 -->
+      <div class="workflow-validate-result" id="workflowValidateResult" hidden></div>
+    </section>
+
+    <!-- ========== 右栏：step 预览 ========== -->
+    <aside class="workflow-preview" id="workflowPreview">
+      <div class="workflow-preview-header">
+        <h2 class="workflow-col-title">step 预览</h2>
+        <span class="text-muted mono" id="previewStepCount">0 steps</span>
+      </div>
+
+      <div class="workflow-preview-body" id="workflowPreviewBody">
+        <div class="preview-empty">加载模板或添加 step 后，这里会显示 step 卡片与依赖关系箭头</div>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- 底部固定"需要帮助？"按钮 -->
+  <button class="workflow-help-fab" id="btnHelp" type="button" title="查看 Workflow 编排帮助">?</button>
+
+</div>
+
+<!-- 帮助弹窗 -->
+<div class="workflow-help-overlay" id="helpOverlay" hidden>
+  <div class="workflow-help-modal">
+    <div class="workflow-help-header">
+      <h3>Workflow 编排快速上手</h3>
+      <button class="workflow-help-close" id="btnCloseHelp" type="button">×</button>
+    </div>
+    <div class="workflow-help-body">
+      <div class="help-section">
+        <div class="help-section-title">三步创建工作流</div>
+        <ol class="help-list">
+          <li><strong>选模板</strong>：左侧模板库按难度分组，点击卡片一键加载</li>
+          <li><strong>配 step</strong>：中栏表单填写参数，或切"高级模式"编辑 YAML</li>
+          <li><strong>绑定 cron</strong>：点"保存为调度"跳转 /scheduler 设置定时</li>
+        </ol>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title">5 种 step 类型</div>
+        <ul class="help-list">
+          <li><code>deterministic</code>：调用内置模板（directory_watch / email_notify 等）</li>
+          <li><code>llm</code>：单轮 LLM 调用（prompt + system）</li>
+          <li><code>tool</code>：直接调用工具（tool + input JSON）</li>
+          <li><code>react</code>：ReactLoop 多轮工具调用（task + max_loops）</li>
+          <li><code>subworkflow</code>：嵌套 workflow（P2 stub）</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title">字段说明</div>
+        <ul class="help-list">
+          <li><code>id</code>：step 唯一标识，用于 depends_on / condition 引用</li>
+          <li><code>depends_on</code>：前置 step id 列表，所有前置完成后才执行本 step</li>
+          <li><code>condition</code>：执行条件，如 <code>steps.s1.outputs.count &gt; 0</code></li>
+          <li><code>timeout_seconds</code>：step 级超时，为空时用 workflow 级默认</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title">示例：两步流</div>
+        <pre class="help-code">name: daily_news
+steps:
+  - id: fetch
+    type: tool
+    config:
+      tool: web_search
+      input:
+        query: 今日热点新闻
+  - id: summarize
+    type: llm
+    depends_on: [fetch]
+    config:
+      prompt: 将上一步新闻整理成 300 字简报</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- workflow.js：三栏交互 + 模板库 + 编辑器 -->
+<script src="/static/js/workflow.js?v=1"></script>
+
+</body>
+</html>

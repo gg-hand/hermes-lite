@@ -77,6 +77,11 @@ try:
         register_plan_tools,
         register_memory_tools,
     )
+    from .agent.intent_classifier import (
+        IntentClassificationResult,
+        IntentType,
+        classify_intent,
+    )
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     try:
         from storage.history_buffer import HistoryBuffer  # type: ignore
@@ -99,6 +104,11 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
             register_plan_tools,
             register_memory_tools,
         )
+        from agent.intent_classifier import (  # type: ignore
+            IntentClassificationResult,
+            IntentType,
+            classify_intent,
+        )
     except ImportError:  # pragma: no cover
         HistoryBuffer = None  # type: ignore
         ConsolidationEngine = None  # type: ignore
@@ -116,6 +126,9 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         register_builtin_tools = None  # type: ignore
         register_plan_tools = None  # type: ignore
         register_memory_tools = None  # type: ignore
+        IntentClassificationResult = None  # type: ignore
+        IntentType = None  # type: ignore
+        classify_intent = None  # type: ignore
 
 if TYPE_CHECKING:
     try:
@@ -257,6 +270,12 @@ class Orchestrator:
         llm_config: Dict[str, Any] = self.config.get("llm", {})
         # history 段：JSONL 持久化目录（相对 cwd），配置缺失时默认 data/history
         history_config: Dict[str, Any] = self.config.get("history", {})
+        # cron 段：ops-reliability-uplift Task 7。inject_history 控制是否注入上次 run
+        # 的 summary 摘要到 cron 上下文（默认 true，可热更新即时生效）
+        cron_cfg: Dict[str, Any] = self.config.get("cron", {})
+        self.cron_inject_history_enabled: bool = bool(
+            cron_cfg.get("inject_history", True)
+        )
 
         # 1. LLM 客户端
         self.llm_client = LLMClient(config=self.config, metrics_collector=self.metrics)
@@ -326,6 +345,12 @@ class Orchestrator:
         # 当前请求的 session_id，供 plan 工具通过 get_session_id 回调获取。
         # 在 chat / chat_stream 入口设置，工具执行时由 lambda 读取最新值。
         self._current_session_id: Optional[str] = None
+
+        # Task 5 P1 修复：当前请求的 intent 分类结果，供下游 Task 6 Planning
+        # Phase / Task 7 ToolRegistry / Task 8 style_policy 读取。在 chat /
+        # chat_stream 入口由 classify_intent 设置，ReactLoop 内通过
+        # orchestrator_ref 弱引用访问。
+        self._current_intent_result: Optional["IntentClassificationResult"] = None
 
         # P1-3: 已激活 Skill 表（session_id → 已激活 skill 名称有序列表）
         # LLM 调用 skill__{name}() 后，activate_skill 将 name 追加到此表，
@@ -729,11 +754,22 @@ class Orchestrator:
         """
 
         def _archive_evicted_message(sid: str, msg: Dict[str, Any]) -> None:
-            """将被淘汰的会话消息归档到向量库。"""
+            """将被淘汰的会话消息归档到向量库。
+
+            ops-reliability-uplift Task 6: cron session 分支已迁移到
+            ``CronScheduler._build_cron_archive_callback``，本闭包仅处理
+            user session（``type=conversation_turn``，向后兼容）。cron session
+            归档改由 scheduler 层调用 ``runs_store.read_last(schedule_id)``
+            读取上次 run 的 ``llm_summary`` 字段（精炼摘要而非完整对话），
+            避免 history_buffer FIFO 淘汰导致摘要丢失或原文污染。
+            """
             # chroma_store 可能在装配 history_buffer 之后才初始化，
             # 因此在回调被调用时再读取属性，初始化失败时静默跳过。
             chroma_store = getattr(self, "chroma_store", None)
             if chroma_store is None:
+                return
+            # cron session 由 scheduler 层归档（type=summary，非 conversation_turn）
+            if sid.startswith("cron:"):
                 return
             raw_content = msg.get("content", "")
             # content 可为 str（纯文本）或 list（Anthropic content blocks，
@@ -753,20 +789,7 @@ class Orchestrator:
                 "role": msg.get("role", "unknown"),
                 "timestamp": msg.get("timestamp", ""),
             }
-            # Phase 8 Task 2.11: cron session 归档到 cron namespace + cron_id，
-            # 与 user session 的 conversation_turn 隔离（与 SubTask 1.4 一致）。
-            # add_memory 在 namespace="cron" 时要求传 cron_id，写入
-            # metadata.namespace / metadata.cron_id 字段，便于检索时按命名空间过滤。
-            if sid.startswith("cron:"):
-                cron_id = sid[5:]
-                chroma_store.add_memory(
-                    content,
-                    metadata=metadata,
-                    namespace="cron",
-                    cron_id=cron_id,
-                )
-            else:
-                chroma_store.add_memory(content, metadata=metadata)
+            chroma_store.add_memory(content, metadata=metadata)
 
         return _archive_evicted_message
 
@@ -793,6 +816,8 @@ class Orchestrator:
         """
         # 记录当前 session_id，供 plan 工具通过 get_session_id 回调获取
         self._current_session_id = session_id
+        # 重置 intent_result，防止上一轮残留（Task 5 P1 修复）
+        self._current_intent_result = None
 
         # 0. 会话切换检测：若 session_id 变化且 pending 非空，先 flush 旧会话沉淀
         await self._maybe_flush_on_session_switch(session_id)
@@ -877,6 +902,45 @@ class Orchestrator:
                     matched_patterns=guardrail_result.matched_patterns,
                     risk_level="medium",
                 )
+
+        # spec agent-metacognition-uplift Task 5: Intent Classifier 前置路由
+        # 在 _build_enhanced_context 之后、ReactLoop.run 之前调用，对用户输入做
+        # 轻量意图分类。classify_intent 全链路异步，失败降级为 SIMPLE_QA，
+        # 低置信度回退到 MULTI_STEP_TASK（走完整 ReactLoop）。
+        # intent_result 保存到 self._current_intent_result，供下游 Task 6
+        # Planning Phase / Task 7 ToolRegistry / Task 8 style_policy 读取。
+        # cron 会话为固定调度，跳过意图识别节省 LLM 调用成本。
+        intent_result: Optional[IntentClassificationResult] = None
+        if is_cron:
+            # cron 会话跳过意图识别，记录监控指标
+            if self.metrics is not None:
+                self.metrics.observe_intent(is_cron_skip=True)
+        elif classify_intent is not None and self.llm_client is not None:
+            _intent_start = time.monotonic()
+            intent_result = await classify_intent(
+                llm_client=self.llm_client,
+                user_input=user_input,
+                history=history,
+                cancel_event=cancel_event,
+            )
+            _intent_latency_ms = (time.monotonic() - _intent_start) * 1000
+            logger.info(
+                "会话 %s intent_classifier 结果: %s (confidence=%.2f)",
+                session_id,
+                intent_result.intent.value,
+                intent_result.confidence,
+            )
+            # 上报 intent 分类监控指标
+            if self.metrics is not None:
+                self.metrics.observe_intent(
+                    intent_type=intent_result.intent.value,
+                    confidence=intent_result.confidence,
+                    fallback_reason=intent_result.fallback_reason,
+                    latency_ms=_intent_latency_ms,
+                )
+        # P1 修复：透传 intent_result 到实例属性，供 ReactLoop 内通过
+        # orchestrator_ref 弱引用读取（Task 6 双层判断依赖此数据）。
+        self._current_intent_result = intent_result
 
         # Phase 9 Task 7.6-7.7: 自动续接包装层 + 总熔断 200 轮
         # react_loop.run 返回 is_complete=False 时（达到 max_loops 或卡死），
@@ -1113,6 +1177,8 @@ class Orchestrator:
 
         # 记录当前 session_id，供 plan 工具通过 get_session_id 回调获取
         self._current_session_id = session_id
+        # 重置 intent_result，防止上一轮残留（Task 5 P1 修复）
+        self._current_intent_result = None
 
         # 1. 获取 session 历史
         history: List[Dict[str, Any]] = []
@@ -1204,6 +1270,44 @@ class Orchestrator:
                     matched_patterns=guardrail_result.matched_patterns,
                     risk_level="medium",
                 )
+
+        # spec agent-metacognition-uplift Task 5: Intent Classifier 前置路由（流式路径）
+        # 在 _build_enhanced_context 之后、run_stream 之前调用，对用户输入做
+        # 轻量意图分类。classify_intent 不依赖 stream_manager，全链路异步，
+        # 失败降级为 SIMPLE_QA，低置信度回退到 MULTI_STEP_TASK。
+        # intent_result 保存到 self._current_intent_result，供下游 Task 6/7/8
+        # 读取（与 chat() 路径保持一致）。
+        # cron 会话为固定调度，跳过意图识别节省 LLM 调用成本。
+        intent_result: Optional[IntentClassificationResult] = None
+        if is_cron:
+            # cron 会话跳过意图识别，记录监控指标
+            if self.metrics is not None:
+                self.metrics.observe_intent(is_cron_skip=True)
+        elif classify_intent is not None and self.llm_client is not None:
+            _intent_start = time.monotonic()
+            intent_result = await classify_intent(
+                llm_client=self.llm_client,
+                user_input=user_input,
+                history=history,
+                cancel_event=cancel_event,
+            )
+            _intent_latency_ms = (time.monotonic() - _intent_start) * 1000
+            logger.info(
+                "会话 %s intent_classifier 结果（流式）: %s (confidence=%.2f)",
+                session_id,
+                intent_result.intent.value,
+                intent_result.confidence,
+            )
+            # 上报 intent 分类监控指标
+            if self.metrics is not None:
+                self.metrics.observe_intent(
+                    intent_type=intent_result.intent.value,
+                    confidence=intent_result.confidence,
+                    fallback_reason=intent_result.fallback_reason,
+                    latency_ms=_intent_latency_ms,
+                )
+        # P1 修复：透传 intent_result 到实例属性（与 chat() 路径一致）。
+        self._current_intent_result = intent_result
 
         response_text: str = ""
         # done 事件携带的完整 messages（含 history + 本轮新增），
@@ -2143,13 +2247,21 @@ class Orchestrator:
             logger.warning("cron 运行环境信息注入失败，跳过: %s", e)
 
         # 1. 检索 cron namespace 长期记忆（按 cron_id 过滤）
-        if self.memory_retriever is not None:
+        # ops-reliability-uplift Task 7: inject_history=false 时跳过检索，
+        # 不注入任何上次 run 摘要（messages[0] 仅含运行环境段）。
+        # 默认 true（注入 type=summary/fact 摘要，已通过 exclude_types
+        # 过滤掉完整 conversation_turn 避免原文污染）。
+        # 用 getattr 兼容 Orchestrator.__new__ 绕过 __init__ 的测试场景
+        # （与 self.decay 的兜底处理方式一致）
+        inject_history_enabled = getattr(self, "cron_inject_history_enabled", True)
+        if self.memory_retriever is not None and inject_history_enabled:
             try:
                 memory_text = await asyncio.to_thread(
                     self.memory_retriever.get_injection_text,
                     user_input,
                     namespace=cron_isolation.namespace,
                     cron_id=cron_isolation.cron_id,
+                    exclude_types={"conversation_turn"},
                 )
                 # 上报记忆检索命中/未命中指标
                 if self.metrics is not None:
@@ -2161,6 +2273,15 @@ class Orchestrator:
                         injection_text = memory_text
             except Exception as e:
                 logger.warning("cron 长期记忆检索注入失败，跳过: %s", e)
+        elif self.memory_retriever is not None and not inject_history_enabled:
+            # inject_history=false 时仍上报指标（hit=False），便于监控区分
+            # "无相关记忆"与"配置关闭检索"
+            if self.metrics is not None:
+                self.metrics.observe_memory_retrieval(hit=False)
+            logger.debug(
+                "cron inject_history=false，跳过记忆检索 cron_id=%s",
+                cron_isolation.cron_id,
+            )
 
         # 2. cron 路径不注入 TaskManager 进度（inject_todo=False）
         #    避免动态变量破坏缓存稳定性

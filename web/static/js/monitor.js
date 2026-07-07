@@ -371,6 +371,13 @@
     renderToolErrorClasses(m.tool_error_classes_total || {}, toolCalls);
     // 渲染审批统计
     renderApprovalStats(m.approval_decisions_total || {});
+    // 渲染意图分类监控
+    renderIntentStats({
+      classifications: m.intent_classifications_total || {},
+      fallbacks: m.intent_fallbacks_total || {},
+      latency: m.intent_latency_ms || {},
+      cronSkips: m.intent_cron_skips_total || 0,
+    });
 
     lastMetrics = m;
   }
@@ -437,6 +444,103 @@
         </div>
       `;
     }).join('');
+  }
+
+  // ----------------------------------------------------------------
+  // 意图分类监控渲染（spec agent-metacognition-uplift Task 5）
+  // ----------------------------------------------------------------
+  const INTENT_META = {
+    simple_qa:        { label: '简单问答',   cls: 'info' },
+    knowledge_lookup: { label: '知识检索',   cls: 'accent' },
+    multi_step_task:  { label: '多步任务',   cls: 'warning' },
+    out_of_scope:     { label: '超出能力',   cls: 'danger' },
+  };
+  const INTENT_FALLBACK_META = {
+    timeout:        { label: 'LLM 超时',    cls: 'danger' },
+    llm_failure:    { label: 'LLM 异常',    cls: 'danger' },
+    parse_failure:  { label: '解析失败',    cls: 'warning' },
+    low_confidence: { label: '低置信度回退', cls: 'warning' },
+  };
+
+  function renderIntentStats(data) {
+    const body = $('intentStatsBody');
+    const cls = data.classifications || {};
+    const fbs = data.fallbacks || {};
+    const latency = data.latency || {};
+    const cronSkips = data.cronSkips || 0;
+
+    const clsEntries = Object.entries(cls);
+    const fbEntries = Object.entries(fbs);
+    const clsTotal = clsEntries.reduce((a, [, n]) => a + n, 0);
+    const fbTotal = fbEntries.reduce((a, [, n]) => a + n, 0);
+    const grandTotal = clsTotal + cronSkips;
+
+    if (grandTotal === 0 && fbTotal === 0) {
+      body.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无数据</div></div>';
+      return;
+    }
+
+    const rows = [];
+    // 分类分布
+    const sortedCls = clsEntries.sort((a, b) => b[1] - a[1]);
+    for (const [key, count] of sortedCls) {
+      const meta = INTENT_META[key] || { label: key, cls: 'muted' };
+      const pct = clsTotal > 0 ? count / clsTotal : 0;
+      rows.push(`
+        <div class="term-row">
+          <span class="term-label">${escapeHtml(meta.label)}</span>
+          <div class="term-bar">
+            <div class="term-bar-fill ${meta.cls}" style="width: ${Math.max(2, pct * 100).toFixed(1)}%;"></div>
+          </div>
+          <span class="term-count">${fmtNum(count)}</span>
+          <span class="term-pct">${fmtPct(pct)}</span>
+        </div>
+      `);
+    }
+    // cron 跳过
+    if (cronSkips > 0) {
+      const pct = grandTotal > 0 ? cronSkips / grandTotal : 0;
+      rows.push(`
+        <div class="term-row">
+          <span class="term-label">cron 跳过</span>
+          <div class="term-bar">
+            <div class="term-bar-fill muted" style="width: ${Math.max(2, pct * 100).toFixed(1)}%;"></div>
+          </div>
+          <span class="term-count">${fmtNum(cronSkips)}</span>
+          <span class="term-pct">${fmtPct(pct)}</span>
+        </div>
+      `);
+    }
+    // 分隔线 + 降级原因
+    if (fbTotal > 0) {
+      rows.push('<div class="term-divider" style="grid-column: 1 / -1;height:1px;background:var(--border-color);margin:8px 0;"></div>');
+      for (const [key, count] of fbEntries.sort((a, b) => b[1] - a[1])) {
+        const meta = INTENT_FALLBACK_META[key] || { label: key, cls: 'muted' };
+        const pct = fbTotal > 0 ? count / fbTotal : 0;
+        rows.push(`
+          <div class="term-row">
+            <span class="term-label">降级: ${escapeHtml(meta.label)}</span>
+            <div class="term-bar">
+              <div class="term-bar-fill ${meta.cls}" style="width: ${Math.max(2, pct * 100).toFixed(1)}%;"></div>
+            </div>
+            <span class="term-count">${fmtNum(count)}</span>
+            <span class="term-pct">${fmtPct(pct)}</span>
+          </div>
+        `);
+      }
+    }
+    // 延迟统计
+    if (latency.count && latency.count > 0) {
+      const avg = latency.sum / latency.count;
+      rows.push('<div class="term-divider" style="grid-column: 1 / -1;height:1px;background:var(--border-color);margin:8px 0;"></div>');
+      rows.push(`
+        <div class="term-row">
+          <span class="term-label">平均延迟</span>
+          <span class="term-count" style="grid-column: 2 / -1;">${avg.toFixed(0)} ms（min ${latency.min.toFixed(0)} / max ${latency.max.toFixed(0)}）</span>
+        </div>
+      `);
+    }
+    body.innerHTML = rows.join('');
   }
 
   // ----------------------------------------------------------------
@@ -711,11 +815,11 @@
     } catch (e) {
       console.error('history error:', e);
       const body = $('historyTableBody');
-      if (body) body.innerHTML = '<tr><td colspan="7" class="empty-state-text text-danger">加载失败</td></tr>';
+      if (body) body.innerHTML = '<tr><td colspan="10" class="empty-state-text text-danger">加载失败</td></tr>';
     }
   }
 
-  // 渲染 3 个 sparkline（Task 6 - 2026-07-07）
+  // 渲染 5 个 sparkline（Task 6 - 2026-07-07 + Task 3 - intent）
   function renderSparklines(records) {
     if (!records || records.length === 0) {
       document.querySelectorAll('.uxp-sparkline').forEach(el => el.classList.add('empty'));
@@ -723,15 +827,26 @@
     }
     // 按日期正序
     const sorted = records.slice().sort((a, b) => (a.date > b.date ? 1 : -1));
+    // intent_classifications_total / intent_fallbacks_total 是 dict，需 sum 后画线
+    const sumDict = obj => {
+      if (!obj) return 0;
+      if (typeof obj === 'string') {
+        try { obj = JSON.parse(obj); } catch (e) { return 0; }
+      }
+      if (typeof obj !== 'object') return 0;
+      return Object.values(obj).reduce((a, b) => a + (Number(b) || 0), 0);
+    };
     const metrics = [
-      { key: 'llm_calls_total', label: 'LLM 调用数', format: v => fmtNum(v) },
-      { key: 'error_rate', label: '错误率', format: v => fmtPct(v) },
-      { key: 'memory_used_mb', label: '内存 (MB)', format: v => `${Math.round(v)} MB` },
+      { key: 'llm_calls_total', label: 'LLM 调用数', format: v => fmtNum(v), extract: r => Number(r.llm_calls_total || 0) },
+      { key: 'error_rate', label: '错误率', format: v => fmtPct(v), extract: r => Number(r.error_rate || 0) },
+      { key: 'memory_used_mb', label: '内存 (MB)', format: v => `${Math.round(v)} MB`, extract: r => Number(r.memory_used_mb || 0) },
+      { key: 'intent_classifications_total', label: '意图分类总数', format: v => fmtNum(v), extract: r => sumDict(r.intent_classifications_total) },
+      { key: 'intent_fallbacks_total', label: '意图降级次数', format: v => fmtNum(v), extract: r => sumDict(r.intent_fallbacks_total) },
     ];
-    metrics.forEach(({ key, format }) => {
+    metrics.forEach(({ key, format, extract }) => {
       const el = document.querySelector(`.uxp-sparkline[data-metric="${key}"]`);
       if (!el) return;
-      const values = sorted.map(r => Number(r[key] || 0));
+      const values = sorted.map(extract);
       const latest = values[values.length - 1] || 0;
       const valueEl = el.querySelector('.uxp-sparkline-value');
       if (valueEl) valueEl.textContent = format(latest);
@@ -759,9 +874,18 @@
     const body = $('historyTableBody');
     if (!body) return;
     if (!records || records.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" class="empty-state-text">暂无历史数据</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="empty-state-text">暂无历史数据</td></tr>';
       return;
     }
+    // 安全读取 dict 字段（兼容字符串 / null / 损坏 JSON）
+    const safeDictSum = obj => {
+      if (!obj) return 0;
+      if (typeof obj === 'string') {
+        try { obj = JSON.parse(obj); } catch (e) { return 0; }
+      }
+      if (typeof obj !== 'object') return 0;
+      return Object.values(obj).reduce((a, b) => a + (Number(b) || 0), 0);
+    };
     // 按日期降序展示（最新在前）
     body.innerHTML = records.slice().reverse().map(r => {
       const llmAvg = r.llm_latency_ms && r.llm_latency_ms.count > 0
@@ -770,9 +894,18 @@
       const memRate = memTotal > 0
         ? fmtPct(r.memory_retrieval_hits_total / memTotal) : '—';
       const toolTotal = Object.values(r.tool_calls_total || {}).reduce((a, b) => a + b, 0);
+      // intent 字段（Task 3）
+      const intentTotal = safeDictSum(r.intent_classifications_total);
+      const fallbackTotal = safeDictSum(r.intent_fallbacks_total);
+      const fallbackRate = intentTotal > 0
+        ? fmtPct(fallbackTotal / intentTotal) : '—';
+      const cronSkips = Number(r.intent_cron_skips_total || 0);
       return `<tr>
         <td class="mono">${escapeHtml(r.date)}</td>
         <td class="num mono">${fmtNum(r.llm_calls_total || 0)}</td>
+        <td class="num mono">${fmtNum(intentTotal)}</td>
+        <td class="num mono">${fallbackRate}</td>
+        <td class="num mono">${fmtNum(cronSkips)}</td>
         <td class="num mono">${fmtNum(r.llm_tokens_input_total || 0)}</td>
         <td class="num mono">${fmtNum(r.llm_tokens_output_total || 0)}</td>
         <td class="num mono">${fmtNum(toolTotal)}</td>

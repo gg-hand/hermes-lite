@@ -3784,6 +3784,9 @@ _RUNTIME_HOTUPDATE_MAP = {
     "reasoning.cron.enabled": ("llm_client.cron_reasoning_enabled", bool),
     "reasoning.cron.effort": ("llm_client.cron_reasoning_effort", str),
     "reasoning.persist_thinking": ("history_buffer.persist_thinking", bool),
+    # ops-reliability-uplift Task 7: cron 上下文注入开关（属性链从 orchestrator 起步，
+    # 与 memory.history_max_turns 等条目格式一致，不带 orchestrator. 前缀）
+    "cron.inject_history": ("cron_inject_history_enabled", bool),
 }
 
 
@@ -4473,6 +4476,18 @@ def serve_scheduler():
         raise HTTPException(status_code=404, detail="调度页未找到")
     return FileResponse(
         scheduler_path,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/workflow")
+def serve_workflow():
+    """提供 Workflow 编排页。"""
+    workflow_path = os.path.join(_WEB_DIR, "workflow.html")
+    if not os.path.exists(workflow_path):
+        raise HTTPException(status_code=404, detail="Workflow 页未找到")
+    return FileResponse(
+        workflow_path,
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 

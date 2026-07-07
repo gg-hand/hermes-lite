@@ -1120,5 +1120,222 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap["tool_retries_total"], {})
 
 
+# ---------------------------------------------------------------------------
+# Phase 元认知 Task 1: Agent 自画像失败信号触发测试
+# ---------------------------------------------------------------------------
+
+
+class TestAgentFailureSignalTrigger(unittest.IsolatedAsyncioTestCase):
+    """验证 ReactLoop 在连续失败/PERMANENT 错误时触发 Agent 信号入池。
+
+    覆盖：
+    - 连续失败≥2 次触发入池（且单 run 仅触发一次）
+    - PERMANENT 错误类立即触发入池
+    - 成功调用重置计数器
+    - cron 会话跳过
+    - 用户失败反馈关键词触发入池
+    - orchestrator_ref 为 None 时降级安全
+    """
+
+    def setUp(self):
+        """构造 ReactLoop 实例，注入 mock orchestrator 与 signal_pool。"""
+        self.mock_llm = MagicMock()
+        self.mock_llm.chat_main = AsyncMock()
+        self.mock_tool_registry = MagicMock()
+        self.mock_tool_registry.get_tools_schema.return_value = [
+            {"name": "search", "description": "search", "input_schema": {}},
+        ]
+        # mock orchestrator + signal_pool
+        self.mock_signal_pool = MagicMock()
+        self.mock_orchestrator = MagicMock()
+        self.mock_orchestrator.signal_pool = self.mock_signal_pool
+        self.loop = ReactLoop(
+            llm_client=self.mock_llm,
+            tool_registry=self.mock_tool_registry,
+            max_loops=10,
+            orchestrator_ref=self.mock_orchestrator,
+        )
+
+    def _make_failing_tool_use_response(self, tool_name="search"):
+        """构造请求工具调用的 LLM 响应。"""
+        return _make_llm_response(
+            text="let me try",
+            stop_reason="tool_use",
+            tool_use_blocks=[_make_tool_use_block(name=tool_name, block_id="tu_1")],
+        )
+
+    def _make_end_turn_response(self, text="done"):
+        return _make_llm_response(text=text, stop_reason="end_turn")
+
+    async def test_consecutive_failures_2_triggers_signal(self):
+        """连续 2 次工具失败应触发 Agent 信号入池。"""
+        # 第 1 轮：工具失败
+        # 第 2 轮：工具失败（连续 2 次）→ 触发入池
+        # 第 3 轮：end_turn
+        self.mock_llm.chat_main.side_effect = [
+            self._make_failing_tool_use_response(),
+            self._make_failing_tool_use_response(),
+            self._make_end_turn_response(),
+        ]
+        # 工具执行抛异常
+        self.mock_tool_registry.execute_tool.side_effect = RuntimeError("tool broken")
+
+        await self.loop.run("test", session_id="sess_1")
+
+        # 应触发 1 次入池（连续失败 2 次）
+        self.assertEqual(self.mock_signal_pool.add.call_count, 1)
+        call_kwargs = self.mock_signal_pool.add.call_args.kwargs
+        self.assertEqual(call_kwargs["target"], "agent")
+        self.assertEqual(call_kwargs["section"], "Agent 自画像")
+        self.assertEqual(call_kwargs["source"], "L1_agent_failure")
+        self.assertIn("search", call_kwargs["content"])
+        self.assertIn("2 次", call_kwargs["content"])
+
+    async def test_single_run_triggers_at_most_once(self):
+        """同一 run 内多次失败仅触发一次入池。"""
+        # 4 轮工具失败 + end_turn
+        responses = [self._make_failing_tool_use_response() for _ in range(4)]
+        responses.append(self._make_end_turn_response())
+        self.mock_llm.chat_main.side_effect = responses
+        self.mock_tool_registry.execute_tool.side_effect = RuntimeError("broken")
+
+        await self.loop.run("test", session_id="sess_2")
+
+        # 4 次失败，但仅触发 1 次入池（agent_failure_triggered 锁定）
+        self.assertEqual(self.mock_signal_pool.add.call_count, 1)
+
+    async def test_success_resets_failure_counter(self):
+        """工具成功调用应重置连续失败计数器。"""
+        # 失败 → 成功 → 失败 → 失败 → end_turn
+        # 第二次连续失败次数应为 2（被成功重置后重新累加），触发入池
+        # 注：每次工具调用使用不同参数，避免触发 stuck detection
+        # （stuck detection 会在同参数重复 ≥3 次时硬终止循环）
+        def make_tool_use_with_params(param_val):
+            return _make_llm_response(
+                text="let me try",
+                stop_reason="tool_use",
+                tool_use_blocks=[
+                    _make_tool_use_block(
+                        name="search",
+                        input_data={"q": param_val},
+                        block_id="tu_1",
+                    )
+                ],
+            )
+
+        self.mock_llm.chat_main.side_effect = [
+            make_tool_use_with_params("a"),
+            make_tool_use_with_params("b"),
+            make_tool_use_with_params("c"),
+            make_tool_use_with_params("d"),
+            self._make_end_turn_response(),
+        ]
+        # 失败 → 成功 → 失败 → 失败
+        self.mock_tool_registry.execute_tool.side_effect = [
+            RuntimeError("fail1"),
+            "success",
+            RuntimeError("fail2"),
+            RuntimeError("fail3"),
+        ]
+
+        await self.loop.run("test", session_id="sess_3")
+
+        # 第 1 次失败（count=1）→ 成功重置（count=0）
+        # 第 3 次失败（count=1）→ 第 4 次失败（count=2）→ 触发入池
+        self.assertEqual(self.mock_signal_pool.add.call_count, 1)
+
+    async def test_permanent_error_immediately_triggers(self):
+        """PERMANENT 错误类应在首次失败时立即触发入池。
+
+        通过 mock ErrorClassifier 返回 PERMANENT 分类。
+        """
+        # 单次工具失败 + PERMANENT 分类 + end_turn
+        self.mock_llm.chat_main.side_effect = [
+            self._make_failing_tool_use_response(),
+            self._make_end_turn_response(),
+        ]
+        # 工具返回错误结果字符串（让 ErrorClassifier 分类为 PERMANENT）
+        self.mock_tool_registry.execute_tool.return_value = "Error: 404 not found"
+
+        # mock ErrorClassifier
+        from src.agent import error_classifier as ec_mod
+        original_classify = ec_mod.ErrorClassifier.classify
+        try:
+            ec_mod.ErrorClassifier.classify = MagicMock(
+                return_value=(ec_mod.ErrorClass.PERMANENT, "404")
+            )
+            await self.loop.run("test", session_id="sess_perm")
+        finally:
+            ec_mod.ErrorClassifier.classify = original_classify
+
+        # PERMANENT 错误应立即触发入池（即使连续失败仅 1 次）
+        self.assertEqual(self.mock_signal_pool.add.call_count, 1)
+        call_kwargs = self.mock_signal_pool.add.call_args.kwargs
+        self.assertIn("permanent", call_kwargs["content"])
+
+    async def test_cron_session_skips_signal_pool(self):
+        """cron 会话不应触发 Agent 信号入池。"""
+        # 多次工具失败
+        self.mock_llm.chat_main.side_effect = [
+            self._make_failing_tool_use_response(),
+            self._make_failing_tool_use_response(),
+            self._make_end_turn_response(),
+        ]
+        self.mock_tool_registry.execute_tool.side_effect = RuntimeError("broken")
+
+        await self.loop.run("test", session_id="cron:daily_review")
+
+        # cron 会话不触发入池
+        self.assertEqual(self.mock_signal_pool.add.call_count, 0)
+
+    async def test_user_failure_feedback_triggers_signal(self):
+        """用户说"又错了"等关键词应触发 Agent 信号入池。"""
+        # 直接 end_turn，但有"又错了"关键词
+        self.mock_llm.chat_main.return_value = self._make_end_turn_response()
+
+        await self.loop.run("你又错了，这个问题", session_id="sess_feedback")
+
+        # 应触发入池（user_feedback 路径）
+        self.assertEqual(self.mock_signal_pool.add.call_count, 1)
+        call_kwargs = self.mock_signal_pool.add.call_args.kwargs
+        self.assertEqual(call_kwargs["target"], "agent")
+        self.assertIn("user_feedback", call_kwargs["content"])
+
+    async def test_no_signal_pool_graceful_degradation(self):
+        """orchestrator_ref 为 None 或 signal_pool 为 None 时安全降级。"""
+        loop = ReactLoop(
+            llm_client=self.mock_llm,
+            tool_registry=self.mock_tool_registry,
+            max_loops=5,
+            orchestrator_ref=None,
+        )
+        # 多次失败
+        self.mock_llm.chat_main.side_effect = [
+            self._make_failing_tool_use_response(),
+            self._make_failing_tool_use_response(),
+            self._make_end_turn_response(),
+        ]
+        self.mock_tool_registry.execute_tool.side_effect = RuntimeError("broken")
+
+        # 不应抛异常
+        result = await loop.run("test", session_id="sess_no_pool")
+        self.assertIsNotNone(result)
+        # mock_signal_pool 不应被调用（loop 没有 orchestrator 引用）
+        self.mock_signal_pool.add.assert_not_called()
+
+    async def test_normal_success_no_signal_triggered(self):
+        """工具调用成功时不应触发 Agent 信号入池。"""
+        self.mock_llm.chat_main.side_effect = [
+            self._make_failing_tool_use_response(),
+            self._make_end_turn_response(),
+        ]
+        self.mock_tool_registry.execute_tool.return_value = "success result"
+
+        await self.loop.run("test", session_id="sess_success")
+
+        # 成功路径不触发入池
+        self.mock_signal_pool.add.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

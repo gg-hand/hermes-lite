@@ -317,6 +317,91 @@ class ReactLoop:
         )
 
     # ------------------------------------------------------------------
+    # Phase 元认知: Agent 自画像信号触发（连续失败/PERMANENT 错误）
+    # ------------------------------------------------------------------
+    def _maybe_trigger_agent_failure_signal(
+        self,
+        session_id: Optional[str],
+        tool_name: str,
+        error_class: Optional[str],
+        consecutive_failures: int,
+    ) -> bool:
+        """触发 Agent 自画像信号入池（连续失败≥2 次 或 PERMANENT 错误类）。
+
+        通过 ``orchestrator_ref`` 弱引用访问 ``signal_pool``，调用
+        ``signal_pool.add(target="agent", section="Agent 自画像", content=...)``
+        将失败模式作为 Agent 自画像信号入池。signal_pool 内部按 target 分组
+        去重 + 计数累加，达阈值（7 次）后写入 ``## Agent 自画像`` section。
+
+        cron 会话（session_id 以 ``cron:`` 开头）跳过，避免污染用户画像
+        （与 L1 路径的 cron 隔离约束一致）。
+
+        参数:
+            session_id: 会话 ID（用于 cron 隔离判断）。
+            tool_name: 失败的工具名。
+            error_class: 错误分类（``ErrorClass.value`` 字符串），可为 None。
+            consecutive_failures: 当前连续失败次数。
+
+        返回:
+            True 表示已成功触发入池；False 表示因 signal_pool 不可用或
+            cron 会话而跳过。
+        """
+        # cron 会话跳过：避免 cron 自动任务污染 Agent 自画像
+        if session_id and isinstance(session_id, str) and session_id.startswith("cron:"):
+            return False
+        orch = self._orchestrator_ref() if self._orchestrator_ref else None
+        if orch is None or getattr(orch, "signal_pool", None) is None:
+            logger.debug(
+                "signal_pool 不可用，Agent 失败信号未入池（tool=%s, failures=%d）",
+                tool_name, consecutive_failures,
+            )
+            return False
+        # 构造失败模式描述（精炼，避免长文本污染画像）
+        ec_part = f"，错误类型={error_class}" if error_class else ""
+        content = (
+            f"Agent 在工具 {tool_name} 上连续失败 {consecutive_failures} 次{ec_part}"
+        )
+        try:
+            orch.signal_pool.add(
+                content=content,
+                source="L1_agent_failure",
+                section="Agent 自画像",
+                target="agent",
+            )
+            logger.info(
+                "Agent 失败信号入池（target=agent）: tool=%s failures=%d ec=%s",
+                tool_name, consecutive_failures, error_class,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Agent 失败信号入池异常: %s", e)
+            return False
+
+    def _check_user_failure_feedback(self, user_input: str, session_id: Optional[str]) -> None:
+        """检测用户对失败的口头反馈（"又错了"/"上次说过"等），触发 Agent 信号入池。
+
+        用户说"又错了"/"上次说过"等表明 Agent 重复犯错，应作为 Agent 自画像
+        信号入池。本方法在 run()/run_stream() 入口处调用，触发后不阻塞主流程。
+
+        参数:
+            user_input: 用户输入文本。
+            session_id: 会话 ID（用于 cron 隔离判断）。
+        """
+        if not user_input:
+            return
+        # 关键词匹配：用户明确表达 Agent 又错了/重复犯错
+        feedback_keywords = ("又错了", "上次说过", "不是说过", "说过不要", "重复犯")
+        for kw in feedback_keywords:
+            if kw in user_input:
+                self._maybe_trigger_agent_failure_signal(
+                    session_id=session_id,
+                    tool_name="unknown",
+                    error_class="user_feedback",
+                    consecutive_failures=1,
+                )
+                return
+
+    # ------------------------------------------------------------------
     # Phase 9 Task 7.3: 单工具重试检测辅助方法
     # ------------------------------------------------------------------
     @staticmethod
@@ -691,6 +776,10 @@ class ReactLoop:
         # 用户输入计入信息计数器
         self._info_count += 1
 
+        # Phase 元认知 Task 1: 检测用户对失败的口头反馈（"又错了"/"上次说过"等），
+        # 触发 Agent 自画像信号入池。非阻塞，触发后继续主流程。
+        self._check_user_failure_feedback(user_input, session_id)
+
         # 2. 获取工具 schema（tool_registry 为 None 时纯对话模式）
         # Phase 8 Task 5.7: tools_override 优先（cron 路径请求级过滤）
         tools: Optional[List[Dict[str, Any]]] = None
@@ -715,6 +804,12 @@ class ReactLoop:
         # 不执行工具，继续循环给 LLM 自我纠正机会）；二次命中 → stop（硬终止）。
         # (tool_name, params_hash) 对的集合，per-run 局部状态。
         warned_pairs: set = set()
+        # Phase 元认知 Task 1: Agent 自画像失败信号触发状态（per-run 局部）
+        # consecutive_tool_failures: 连续工具失败次数，is_error 时递增，成功时重置
+        # agent_failure_triggered: 本轮是否已触发过 Agent 失败信号入池，
+        #   避免同一 run 内重复入池（多次失败仅入池一次，由 signal_pool 内部去重）
+        consecutive_tool_failures: int = 0
+        agent_failure_triggered: bool = False
 
         for loop_idx in range(self.max_loops):
             # 检测点 1：每轮开始前检查 cancel_event
@@ -1017,6 +1112,30 @@ class ReactLoop:
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
 
+                # Phase 元认知 Task 1: Agent 自画像失败信号触发
+                # 连续失败≥2 次 或 PERMANENT 错误类 → 触发 agent 信号入池（仅一次/run）
+                # 成功时重置计数器；触发后不再重复入池（signal_pool 内部仍有去重）
+                if is_error:
+                    consecutive_tool_failures += 1
+                    should_trigger = (
+                        not agent_failure_triggered
+                        and (
+                            consecutive_tool_failures >= 2
+                            or error_class == "permanent"
+                        )
+                    )
+                    if should_trigger:
+                        triggered = self._maybe_trigger_agent_failure_signal(
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            error_class=error_class,
+                            consecutive_failures=consecutive_tool_failures,
+                        )
+                        if triggered:
+                            agent_failure_triggered = True
+                else:
+                    consecutive_tool_failures = 0
+
                 # Phase 9 Task 6: 工具返回值脱敏（fail-open 软护栏）
                 # 对外部工具返回值做注入模式替换 + 边界标记，
                 # 可信工具直返原值。GuardrailEngine 内部已 try/except fail-open。
@@ -1127,6 +1246,9 @@ class ReactLoop:
         # 用户输入计入信息计数器
         self._info_count += 1
 
+        # Phase 元认知 Task 1: 检测用户对失败的口头反馈（与 run() 对称）
+        self._check_user_failure_feedback(user_input, session_id)
+
         # 2. 获取工具 schema（Phase 8 Task 5.7: tools_override 优先）
         tools: Optional[List[Dict[str, Any]]] = None
         if tools_override is not None:
@@ -1147,6 +1269,9 @@ class ReactLoop:
         warned_pairs: set = set()
         # reasoning-only 回复全局重试预算（跨轮累计，上限 3 次，Task 12）
         reasoning_only_retry_count: int = 0
+        # Phase 元认知 Task 1: Agent 自画像失败信号触发状态（per-run 局部，与 run() 对称）
+        consecutive_tool_failures: int = 0
+        agent_failure_triggered: bool = False
 
         for loop_idx in range(self.max_loops):
             # 🔴 检测点 1：每轮循环开始前检测中断
@@ -1773,6 +1898,30 @@ class ReactLoop:
                         self.metrics.observe_tool_retry(tool_name)
                 # 执行后记录到滑动窗口（含 error_class）
                 recent_tool_calls.append((tool_name, params_hash, error_class))
+
+                # Phase 元认知 Task 1: Agent 自画像失败信号触发（与 run() 对称）
+                # 连续失败≥2 次 或 PERMANENT 错误类 → 触发 agent 信号入池（仅一次/run）
+                # 成功时重置计数器；触发后不再重复入池（signal_pool 内部仍有去重）
+                if is_error:
+                    consecutive_tool_failures += 1
+                    should_trigger = (
+                        not agent_failure_triggered
+                        and (
+                            consecutive_tool_failures >= 2
+                            or error_class == "permanent"
+                        )
+                    )
+                    if should_trigger:
+                        triggered = self._maybe_trigger_agent_failure_signal(
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            error_class=error_class,
+                            consecutive_failures=consecutive_tool_failures,
+                        )
+                        if triggered:
+                            agent_failure_triggered = True
+                else:
+                    consecutive_tool_failures = 0
 
                 # Phase 9 Task 6: 工具返回值脱敏（fail-open 软护栏）
                 # 对外部工具返回值做注入模式替换 + 边界标记，

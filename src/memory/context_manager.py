@@ -41,7 +41,9 @@ Plan 模式采用软约束：通过 tool result 注入 system-reminder，
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # ToolRegistry / MemoryMdManager / MemoryRetriever / HistoryBuffer 仅用于类型提示，
@@ -75,6 +77,67 @@ logger = logging.getLogger(__name__)
 # system 提示词与用户画像之间的分隔符
 # 使用稳定的分隔符保证字节级稳定，便于前缀缓存命中
 _PROFILE_SEPARATOR = "\n\n---\n\n"
+
+# 历史教训注入的默认 JSONL 路径（Task 9 的 failure_library.py 写入）
+_DEFAULT_FAILURE_CASES_PATH = "data/failure_cases.jsonl"
+
+# 历史教训段 token 硬上限（spec 约定 ≤300 token）
+_MAX_LESSONS_TOKENS = 300
+
+# Agent 自画像段 token 硬上限（spec.md line 81 约定 ≤200 token）
+_MAX_AGENT_PROFILE_TOKENS = 200
+
+# 沟通偏好段字符硬上限（spec.md line 264 约定 ≤1000 字符）
+_MAX_COMMUNICATION_CHARS = 1000
+
+# messages[0] 全部注入段的字符软上限（避免上下文膨胀）
+# 按 1 token ≈ 3.5 字符（中英混合）估算，8000 字符 ≈ 2300 token
+_MAX_INJECTION_CHARS = 8000
+
+# 惊讶门控阈值：失败案例与已有记忆相似度 > 此值时跳过注入（避免冗余）
+_SURPRISE_GATE_THRESHOLD = 0.92
+
+# 失败案例置信度下限：低于此值的案例不注入
+_MIN_CONFIDENCE = 0.6
+
+
+def _estimate_tokens(text: str) -> int:
+    """粗略估算文本 token 数（1 token ≈ 3.5 字符，中英混合近似值）。
+
+    用于 token 预算检查，不需要精确值。精确 tokenization 由 LLM API 侧完成。
+    """
+    return max(1, len(text) // 3 + 1) if text else 0
+
+
+def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    """计算两个向量的余弦相似度（假设已 L2 归一化则等价于点积）。
+
+    避免在 context_manager 顶层导入 numpy，使用纯 Python 实现。
+    """
+    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+        return 0.0
+    dot = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = sum(a * a for a in vec_a) ** 0.5
+    norm_b = sum(b * b for b in vec_b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _compute_embedding(text: str) -> List[float]:
+    """计算文本的 embedding 向量（懒加载 chromadb ONNX 模型）。
+
+    复用 ChromaMemoryStore 的 ONNXMiniLM_L6_V2 模型，保证 embedding 空间一致。
+    模型加载失败时返回空列表（调用方负责降级处理）。
+    """
+    try:
+        from ..storage.chroma_store import _get_onnx_embedder, _normalize
+        model = _get_onnx_embedder()
+        raw = model([text])[0]
+        return _normalize(raw).tolist()
+    except Exception as e:
+        logger.warning("embedding 计算失败，跳过相似度检索: %s", e)
+        return []
 
 
 # Plan 模式软约束 system-reminder 文本
@@ -123,6 +186,7 @@ class ContextManager:
         condenser: Optional["Condenser"] = None,
         decay: Optional["MemoryDecay"] = None,
         file_context_injector: Optional["FileContextInjector"] = None,
+        failure_cases_path: str = _DEFAULT_FAILURE_CASES_PATH,
     ) -> None:
         """初始化上下文管理器。
 
@@ -139,6 +203,8 @@ class ContextManager:
             decay: 可选的 MemoryDecay 实例，用于三因子衰减排序。当前实现
                 仅做属性存储（MemoryRetriever 在构造时已注入 decay），
                 保留参数便于后续扩展与 orchestrator 装配一致性。
+            failure_cases_path: 失败案例库 JSONL 路径，默认 data/failure_cases.jsonl。
+                文件不存在时教训反哺注入返回空字符串（空文件兜底）。
         """
         self.system_prompt = system_prompt
         self.tool_registry = tool_registry
@@ -150,6 +216,8 @@ class ContextManager:
         self.decay = decay
         # 文件摘要注入器（可选，用于文件 ETL 管道）
         self.file_context_injector = file_context_injector
+        # 失败案例库路径（Task 4 教训反哺，Task 9 的 failure_library.py 写入）
+        self.failure_cases_path = failure_cases_path
         # 透传给 memory_retriever：若已注入 retriever 且未显式设置 decay，则透传
         # （orchestrator 通常会同时传 decay 给 retriever 构造函数，此处为兜底）
         if self.memory_retriever is not None and decay is not None:
@@ -522,17 +590,19 @@ class ContextManager:
     def _build_system_text(self) -> str:
         """构建 system 字段文本（缓存命中区的核心部分）。
 
-        拼接顺序：SYSTEM_PROMPT + 分隔符 + 用户画像全文。
+        拼接顺序：SYSTEM_PROMPT + 分隔符 + 用户画像主体（排除 Agent 自画像
+        和沟通偏好段）。Agent 自画像和沟通偏好段从 system_text 移出注入
+        messages[0] 动态区，避免异步更新破坏 system_text 缓存稳定性。
         用户画像为空时仅返回 SYSTEM_PROMPT，保证字节级稳定。
 
         返回:
             system 字段的完整文本。
         """
-        # 用户画像（较稳定，异步更新）：memory.md 全文
+        # 用户画像主体（较稳定，异步更新）：memory.md 排除 Agent 自画像和沟通偏好段
         profile_text = ""
         if self.memory_md_manager is not None:
             try:
-                profile_text = self.memory_md_manager.read() or ""
+                profile_text = self.memory_md_manager.read_system_profile() or ""
             except Exception as e:
                 logger.error("读取用户画像失败，仅使用 SYSTEM_PROMPT: %s", e)
                 profile_text = ""
@@ -576,11 +646,15 @@ class ContextManager:
         """构建 messages 列表（缓存失效区）。
 
         拼接顺序：
-        1. 检索记忆注入（作为第一条 user 消息，缓存失效区起点）
+        1. 文件注入 → Agent 自画像 → 沟通偏好 → 历史教训(预留) → 检索记忆
+           （合并为第一条 user 消息，缓存失效区起点）
         2. 对话历史（history_buffer 返回的完整列表，经 condenser 压缩）
         3. 当前用户输入（作为最后一条 user 消息）
 
-        检索记忆为空时跳过注入，避免产生空消息。
+        Agent 自画像和沟通偏好从 system_text 移出注入此处，避免异步更新
+        破坏 system_text 缓存稳定性。注入顺序遵循 spec 约定：
+        文件注入 → Agent 自画像 → 沟通偏好 → 历史教训 → 检索记忆。
+        所有注入段均为空时跳过第一条 user 消息，避免产生空消息。
         历史消息仅保留 role 与 content 字段，剔除 timestamp 等附加字段，
         保证消息结构符合 Anthropic API 规范。
         若 :attr:`condenser` 非 None，在拼接前对 history 应用压缩
@@ -596,11 +670,39 @@ class ContextManager:
         """
         messages: List[Dict[str, Any]] = []
 
-        # 1. 文件摘要注入 + 检索记忆注入（每轮可能变）：合并为第一条 user 消息
-        #    文件摘要在前，记忆检索在后，\n\n 分隔；两者均为空时跳过整条消息
+        # 1. 文件注入 → Agent 自画像 → 沟通偏好 → 历史教训 → 检索记忆
+        #    合并为第一条 user 消息（缓存失效区起点）；全为空时跳过
         file_injection = self.get_file_injection(session_id)
+        agent_profile = self._get_agent_profile_injection()
+        communication_prefs = self._get_communication_injection()
+        lessons_injection = self._get_lessons_injection(user_input)
         memory_injection = self._get_memory_injection(user_input)
-        parts = [p for p in [file_injection, memory_injection] if p]
+
+        # SubTask 4.5: token 预算不足时按优先级裁剪
+        # 裁剪顺序：Agent 自画像 → 沟通偏好 → 历史教训（后者优先保留）
+        # 文件注入和检索记忆始终保留（高优先级）
+        parts = [
+            p for p in [
+                file_injection,
+                agent_profile,
+                communication_prefs,
+                lessons_injection,
+                memory_injection,
+            ] if p
+        ]
+        total_chars = sum(len(p) for p in parts)
+        if total_chars > _MAX_INJECTION_CHARS:
+            # 按优先级从低到高依次裁剪
+            if agent_profile and total_chars > _MAX_INJECTION_CHARS:
+                parts = [p for p in parts if p != agent_profile]
+                total_chars = sum(len(p) for p in parts)
+            if communication_prefs and total_chars > _MAX_INJECTION_CHARS:
+                parts = [p for p in parts if p != communication_prefs]
+                total_chars = sum(len(p) for p in parts)
+            if lessons_injection and total_chars > _MAX_INJECTION_CHARS:
+                parts = [p for p in parts if p != lessons_injection]
+                total_chars = sum(len(p) for p in parts)
+
         if parts:
             injection_text = "\n\n".join(parts)
             messages.append({"role": "user", "content": injection_text})
@@ -632,6 +734,212 @@ class ContextManager:
         messages.append({"role": "user", "content": user_input})
 
         return messages
+
+    def _get_agent_profile_injection(self) -> str:
+        """获取 Agent 自画像注入文本（messages[0] 动态区）。
+
+        从 memory.md 的 `## Agent 自画像` section 读取 body，按 spec 要求
+        选取 top-3 模式（前 3 条非空行）并截断到 ≤200 token，包裹为带
+        标题的 markdown 段注入。body 为空时返回空字符串（跳过注入）。
+
+        spec.md line 81:
+            THEN 系统 SHALL 通过 messages[0] 注入 Agent 自画像 top-3 模式
+            （≤200 token）
+
+        返回:
+            Agent 自画像注入文本，形如 ``## Agent 自画像\\n{body}``。
+            无 memory_md_manager、body 为空、或 top-3 截断后无内容时
+            返回空字符串。
+        """
+        if self.memory_md_manager is None:
+            return ""
+        try:
+            body = self.memory_md_manager.read_section_body("Agent 自画像")
+            if not body:
+                return ""
+            # spec: top-3 模式（取前 3 条非空行）+ ≤200 token 截断
+            lines = body.strip().split("\n")
+            top_lines: List[str] = []
+            accumulated_tokens = 0
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                line_tokens = _estimate_tokens(stripped)
+                if accumulated_tokens + line_tokens > _MAX_AGENT_PROFILE_TOKENS:
+                    break
+                top_lines.append(line)
+                accumulated_tokens += line_tokens
+                if len(top_lines) >= 3:
+                    break
+            if not top_lines:
+                return ""
+            truncated_body = "\n".join(top_lines)
+            return f"## Agent 自画像\n{truncated_body}"
+        except Exception as e:
+            logger.error("Agent 自画像注入失败，跳过: %s", e)
+            return ""
+
+    def _get_communication_injection(self) -> str:
+        """获取沟通偏好注入文本（messages[0] 动态区）。
+
+        从 memory.md 的 `## 沟通偏好` section 读取 body，按 spec 要求
+        截断到 ≤1000 字符，包裹为带标题的 markdown 段注入。body 为空时
+        返回空字符串（跳过注入）。
+
+        spec.md line 264:
+            沟通偏好（≤1000）
+
+        返回:
+            沟通偏好注入文本，形如 ``## 沟通偏好\\n{body}``。
+            无 memory_md_manager 或 body 为空时返回空字符串。
+        """
+        if self.memory_md_manager is None:
+            return ""
+        try:
+            body = self.memory_md_manager.read_section_body("沟通偏好")
+            if not body:
+                return ""
+            # spec: ≤1000 字符截断
+            if len(body) > _MAX_COMMUNICATION_CHARS:
+                body = body[:_MAX_COMMUNICATION_CHARS].rstrip()
+            return f"## 沟通偏好\n{body}"
+        except Exception as e:
+            logger.error("沟通偏好注入失败，跳过: %s", e)
+            return ""
+
+    def _get_lessons_injection(self, user_input: str) -> str:
+        """获取历史教训注入文本（messages[0] 动态区）。
+
+        读取 failure_cases.jsonl（若存在），按当前任务 embedding 检索 top-3
+        失败案例，注入 ``## 历史教训`` section（≤300 token）。启用惊讶门控
+        （与已有记忆相似度 >0.92 时不重复注入）。
+
+        空文件兜底：failure_cases.jsonl 不存在或为空时返回空字符串，不报错。
+
+        参数:
+            user_input: 当前用户输入文本，用于 embedding 检索相关失败案例。
+
+        返回:
+            历史教训注入文本，形如 ``## 历史教训\\n- ...``。
+            文件不存在、为空、或检索无结果时返回空字符串。
+        """
+        # SubTask 4.7: 空文件兜底
+        if not os.path.exists(self.failure_cases_path):
+            return ""
+
+        # 读取 JSONL
+        try:
+            cases = self._read_failure_cases()
+        except Exception as e:
+            logger.warning("读取失败案例库 %s 失败，跳过教训注入: %s",
+                           self.failure_cases_path, e)
+            return ""
+        if not cases:
+            return ""
+
+        # SubTask 4.2: 按当前任务 embedding 检索 top-3
+        query_embedding = _compute_embedding(user_input)
+        if not query_embedding:
+            # embedding 计算失败，降级为按置信度取 top-3
+            ranked = sorted(
+                cases,
+                key=lambda c: c.get("confidence", 0.0),
+                reverse=True,
+            )[:3]
+        else:
+            scored = []
+            for case in cases:
+                sim = _cosine_similarity(
+                    query_embedding, case.get("embedding", [])
+                )
+                scored.append((sim, case))
+            ranked = [c for _, c in sorted(
+                scored, key=lambda x: x[0], reverse=True
+            )[:3]]
+
+        # SubTask 4.3: 惊讶门控——与已有记忆相似度 >0.92 时不重复注入
+        memory_text = ""
+        if self.memory_retriever is not None:
+            try:
+                memory_text = self.memory_retriever.get_injection_text(user_input) or ""
+            except Exception:
+                memory_text = ""
+        memory_embedding = _compute_embedding(memory_text) if memory_text else []
+        if memory_embedding:
+            ranked = [
+                c for c in ranked
+                if _cosine_similarity(
+                    memory_embedding, c.get("embedding", [])
+                ) < _SURPRISE_GATE_THRESHOLD
+            ]
+            if not ranked:
+                return ""
+
+        # 过滤低置信度案例
+        ranked = [
+            c for c in ranked
+            if c.get("confidence", 0.0) >= _MIN_CONFIDENCE
+        ]
+        if not ranked:
+            return ""
+
+        # SubTask 4.4: token 上限动态计算（硬上限 300 token）
+        lessons_text = self._format_lessons(ranked, _MAX_LESSONS_TOKENS)
+        return lessons_text
+
+    def _read_failure_cases(self) -> List[Dict[str, Any]]:
+        """读取 failure_cases.jsonl 文件，返回案例列表。
+
+        每行是一个 JSON 对象，包含 pattern/root_cause/prevention_rule/
+        confidence/embedding 字段。空行和解析失败的行被跳过。
+
+        返回:
+            案例字典列表。文件不存在或为空时返回空列表。
+        """
+        cases: List[Dict[str, Any]] = []
+        try:
+            with open(self.failure_cases_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        case = json.loads(line)
+                        if isinstance(case, dict):
+                            cases.append(case)
+                    except json.JSONDecodeError:
+                        continue
+        except FileNotFoundError:
+            return []
+        return cases
+
+    @staticmethod
+    def _format_lessons(cases: List[Dict[str, Any]], max_tokens: int) -> str:
+        """将失败案例格式化为 ``## 历史教训`` 注入文本，受 token 上限约束。
+
+        参数:
+            cases: 已排序的失败案例列表（最相关在前）。
+            max_tokens: token 硬上限。
+
+        返回:
+            格式化的教训注入文本。超出 token 上限时截断后面的案例。
+        """
+        lines: List[str] = ["## 历史教训"]
+        current_tokens = _estimate_tokens("\n".join(lines))
+        for case in cases:
+            pattern = case.get("pattern", "")
+            root_cause = case.get("root_cause", "")
+            prevention = case.get("prevention_rule", "")
+            entry = f"- **模式**：{pattern}；**根因**：{root_cause}；**规避**：{prevention}"
+            entry_tokens = _estimate_tokens(entry)
+            if current_tokens + entry_tokens > max_tokens:
+                break
+            lines.append(entry)
+            current_tokens += entry_tokens
+        if len(lines) <= 1:
+            return ""
+        return "\n".join(lines)
 
     def get_file_injection(self, session_id: str) -> str:
         """获取文件摘要注入文本（public 入口，供 orchestrator 调用）。

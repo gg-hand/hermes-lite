@@ -266,6 +266,12 @@ class Signal:
     多次出现的相似信号会合并为一条，count 累加。
     达阈值（THRESHOLD）后状态变 triggered，入 pending 队列等待写入画像。
     consolidate 写入成功后从信号池移除（不再保留 written 状态）。
+
+    Attributes:
+        target: 信号目标对象，``"user"``（用户画像信号，默认）或
+            ``"agent"``（Agent 自画像信号，如"Agent 在 cron 任务中倾向过度
+            调用 file_read"）。target 决定 Jaccard 相似度分组（仅同 target
+            信号互相比较）与写入画像时的 section 路由。
     """
 
     id: str
@@ -278,6 +284,7 @@ class Signal:
     last_seen: str = ""
     status: str = "pending"  # pending / triggered（written 状态写入画像后立即移除）
     section: str = "沉淀笔记"
+    target: str = "user"  # user / agent（双向画像）
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为可 JSON 持久化的字典。"""
@@ -292,6 +299,7 @@ class Signal:
             "last_seen": self.last_seen,
             "status": self.status,
             "section": self.section,
+            "target": self.target,
         }
 
     @classmethod
@@ -308,6 +316,7 @@ class Signal:
             last_seen=str(data.get("last_seen", "")),
             status=str(data.get("status", "pending")),
             section=str(data.get("section", "沉淀笔记")),
+            target=str(data.get("target", "user")),
         )
 
 
@@ -364,8 +373,11 @@ class SignalPool:
         self._lock = threading.Lock()
         self._save_timer: Optional[threading.Timer] = None
         # 画像关键词缓存：hash 变化时刷新，避免每次 add 都重新提取
+        # user 与 agent 各自独立缓存，避免 target 切换时缓存失效
         self._profile_keywords_cache: Set[str] = set()
         self._profile_text_hash: Optional[str] = None
+        self._agent_profile_keywords_cache: Set[str] = set()
+        self._agent_profile_text_hash: Optional[str] = None
         # 信号 ID 单调递增计数器
         self._id_counter: int = 0
         self._load()
@@ -380,6 +392,7 @@ class SignalPool:
         category: str = "",
         weight: int = 1,
         section: str = "沉淀笔记",
+        target: str = "user",
     ) -> None:
         """添加信号到池（入口：先拆分复合句为原子事实，再逐条入池）。
 
@@ -388,16 +401,22 @@ class SignalPool:
         避免次要事实噪音稀释主事实的关键词集。
 
         多片段权重按 ``weight // n`` 均分（最低 1，避免总权重翻倍）。
+
+        参数:
+            target: 信号目标对象，``"user"``（默认）或 ``"agent"``。
+                ``"agent"`` 表示 Agent 自画像信号（如"Agent 在 cron 任务中
+                倾向过度调用 file_read"），按 target 分组计算 Jaccard 相似度，
+                写入画像时路由到 ``## Agent 自画像`` section。
         """
         if not content or not content.strip():
             return
         atomic_parts = _split_atomic(content)
         if len(atomic_parts) <= 1:
-            self._add_single(content, source, category, weight, section)
+            self._add_single(content, source, category, weight, section, target)
             return
         part_weight = max(1, weight // len(atomic_parts))
         for part in atomic_parts:
-            self._add_single(part, source, category, part_weight, section)
+            self._add_single(part, source, category, part_weight, section, target)
 
     def _add_single(
         self,
@@ -406,13 +425,17 @@ class SignalPool:
         category: str = "",
         weight: int = 1,
         section: str = "沉淀笔记",
+        target: str = "user",
     ) -> None:
         """单条原子信号入池（含锁与状态判断）。
 
         语义:
             - 入池前查重画像：若 memory.md 已包含该信息（覆盖率 ≥0.5），跳过
+              （target="agent" 时仅查 ``## Agent 自画像`` section）
             - 情感强度增强：检测"我/用户喜欢/爱/讨厌"等，额外加权（+1/+2）
             - 相似信号合并：count 累加 + keywords 合并 + sources append
+              （仅同 target 信号互相比较；分组后某组信号数 <2 时跳过相似度
+              检查直接入池，避免零除）
             - 活动即续期：任何更新都刷新 last_seen
             - 达阈值：status=triggered，调 enqueue_profile_update 入队
         """
@@ -421,7 +444,7 @@ class SignalPool:
 
         with self._lock:
             # 1. 入池前查重：画像已包含该信息则跳过（避免无意义累积）
-            if self._already_in_profile(content):
+            if self._already_in_profile(content, target):
                 logger.debug("信号 '%s' 已在画像中，跳过入池", content[:50])
                 return
 
@@ -429,9 +452,9 @@ class SignalPool:
             emotion_boost = self._detect_emotion_boost(content)
             effective_weight = weight + emotion_boost
 
-            # 3. 相似信号去重合并
+            # 3. 相似信号去重合并（按 target 分组）
             keywords = _extract_keywords(content)
-            similar = self._find_similar(keywords)
+            similar = self._find_similar(keywords, target)
 
             if similar is not None:
                 # 相似信号合并：count 累加 + keywords 合并 + sources append
@@ -441,10 +464,10 @@ class SignalPool:
                 similar.keywords = list(merged_keywords)
                 similar.sources.append(source)
                 similar.last_seen = _now_iso()
-                target = similar
+                target_signal = similar
             else:
                 # 新信号入池
-                target = Signal(
+                target_signal = Signal(
                     id=self._new_id(),
                     content=content,
                     keywords=sorted(keywords),
@@ -455,23 +478,24 @@ class SignalPool:
                     last_seen=_now_iso(),
                     status="pending",
                     section=section,
+                    target=target,
                 )
-                self._signals.append(target)
+                self._signals.append(target_signal)
 
             # 4. 达阈值 → 入 pending 队列
             if (
-                target.status == "pending"
-                and target.count >= self.THRESHOLD
+                target_signal.status == "pending"
+                and target_signal.count >= self.THRESHOLD
             ):
-                target.status = "triggered"
-                self._enqueue_profile_update(target)
+                target_signal.status = "triggered"
+                self._enqueue_profile_update(target_signal)
 
             self._save_debounced()
 
     # ------------------------------------------------------------------
     # 入池前查重画像
     # ------------------------------------------------------------------
-    def _already_in_profile(self, content: str) -> bool:
+    def _already_in_profile(self, content: str, target: str = "user") -> bool:
         """检查画像是否已包含该信号信息。
 
         双层判定：
@@ -482,13 +506,19 @@ class SignalPool:
         "偏好简短回复" 在 v4 关键词集下交集仅 {"偏好"}，覆盖率 0.33 < 0.5
         无法跳过；但语义上画像已记录该信息，应跳过避免重复累积。
 
+        target 路由：
+        - ``"user"``：查全画像文本（现有行为）
+        - ``"agent"``：仅查 ``## Agent 自画像`` section，避免 user 画像关键词
+          稀释导致 agent 信号误判已存在
+
         参数:
             content: 待入池的信号内容。
+            target: 信号目标对象，``"user"`` 或 ``"agent"``。
 
         返回:
             True 表示画像已包含，应跳过入池；False 表示可入池。
         """
-        profile_keywords = self._get_profile_keywords()
+        profile_keywords = self._get_profile_keywords(target)
         if not profile_keywords:
             return False
         signal_keywords = _extract_keywords(content)
@@ -498,23 +528,115 @@ class SignalPool:
         if coverage >= self.PROFILE_DEDUP_THRESHOLD:
             return True
         # 子串包含检查：信号去掉常见前缀后是否在画像中
-        profile_text = self._load_profile_text()
+        profile_text = self._load_profile_text_for_target(target)
         if profile_text:
             stripped = re.sub(r"^(用户|我|这个|一个|那个)", "", content.strip())
             if stripped and stripped != content.strip() and stripped in profile_text:
                 return True
         return False
 
-    def _get_profile_keywords(self) -> Set[str]:
-        """获取画像关键词（带缓存，hash 变化时刷新）。"""
-        profile_text = self._load_profile_text()
+    def _get_profile_keywords(self, target: str = "user") -> Set[str]:
+        """获取画像关键词（带缓存，hash 变化时刷新）。
+
+        target 路由：
+        - ``"user"``：使用全画像关键词缓存（向后兼容现有行为）
+        - ``"agent"``：仅提取 ``## Agent 自画像`` section 的关键词，独立缓存
+          避免与 user 信号的关键词集混淆。
+        """
+        profile_text = self._load_profile_text_for_target(target)
         if not profile_text:
             return set()
         text_hash = hashlib.md5(profile_text.encode("utf-8")).hexdigest()
-        if text_hash != self._profile_text_hash:
-            self._profile_keywords_cache = _extract_keywords(profile_text)
-            self._profile_text_hash = text_hash
-        return self._profile_keywords_cache
+        if target == "user":
+            cache_attr = "_profile_keywords_cache"
+            hash_attr = "_profile_text_hash"
+        else:
+            cache_attr = "_agent_profile_keywords_cache"
+            hash_attr = "_agent_profile_text_hash"
+        cached = getattr(self, cache_attr, None)
+        cached_hash = getattr(self, hash_attr, None)
+        if cached is None or text_hash != cached_hash:
+            cached = _extract_keywords(profile_text)
+            setattr(self, cache_attr, cached)
+            setattr(self, hash_attr, text_hash)
+        return cached
+
+    def _load_profile_text_for_target(self, target: str = "user") -> str:
+        """加载画像文本（按 target 路由）。
+
+        - target="user"：返回 memory.md 全文但**排除** ``## Agent 自画像``
+          section（避免 user 信号查重时误匹配 Agent 自画像内容）。
+        - target="agent"：仅返回 ``## Agent 自画像`` section body（不含标题行）。
+
+        参数:
+            target: ``"user"`` 或 ``"agent"``。
+
+        返回:
+            画像文本。失败或 section 不存在时返回空字符串。
+        """
+        full_text = self._load_profile_text()
+        if not full_text:
+            return ""
+        if target == "agent":
+            # target="agent"：提取 ## Agent 自画像 section body
+            return self._extract_section_body(full_text, "Agent 自画像")
+        # target="user"：返回全文但排除 ## Agent 自画像 section
+        return self._remove_section(full_text, "Agent 自画像")
+
+    def _remove_section(self, full_text: str, section_title: str) -> str:
+        """从 Markdown 全文移除指定 ``## {section_title}`` section（含标题行）。
+
+        参数:
+            full_text: memory.md 全文。
+            section_title: section 标题（不含 ``## `` 前缀）。
+
+        返回:
+            移除指定 section 后的文本。section 不存在时返回原文本。
+        """
+        lines = full_text.split("\n")
+        start_idx = -1
+        for i, line in enumerate(lines):
+            if line.strip() == f"## {section_title}":
+                start_idx = i
+                break
+        if start_idx < 0:
+            return full_text
+        end_idx = len(lines)
+        for i in range(start_idx + 1, len(lines)):
+            if lines[i].startswith("## "):
+                end_idx = i
+                break
+        # 移除 [start_idx, end_idx) 范围的行
+        remaining = lines[:start_idx] + lines[end_idx:]
+        return "\n".join(remaining).strip()
+
+    def _extract_section_body(self, full_text: str, section_title: str) -> str:
+        """从 Markdown 全文提取指定 ``## {section_title}`` section 的 body。
+
+        匹配 ``## {section_title}`` 到下一个 ``## `` 标题（或文件末尾）之间的内容，
+        不含 section 标题行本身。
+
+        参数:
+            full_text: memory.md 全文。
+            section_title: section 标题（不含 ``## `` 前缀）。
+
+        返回:
+            section body 文本。section 不存在时返回空字符串。
+        """
+        lines = full_text.split("\n")
+        start_idx = -1
+        for i, line in enumerate(lines):
+            if line.strip() == f"## {section_title}":
+                start_idx = i + 1
+                break
+        if start_idx < 0:
+            return ""
+        end_idx = len(lines)
+        for i in range(start_idx, len(lines)):
+            if lines[i].startswith("## "):
+                end_idx = i
+                break
+        return "\n".join(lines[start_idx:end_idx]).strip()
 
     def _load_profile_text(self) -> str:
         """加载 memory.md 全文。失败时返回空字符串。"""
@@ -553,8 +675,12 @@ class SignalPool:
     # ------------------------------------------------------------------
     # 相似信号去重
     # ------------------------------------------------------------------
-    def _find_similar(self, new_keywords: Set[str]) -> Optional[Signal]:
+    def _find_similar(self, new_keywords: Set[str], target: str = "user") -> Optional[Signal]:
         """关键词 Jaccard 相似度 ≥阈值视为重复。pending/triggered 均可吸收新证据（written 跳过）。
+
+        按 target 分组：仅同 target 信号互相比较，避免 user 信号与 agent 信号
+        误合并。分组后若该 target 组信号数 <2，跳过相似度检查直接返回 None
+        （避免零除 + 单元素无比较意义）。
 
         对象区分保护：两信号含相同情感动词但英文对象完全不交集时不合并
         （防止"喜欢rust" vs "喜欢go" 误合并）。
@@ -565,11 +691,17 @@ class SignalPool:
 
         参数:
             new_keywords: 新信号的关键词集合。
+            target: 信号目标对象，仅与同 target 的池中信号比较。
 
         返回:
             匹配到的 Signal 实例，无匹配返回 None。
         """
         if not new_keywords:
+            return None
+        # 按 target 分组：仅同 target 信号参与比较
+        same_target_signals = [s for s in self._signals if s.target == target]
+        # 分组为空时无比较对象，直接返回 None（新信号将创建为新条目）
+        if not same_target_signals:
             return None
         new_verbs = new_keywords & _EMOTION_VERBS
         new_objs = {k for k in new_keywords if k.isascii() and k not in _EMOTION_VERBS}
@@ -578,7 +710,7 @@ class SignalPool:
         new_neg = new_verbs & _NEGATIVE_EMOTIONS
         new_pure_pos = bool(new_pos and not new_neg)
         new_pure_neg = bool(new_neg and not new_pos)
-        for signal in self._signals:
+        for signal in same_target_signals:
             # written 状态信号已在 mark_written 时移除，此处无需再过滤
             sig_kw = set(signal.keywords)
             if not sig_kw:
@@ -838,6 +970,7 @@ class SignalPool:
                     "last_seen": s.last_seen,
                     "first_seen": s.first_seen,
                     "section": s.section,
+                    "target": s.target,
                 }
                 for s in self._signals
             ]
@@ -870,6 +1003,7 @@ class SignalPool:
                     "section": s.section or "未分类",
                     "sources": list(s.sources),
                     "first_seen": s.first_seen,
+                    "target": s.target,
                 })
 
             # 按 section 分组
@@ -985,6 +1119,7 @@ class SignalPool:
                     last_seen=s.last_seen,
                     status=s.status,
                     section=s.section,
+                    target=s.target,
                 )
                 split_signals.append(child)
         if split_count:
@@ -1054,7 +1189,7 @@ class SignalPool:
         with self._lock:
             data = {
                 "signals": [s.to_dict() for s in self._signals],
-                "version": 5,
+                "version": 6,
             }
         try:
             self._pool_path.parent.mkdir(parents=True, exist_ok=True)

@@ -45,8 +45,10 @@ class MockOrchestrator:
 
     def __init__(self):
         self.calls = []
+        # history_buffer=None 让 _clear_cron_history 静默跳过（不阻塞测试）
+        self.history_buffer = None
 
-    def chat(self, session_id, user_input):
+    async def chat(self, session_id, user_input, is_cron=False):
         self.calls.append((session_id, user_input))
         return "mock response"
 
@@ -589,6 +591,130 @@ class TestRunIdAndStepTracesPersistence(unittest.TestCase):
         self.assertEqual(last_run.workflow_name, "trace_test")
         # run_id 持久化（12 字符）
         self.assertEqual(len(last_run.run_id), 12)
+
+
+# ===========================================================================
+# ops-reliability-uplift Task 4: _trigger 清空 history_buffer
+# ===========================================================================
+
+
+class MockHistoryBuffer:
+    """记录 clear_session 调用的 mock history_buffer。"""
+
+    def __init__(self):
+        self.cleared_sessions = []
+
+    def clear_session(self, session_id):
+        self.cleared_sessions.append(session_id)
+
+
+class HistoryAwareMockOrchestrator:
+    """带 history_buffer 的 mock orchestrator（用于 Task 4 测试）。
+
+    显式传 history_buffer=None 时保持 None（用于测试 None 兼容场景）。
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, history_buffer=_SENTINEL):
+        if history_buffer is self._SENTINEL:
+            self.history_buffer = MockHistoryBuffer()
+        else:
+            self.history_buffer = history_buffer
+        self.calls = []
+
+    async def chat(self, session_id, user_input, is_cron=False):
+        self.calls.append((session_id, user_input, is_cron))
+        return "mock response"
+
+
+class TestTriggerClearsHistory(unittest.TestCase):
+    """验证 _trigger 触发前清空 history_buffer（Task 4.5）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _new_scheduler(self) -> CronScheduler:
+        return CronScheduler(schedules_file=self.sched_file)
+
+    def test_trigger_calls_clear_session_before_chat(self):
+        """触发前调用 history_buffer.clear_session。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "测试", "cron": "* * * * *", "task": "执行任务", "enabled": True,
+        })
+        history_buf = MockHistoryBuffer()
+        orch = HistoryAwareMockOrchestrator(history_buffer=history_buf)
+
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+
+        # clear_session 在 chat 之前被调用
+        self.assertEqual(len(history_buf.cleared_sessions), 1)
+        self.assertEqual(history_buf.cleared_sessions[0], f"cron:{sched_id}")
+        # chat 也被调用
+        self.assertEqual(len(orch.calls), 1)
+
+    def test_clear_session_deletes_jsonl_file(self):
+        """clear_session 删除磁盘 JSONL 文件（验证调用链路完整性）。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "测试", "cron": "* * * * *", "task": "执行任务", "enabled": True,
+        })
+        # 使用真实 HistoryBuffer，配置持久化路径
+        from src.storage.history_buffer import HistoryBuffer
+        persist_dir = os.path.join(self.tmpdir, "history")
+        os.makedirs(persist_dir, exist_ok=True)
+        history_buf = HistoryBuffer(max_turns=20, persistence_dir=persist_dir)
+        session_id = f"cron:{sched_id}"
+        # 模拟上次执行残留的 JSONL 文件（session_id 中 ':' 被替换为 '_'）
+        safe_name = session_id.replace(":", "_")
+        jsonl_path = os.path.join(persist_dir, f"{safe_name}.jsonl")
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            f.write('{"role": "user", "content": "上次消息"}\n')
+
+        orch = HistoryAwareMockOrchestrator(history_buffer=history_buf)
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+
+        # JSONL 文件应被删除
+        self.assertFalse(os.path.exists(jsonl_path))
+
+    def test_history_buffer_none_does_not_raise(self):
+        """orchestrator.history_buffer 为 None 时不报错（兼容测试装配）。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "测试", "cron": "* * * * *", "task": "执行任务", "enabled": True,
+        })
+        # history_buffer 设为 None
+        orch = HistoryAwareMockOrchestrator(history_buffer=None)
+        # 不应抛异常
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+        # chat 仍被调用
+        self.assertEqual(len(orch.calls), 1)
+
+    def test_multiple_triggers_do_not_accumulate_history(self):
+        """多次连续触发，每次都清空 history，不累积。"""
+        scheduler = self._new_scheduler()
+        sched_id = scheduler.add_schedule({
+            "name": "测试", "cron": "* * * * *", "task": "执行任务", "enabled": True,
+        })
+        history_buf = MockHistoryBuffer()
+        orch = HistoryAwareMockOrchestrator(history_buffer=history_buf)
+
+        # 连续触发 3 次
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+        asyncio.run(scheduler.trigger_now(orch, sched_id))
+
+        # clear_session 应被调用 3 次（每次触发前都清空）
+        self.assertEqual(len(history_buf.cleared_sessions), 3)
+        # 所有调用都是同一个 session_id
+        self.assertTrue(all(s == f"cron:{sched_id}" for s in history_buf.cleared_sessions))
+        # chat 也被调用 3 次
+        self.assertEqual(len(orch.calls), 3)
 
 
 if __name__ == "__main__":

@@ -789,10 +789,10 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
         # 合并后的 count 应累加（2+2+1=5）
         merged = [s for s in status if "讨厌" in s["content"]][0]
         self.assertGreaterEqual(merged["count"], 5)
-        # flush 后 version 应升至 5
+        # flush 后 version 应升至 6（v6 新增 target 字段）
         pool2.flush()
         saved = json.loads(self.pool_path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 5)
+        self.assertEqual(saved["version"], 6)
 
     def test_backfill_idempotent(self) -> None:
         # v5 数据不触发回填
@@ -817,6 +817,248 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
         # v5 数据不触发回填，2 条信号保持不变
         status = pool2.get_status()
         self.assertEqual(len(status), 2)
+
+
+# ---------------------------------------------------------------------------
+# 8. 双向信号池（target=user/agent）——Phase 元认知 Task 1
+# ---------------------------------------------------------------------------
+
+
+class TestBidirectionalSignalPool(_SignalPoolTestBase):
+    """双向信号池测试：target=user/agent 分组去重、独立画像查重、阈值触发。"""
+
+    def test_signal_default_target_is_user(self) -> None:
+        # 不传 target 时默认为 user
+        self.pool.add("用户偏好简洁回复", source="L1")
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["target"], "user")
+
+    def test_agent_signal_enters_pool_with_target(self) -> None:
+        # 显式传 target=agent 入池
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["target"], "agent")
+        self.assertEqual(status[0]["section"], "Agent 自画像")
+
+    def test_user_and_agent_signals_not_merged(self) -> None:
+        # 同内容不同 target 的信号不应合并（按 target 分组）
+        # 用相同内容确保 Jaccard=1.0，验证 target 隔离
+        self.pool.add("连续失败 2 次", source="L1", section="沉淀笔记", target="user")
+        self.pool.add(
+            "连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        status = self.pool.get_status()
+        # 两条独立信号（按 target 分组）
+        self.assertEqual(len(status), 2)
+        targets = sorted(s["target"] for s in status)
+        self.assertEqual(targets, ["agent", "user"])
+
+    def test_agent_similar_signals_merge_within_group(self) -> None:
+        # 同 target=agent 的相似信号应合并（Jaccard ≥0.25）
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 3 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        status = self.pool.get_status()
+        # 合并为 1 条
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["target"], "agent")
+        # count 应累加（基础1 + 基础1 = 2，无情感增强）
+        self.assertEqual(status[0]["count"], 2)
+
+    def test_agent_signal_threshold_triggers_enqueue(self) -> None:
+        # agent 信号达阈值应触发 enqueue，section 为 Agent 自画像
+        for _ in range(7):
+            self.pool.add(
+                "Agent 在 file_read 上连续失败 2 次",
+                source="L1_agent_failure",
+                section="Agent 自画像",
+                target="agent",
+            )
+        status = self.pool.get_status()
+        self.assertEqual(status[0]["status"], "triggered")
+        self.assertEqual(status[0]["target"], "agent")
+        # enqueue 应被调用，section="Agent 自画像"
+        self.assertEqual(len(self.engine.enqueued), 1)
+        action, section, content = self.engine.enqueued[0]
+        self.assertEqual(action, "add")
+        self.assertEqual(section, "Agent 自画像")
+        self.assertIn("Agent", content)
+
+    def test_agent_signal_dedup_against_agent_profile_section(self) -> None:
+        # agent 信号入池前仅查 ## Agent 自画像 section，不查用户画像 section
+        # 画像中"Agent 在 file_read 上连续失败"已存在 → 新 agent 信号应被跳过
+        self._write_profile(
+            "# 用户画像\n\n## 沉淀笔记\n\n用户偏好简洁\n\n"
+            "## Agent 自画像\n\nAgent 在 file_read 上连续失败 2 次\n"
+        )
+        self.pool._agent_profile_text_hash = None
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        # 已在 Agent 自画像 section → 跳过
+        self.assertEqual(len(self.pool.get_status()), 0)
+
+    def test_user_signal_not_deduped_against_agent_section(self) -> None:
+        # user 信号查重不应匹配 Agent 自画像 section 的内容
+        # 画像 Agent 自画像 section 有"连续失败 2 次"，user 信号"连续失败 2 次"
+        # 不应被跳过（target=user 仅查 user 画像部分）
+        self._write_profile(
+            "# 用户画像\n\n## Agent 自画像\n\n连续失败 2 次\n"
+        )
+        self.pool._profile_text_hash = None
+        self.pool.add(
+            "连续失败 2 次",
+            source="L1",
+            section="沉淀笔记",
+            target="user",
+        )
+        # user 信号不被 agent section 内容跳过
+        self.assertEqual(len(self.pool.get_status()), 1)
+
+    def test_agent_signal_not_deduped_against_user_section(self) -> None:
+        # agent 信号查重不应匹配用户画像 section 的内容
+        # 画像沉淀笔记 section 有"Agent 在 file_read 上连续失败 2 次"
+        # agent 信号同样内容不应被跳过（target=agent 仅查 Agent 自画像 section）
+        self._write_profile(
+            "# 用户画像\n\n## 沉淀笔记\n\nAgent 在 file_read 上连续失败 2 次\n"
+        )
+        self.pool._agent_profile_text_hash = None
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        # agent 信号不被 user section 内容跳过
+        self.assertEqual(len(self.pool.get_status()), 1)
+
+    def test_single_existing_signal_merges_new_similar(self) -> None:
+        # 边界场景：仅 1 个现有 agent 信号时，新相似信号应合并
+        # （修正点：原 spec "<2 跳过"会破坏阈值累积，改为"空组才跳过"）
+        self.pool.add(
+            "Agent 在 bash_exec 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        # 仅 1 条现有信号，新增相似信号应合并而非新建
+        self.pool.add(
+            "Agent 在 bash_exec 上连续失败 3 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["count"], 2)
+
+    def test_target_field_persisted_and_loaded(self) -> None:
+        # 持久化 roundtrip：target 字段应正确保存与加载
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        self._flush_pool()
+        # 重新加载
+        pool2 = SignalPool(
+            pool_path=self.pool_path,
+            consolidation_engine=self.engine,
+            profile_path=self.profile_path,
+        )
+        status = pool2.get_status()
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["target"], "agent")
+        self.assertEqual(status[0]["section"], "Agent 自画像")
+
+    def test_target_field_in_dashboard_data(self) -> None:
+        # get_dashboard_data 应包含 target 字段
+        self.pool.add("用户偏好简洁", source="L1", target="user")
+        self.pool.add(
+            "Agent 在 bash_exec 上失败",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        data = self.pool.get_dashboard_data()
+        # 至少有 signals 字段含 target
+        self.assertIn("signals", data)
+        sig_targets = [s.get("target") for s in data["signals"]]
+        self.assertIn("user", sig_targets)
+        self.assertIn("agent", sig_targets)
+
+    def test_backfill_preserves_target_field(self) -> None:
+        # v6 数据含 target 字段，回填加载后 target 应保留
+        import json
+        v6_data = {
+            "signals": [
+                {"id": "sig_0001", "content": "Agent 在 file_read 上连续失败 2 次",
+                 "keywords": ["agent", "file_read"], "count": 1,
+                 "sources": ["L1_agent_failure"],
+                 "first_seen": "2026-07-01T00:00:00",
+                 "last_seen": "2026-07-01T00:00:00",
+                 "status": "pending", "section": "Agent 自画像",
+                 "target": "agent"},
+                {"id": "sig_0002", "content": "用户偏好简洁回复",
+                 "keywords": ["用户偏好"], "count": 1,
+                 "sources": ["L1"],
+                 "first_seen": "2026-07-01T00:00:00",
+                 "last_seen": "2026-07-01T00:00:00",
+                 "status": "pending", "section": "沉淀笔记",
+                 "target": "user"},
+            ],
+            "version": 6,
+        }
+        self.pool_path.write_text(json.dumps(v6_data, ensure_ascii=False), encoding="utf-8")
+        pool2 = SignalPool(
+            pool_path=self.pool_path,
+            consolidation_engine=self.engine,
+            profile_path=self.profile_path,
+        )
+        status = pool2.get_status()
+        self.assertEqual(len(status), 2)
+        targets = sorted(s["target"] for s in status)
+        self.assertEqual(targets, ["agent", "user"])
+
+    def test_backfill_inherits_target_on_split(self) -> None:
+        # 复合句拆分时 target 应继承到所有子信号
+        # 用差异较大的两条 agent 失败描述，确保 Jaccard <0.25 不合并
+        # "Agent 在 file_read 上连续失败 2 次" vs "Agent 的 bash_exec 命令经常超时"
+        # 交集仅 {agent}，Jaccard≈0.2 <0.25 → 拆分为 2 条独立信号
+        self.pool.add(
+            "Agent 在 file_read 上连续失败 2 次，Agent 的 bash_exec 命令经常超时",
+            source="L1_agent_failure",
+            section="Agent 自画像",
+            target="agent",
+        )
+        status = self.pool.get_status()
+        # 拆分为 2 条，target 都应是 agent
+        self.assertEqual(len(status), 2)
+        for s in status:
+            self.assertEqual(s["target"], "agent")
 
 
 if __name__ == "__main__":

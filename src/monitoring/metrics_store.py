@@ -103,6 +103,7 @@ def compute_delta(current: dict, baseline: dict) -> dict:
         "llm_cache_read_tokens_total",
         "memory_retrieval_hits_total",
         "memory_retrieval_misses_total",
+        "intent_cron_skips_total",
     ]
     for key in scalar_keys:
         cur_val = current.get(key, 0)
@@ -116,6 +117,9 @@ def compute_delta(current: dict, baseline: dict) -> dict:
     delta["tool_latency_ms"] = _compute_hist_delta(
         current.get("tool_latency_ms", {}), baseline.get("tool_latency_ms", {})
     )
+    delta["intent_latency_ms"] = _compute_hist_delta(
+        current.get("intent_latency_ms", {}), baseline.get("intent_latency_ms", {})
+    )
 
     # Dict 指标
     dict_keys = [
@@ -124,6 +128,8 @@ def compute_delta(current: dict, baseline: dict) -> dict:
         "termination_reasons_total",
         "tool_retries_total",
         "approval_decisions_total",
+        "intent_classifications_total",
+        "intent_fallbacks_total",
     ]
     for key in dict_keys:
         cur_dict = current.get(key, {})
@@ -169,10 +175,12 @@ class MetricsStore:
         "llm_cache_read_tokens_total",
         "memory_retrieval_hits_total",
         "memory_retrieval_misses_total",
+        "intent_cron_skips_total",
     ]
     _HIST_COLS = {
         "llm_latency_ms": "llm_latency",
         "tool_latency_ms": "tool_latency",
+        "intent_latency_ms": "intent_latency",
     }
     _DICT_COLS = {
         "tool_calls_total": "tool_calls_total_json",
@@ -181,6 +189,8 @@ class MetricsStore:
         "tool_error_classes_total": "tool_error_classes_total_json",
         "tool_retries_total": "tool_retries_total_json",
         "approval_decisions_total": "approval_decisions_total_json",
+        "intent_classifications_total": "intent_classifications_total_json",
+        "intent_fallbacks_total": "intent_fallbacks_total_json",
     }
 
     def __init__(self, db_path: str) -> None:
@@ -193,7 +203,7 @@ class MetricsStore:
         self._init_tables()
 
     def _init_tables(self) -> None:
-        """创建 metrics_daily 表（如不存在）。"""
+        """创建 metrics_daily 表（如不存在）并迁移旧库缺失列。"""
         with self._lock:
             self._conn.execute(
                 """
@@ -206,6 +216,7 @@ class MetricsStore:
                     llm_cache_read_tokens_total INTEGER DEFAULT 0,
                     memory_retrieval_hits_total INTEGER DEFAULT 0,
                     memory_retrieval_misses_total INTEGER DEFAULT 0,
+                    intent_cron_skips_total INTEGER DEFAULT 0,
                     llm_latency_count INTEGER DEFAULT 0,
                     llm_latency_sum REAL DEFAULT 0,
                     llm_latency_min REAL DEFAULT 0,
@@ -214,12 +225,18 @@ class MetricsStore:
                     tool_latency_sum REAL DEFAULT 0,
                     tool_latency_min REAL DEFAULT 0,
                     tool_latency_max REAL DEFAULT 0,
+                    intent_latency_count INTEGER DEFAULT 0,
+                    intent_latency_sum REAL DEFAULT 0,
+                    intent_latency_min REAL DEFAULT 0,
+                    intent_latency_max REAL DEFAULT 0,
                     tool_calls_total_json TEXT DEFAULT '{}',
                     tool_calls_errors_total_json TEXT DEFAULT '{}',
                     termination_reasons_total_json TEXT DEFAULT '{}',
                     tool_error_classes_total_json TEXT DEFAULT '{}',
                     tool_retries_total_json TEXT DEFAULT '{}',
                     approval_decisions_total_json TEXT DEFAULT '{}',
+                    intent_classifications_total_json TEXT DEFAULT '{}',
+                    intent_fallbacks_total_json TEXT DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -228,6 +245,25 @@ class MetricsStore:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_metrics_daily_date ON metrics_daily(date);"
             )
+            # 兼容旧库：缺失的 intent 列通过 ALTER TABLE ADD COLUMN 补齐
+            existing_cols = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(metrics_daily)").fetchall()
+            }
+            alter_specs = [
+                ("intent_cron_skips_total", "INTEGER DEFAULT 0"),
+                ("intent_latency_count", "INTEGER DEFAULT 0"),
+                ("intent_latency_sum", "REAL DEFAULT 0"),
+                ("intent_latency_min", "REAL DEFAULT 0"),
+                ("intent_latency_max", "REAL DEFAULT 0"),
+                ("intent_classifications_total_json", "TEXT DEFAULT '{}'"),
+                ("intent_fallbacks_total_json", "TEXT DEFAULT '{}'"),
+            ]
+            for col_name, col_type in alter_specs:
+                if col_name not in existing_cols:
+                    self._conn.execute(
+                        f"ALTER TABLE metrics_daily ADD COLUMN {col_name} {col_type}"
+                    )
             self._conn.commit()
 
     def upsert_daily(self, date_str: str, delta: dict) -> None:

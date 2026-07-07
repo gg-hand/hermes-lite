@@ -124,5 +124,86 @@ class TestToolRejectionSection(unittest.TestCase):
         self.assertIn("绝对停止", SYSTEM_PROMPT)
 
 
+class TestCapabilityBoundarySection(unittest.TestCase):
+    """验证 '## 能力边界与拒答' 宪法段存在且显式授权 abstain。"""
+
+    def test_section_title_present(self) -> None:
+        self.assertIn("## 能力边界与拒答", SYSTEM_PROMPT)
+
+    def test_abstain_keyword(self) -> None:
+        """应包含 abstain 关键字，显式授权拒答。"""
+        self.assertIn("abstain", SYSTEM_PROMPT)
+
+    def test_refusal_is_capability_not_failure(self) -> None:
+        """应明确说明拒答是能力不是失败。"""
+        self.assertIn("不是失败", SYSTEM_PROMPT)
+
+    def test_do_not_fabricate(self) -> None:
+        """应禁止编造答案。"""
+        self.assertIn("不要编造答案", SYSTEM_PROMPT)
+
+    def test_section_after_core_ability(self) -> None:
+        """'## 能力边界与拒答' 应位于 '## 你的核心能力' 之后。"""
+        core_idx = SYSTEM_PROMPT.find("## 你的核心能力")
+        boundary_idx = SYSTEM_PROMPT.find("## 能力边界与拒答")
+        self.assertGreater(core_idx, 0, "应存在 '## 你的核心能力' 段落")
+        self.assertGreater(boundary_idx, 0, "应存在 '## 能力边界与拒答' 段落")
+        self.assertGreater(
+            boundary_idx, core_idx,
+            "'## 能力边界与拒答' 应在 '## 你的核心能力' 之后",
+        )
+
+
+class TestSelfExtensionBoundarySection(unittest.TestCase):
+    """验证 '## 自主扩展边界' 宪法段存在且列出不可修改的文件。"""
+
+    def test_section_title_present(self) -> None:
+        self.assertIn("## 自主扩展边界", SYSTEM_PROMPT)
+
+    def test_src_dir_protected(self) -> None:
+        """应列出 src/ 目录不可修改。"""
+        self.assertIn("src/", SYSTEM_PROMPT)
+
+    def test_config_files_protected(self) -> None:
+        """应列出 config.yaml、.env 不可修改。"""
+        self.assertIn("config.yaml", SYSTEM_PROMPT)
+        self.assertIn(".env", SYSTEM_PROMPT)
+
+    def test_skill_md_protected(self) -> None:
+        """应列出 SKILL.md 不可修改。"""
+        self.assertIn("SKILL.md", SYSTEM_PROMPT)
+
+    def test_policy_engine_deny_mentioned(self) -> None:
+        """应说明 PolicyEngine 会直接 deny。"""
+        self.assertIn("PolicyEngine", SYSTEM_PROMPT)
+        self.assertIn("deny", SYSTEM_PROMPT)
+
+    def test_skill_propose_flow_allowed(self) -> None:
+        """应说明可通过 propose → validate → confirm 流程扩展能力。"""
+        self.assertIn("propose", SYSTEM_PROMPT)
+        self.assertIn("validate", SYSTEM_PROMPT)
+        self.assertIn("confirm", SYSTEM_PROMPT)
+
+    def test_section_after_source_code_boundary(self) -> None:
+        """'## 自主扩展边界' 应位于 '## 自我源码访问边界' 之后。"""
+        src_boundary_idx = SYSTEM_PROMPT.find("## 自我源码访问边界")
+        ext_boundary_idx = SYSTEM_PROMPT.find("## 自主扩展边界")
+        self.assertGreater(src_boundary_idx, 0, "应存在 '## 自我源码访问边界' 段落")
+        self.assertGreater(ext_boundary_idx, 0, "应存在 '## 自主扩展边界' 段落")
+        self.assertGreater(
+            ext_boundary_idx, src_boundary_idx,
+            "'## 自主扩展边界' 应在 '## 自我源码访问边界' 之后",
+        )
+
+
+class TestSoftExplorationBudgetRemoved(unittest.TestCase):
+    """验证原 L188 软探索预算提示已删除（升级为硬配额，Task 11 实现）。"""
+
+    def test_no_soft_budget_hint(self) -> None:
+        """不应再包含软探索预算提示文本。"""
+        self.assertNotIn("探索类工具预算", SYSTEM_PROMPT)
+        self.assertNotIn("≥8 次时，系统会注入提醒", SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

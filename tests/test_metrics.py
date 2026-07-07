@@ -308,5 +308,165 @@ class TestFeedbackMetrics(unittest.TestCase):
         self.assertEqual(snap["tool_retries_total"]["bash_exec"], 500)
 
 
+class TestIntentMetrics(unittest.TestCase):
+    """Intent Classifier 监控指标测试（spec agent-metacognition-uplift Task 5）。"""
+
+    def test_observe_intent_normal_classification(self):
+        """正常分类成功：intent_type + confidence + latency 累加。"""
+        collector = MetricsCollector()
+        collector.observe_intent(
+            intent_type="simple_qa",
+            confidence=0.9,
+            fallback_reason=None,
+            latency_ms=150.0,
+        )
+        collector.observe_intent(
+            intent_type="multi_step_task",
+            confidence=0.85,
+            fallback_reason=None,
+            latency_ms=300.0,
+        )
+        collector.observe_intent(
+            intent_type="simple_qa",
+            confidence=0.95,
+            fallback_reason=None,
+            latency_ms=100.0,
+        )
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_classifications_total"]["simple_qa"], 2)
+        self.assertEqual(snap["intent_classifications_total"]["multi_step_task"], 1)
+        self.assertEqual(snap["intent_fallbacks_total"], {})
+        self.assertEqual(snap["intent_latency_ms"]["count"], 3)
+        self.assertEqual(snap["intent_latency_ms"]["min"], 100.0)
+        self.assertEqual(snap["intent_latency_ms"]["max"], 300.0)
+
+    def test_observe_intent_fallback(self):
+        """降级场景：fallback_reason 分桶累加。"""
+        collector = MetricsCollector()
+        collector.observe_intent(
+            intent_type=None,
+            confidence=0.0,
+            fallback_reason="timeout",
+            latency_ms=5000.0,
+        )
+        collector.observe_intent(
+            intent_type=None,
+            confidence=0.0,
+            fallback_reason="llm_failure",
+            latency_ms=100.0,
+        )
+        collector.observe_intent(
+            intent_type=None,
+            confidence=0.0,
+            fallback_reason="parse_failure",
+            latency_ms=200.0,
+        )
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_fallbacks_total"]["timeout"], 1)
+        self.assertEqual(snap["intent_fallbacks_total"]["llm_failure"], 1)
+        self.assertEqual(snap["intent_fallbacks_total"]["parse_failure"], 1)
+        self.assertEqual(snap["intent_classifications_total"], {})
+
+    def test_observe_intent_low_confidence_fallback(self):
+        """低置信度回退：intent_type 仍然记录，fallback_reason=low_confidence。"""
+        collector = MetricsCollector()
+        collector.observe_intent(
+            intent_type="multi_step_task",
+            confidence=0.4,
+            fallback_reason="low_confidence",
+            latency_ms=250.0,
+        )
+        snap = collector.snapshot()
+        # 低置信度回退时，intent_type 和 fallback_reason 都记录
+        self.assertEqual(snap["intent_classifications_total"]["multi_step_task"], 1)
+        self.assertEqual(snap["intent_fallbacks_total"]["low_confidence"], 1)
+
+    def test_observe_intent_cron_skip(self):
+        """cron 跳过：is_cron_skip=True 时不记录其他指标。"""
+        collector = MetricsCollector()
+        collector.observe_intent(is_cron_skip=True)
+        collector.observe_intent(is_cron_skip=True)
+        collector.observe_intent(is_cron_skip=True)
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_cron_skips_total"], 3)
+        self.assertEqual(snap["intent_classifications_total"], {})
+        self.assertEqual(snap["intent_fallbacks_total"], {})
+        self.assertEqual(snap["intent_latency_ms"]["count"], 0)
+
+    def test_observe_intent_latency_stats(self):
+        """延迟统计：count/sum/min/max 正确计算。"""
+        collector = MetricsCollector()
+        for lat in [100.0, 200.0, 150.0, 300.0, 50.0]:
+            collector.observe_intent(
+                intent_type="simple_qa",
+                confidence=0.9,
+                latency_ms=lat,
+            )
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_latency_ms"]["count"], 5)
+        self.assertEqual(snap["intent_latency_ms"]["sum"], 800.0)
+        self.assertEqual(snap["intent_latency_ms"]["min"], 50.0)
+        self.assertEqual(snap["intent_latency_ms"]["max"], 300.0)
+
+    def test_observe_intent_no_latency(self):
+        """latency_ms=None 时不更新延迟统计。"""
+        collector = MetricsCollector()
+        collector.observe_intent(
+            intent_type="simple_qa",
+            confidence=0.9,
+            latency_ms=None,
+        )
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_classifications_total"]["simple_qa"], 1)
+        self.assertEqual(snap["intent_latency_ms"]["count"], 0)
+
+    def test_intent_metrics_reset(self):
+        """reset() 清空所有 intent 指标。"""
+        collector = MetricsCollector()
+        collector.observe_intent(intent_type="simple_qa", confidence=0.9, latency_ms=100.0)
+        collector.observe_intent(fallback_reason="timeout", latency_ms=5000.0)
+        collector.observe_intent(is_cron_skip=True)
+        collector.reset()
+        snap = collector.snapshot()
+        self.assertEqual(snap["intent_classifications_total"], {})
+        self.assertEqual(snap["intent_fallbacks_total"], {})
+        self.assertEqual(snap["intent_latency_ms"]["count"], 0)
+        self.assertEqual(snap["intent_cron_skips_total"], 0)
+
+    def test_intent_metrics_snapshot_deepcopy(self):
+        """snapshot 返回深拷贝，修改不影响内部状态。"""
+        collector = MetricsCollector()
+        collector.observe_intent(intent_type="simple_qa", confidence=0.9, latency_ms=100.0)
+        snap = collector.snapshot()
+        snap["intent_classifications_total"]["simple_qa"] = 999
+        snap["intent_cron_skips_total"] = 999
+        snap2 = collector.snapshot()
+        self.assertEqual(snap2["intent_classifications_total"]["simple_qa"], 1)
+        self.assertEqual(snap2["intent_cron_skips_total"], 0)
+
+    def test_intent_metrics_thread_safe(self):
+        """intent 指标方法在并发调用下不丢失更新。"""
+        import threading
+        collector = MetricsCollector()
+
+        def worker():
+            for _ in range(100):
+                collector.observe_intent(intent_type="simple_qa", confidence=0.9, latency_ms=100.0)
+                collector.observe_intent(fallback_reason="timeout", latency_ms=5000.0)
+                collector.observe_intent(is_cron_skip=True)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        snap = collector.snapshot()
+        # 5 线程 × 100 次 = 500
+        self.assertEqual(snap["intent_classifications_total"]["simple_qa"], 500)
+        self.assertEqual(snap["intent_fallbacks_total"]["timeout"], 500)
+        self.assertEqual(snap["intent_cron_skips_total"], 500)
+        self.assertEqual(snap["intent_latency_ms"]["count"], 1000)  # 500 normal + 500 fallback
+
+
 if __name__ == "__main__":
     unittest.main()
