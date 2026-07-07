@@ -854,9 +854,10 @@ pre:hover .copy-btn { opacity: 1; }
 }
 .accent-dot:hover { transform: scale(1.15); }
 .accent-dot.is-active { border-color: var(--text-primary); }
-.accent-dot[data-accent="amber"] { background: #e0a96d; }
-.accent-dot[data-accent="teal"] { background: #5b8c8a; }
-.accent-dot[data-accent="violet"] { background: #9d7cd8; }
+.accent-dot[data-accent="violet"] { background: #a855f7; }
+.accent-dot[data-accent="blue"] { background: #3b82f6; }
+.accent-dot[data-accent="teal"] { background: #2dd4bf; }
+.accent-dot[data-accent="amber"] { background: #f59e0b; }
 
 /* ---------- 加载指示器 ---------- */
 .typing-indicator {

@@ -1,67 +1,68 @@
 /* ============================================================
-   tokens.css — 经纬台 Loom 设计令牌
-   双层变量：[data-theme] 明暗 + [data-accent] 强调色预设
+   tokens.css — 双主题设计令牌
+   深色 = Agent 模式（深空冷调，AI 操作员感）
+   浅色 = 生活模式（暖色纸感，长时间阅读）
    ============================================================ */
 
-/* ---------- 默认：深色模式（暖色深底，经纬台原色） ---------- */
+/* ---------- 默认：深色模式（深空冷调，AI 操作员） ---------- */
 :root,
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* 背景层级 */
-  --bg-primary: #1a1614;
-  --bg-secondary: #221d1a;
-  --bg-tertiary: #2d2622;
-  --bg-hover: #382f2a;
-  --bg-overlay: rgba(26, 22, 20, 0.72);
-  --bg-elevated: #251f1c;
+  /* 背景层级 — 深空蓝灰，从近黑到微亮 */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #1f2630;
+  --bg-hover: #2a313c;
+  --bg-overlay: rgba(13, 17, 23, 0.78);
+  --bg-elevated: #1c232e;
 
-  /* 文字层级 */
-  --text-primary: #e8e0d5;
-  --text-secondary: #a89989;
-  --text-muted: #6b5d52;
-  --text-inverse: #1a1614;
+  /* 文字层级 — 冷调白偏蓝 */
+  --text-primary: #e6edf3;
+  --text-secondary: #8b95a4;
+  --text-muted: #5a6473;
+  --text-inverse: #0d1117;
 
   /* 边框 */
-  --border: #2d2622;
-  --border-strong: #3d342d;
-  --border-subtle: #251f1c;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --border-subtle: #1a1f26;
 
   /* 气泡 */
-  --user-bubble: #2d2622;
-  --assistant-bubble: #221d1a;
-  --bubble-border: #3d342d;
+  --user-bubble: #1f2630;
+  --assistant-bubble: #161b22;
+  --bubble-border: #30363d;
 
-  /* 语义色 */
-  --danger: #e06c75;
-  --danger-dim: #8a3a42;
-  --success: #98c379;
-  --success-dim: #4a6b3a;
-  --warning: #e5c07b;
-  --warning-dim: #8a6b2f;
-  --info: #61afef;
-  --info-dim: #2a5f8a;
+  /* 语义色 — 冷调，色相与暖色主题完全区分 */
+  --danger: #f85149;
+  --danger-dim: #6e1f1c;
+  --success: #3fb950;
+  --success-dim: #1d3a23;
+  --warning: #d29922;
+  --warning-dim: #4a3a14;
+  --info: #58a6ff;
+  --info-dim: #1a3552;
 
   /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
   --shadow-glow: 0 0 24px var(--accent-glow);
 
-  /* 毛玻璃 */
-  --glass-bg: rgba(45, 38, 34, 0.55);
-  --glass-bg-hover: rgba(56, 47, 42, 0.65);
-  --glass-bg-active: rgba(224, 169, 109, 0.12);
-  --glass-border: rgba(255, 255, 255, 0.06);
-  --glass-border-strong: rgba(255, 255, 255, 0.1);
+  /* 毛玻璃 — 偏冷色透光 */
+  --glass-bg: rgba(22, 27, 34, 0.6);
+  --glass-bg-hover: rgba(42, 49, 60, 0.7);
+  --glass-bg-active: rgba(168, 85, 247, 0.14);
+  --glass-border: rgba(240, 246, 252, 0.06);
+  --glass-border-strong: rgba(240, 246, 252, 0.1);
   --blur: 12px;
 
-  /* 代码块 */
-  --code-bg: #14110f;
-  --code-border: #2d2622;
+  /* 代码块 — 极致深色 */
+  --code-bg: #010409;
+  --code-border: #21262d;
 }
 
-/* ---------- 浅色模式（暖白纸底） ---------- */
+/* ---------- 浅色模式（暖白纸底，长时间阅读） ---------- */
 [data-theme="light"] {
   color-scheme: light;
 
@@ -99,10 +100,9 @@
   --shadow-lg: 0 12px 32px rgba(42, 34, 24, 0.14);
   --shadow-glow: 0 0 24px var(--accent-glow);
 
-  /* 毛玻璃 */
   --glass-bg: rgba(255, 255, 255, 0.55);
   --glass-bg-hover: rgba(221, 212, 198, 0.65);
-  --glass-bg-active: rgba(184, 115, 51, 0.1);
+  --glass-bg-active: rgba(168, 85, 247, 0.1);
   --glass-border: rgba(0, 0, 0, 0.06);
   --glass-border-strong: rgba(0, 0, 0, 0.1);
   --blur: 12px;
@@ -111,56 +111,73 @@
   --code-border: #ddd4c6;
 }
 
-/* ---------- 强调色预设：琥珀（默认，经纬台原色） ---------- */
-[data-accent="amber"],
+/* ---------- 强调色预设：电光紫（默认，agent 智能） ---------- */
+[data-accent="violet"],
 :root:not([data-accent]) {
-  --accent: #e0a96d;
-  --accent-hover: #ebb87f;
-  --accent-dim: #a87f4d;
-  --accent-glow: rgba(224, 169, 109, 0.16);
-  --accent-contrast: #1a1614;
-}
-
-[data-theme="light"][data-accent="amber"],
-[data-theme="light"]:not([data-accent]) {
-  --accent: #b87333;
-  --accent-hover: #a0642a;
-  --accent-dim: #8a561f;
-  --accent-glow: rgba(184, 115, 51, 0.14);
+  --accent: #a855f7;
+  --accent-hover: #c084fc;
+  --accent-dim: #7c3aed;
+  --accent-glow: rgba(168, 85, 247, 0.22);
   --accent-contrast: #ffffff;
 }
 
-/* ---------- 强调色预设：深青（冷峻） ---------- */
-[data-accent="teal"] {
-  --accent: #5b8c8a;
-  --accent-hover: #6fa09e;
-  --accent-dim: #3f6a68;
-  --accent-glow: rgba(91, 140, 138, 0.16);
+[data-theme="light"][data-accent="violet"],
+[data-theme="light"]:not([data-accent]) {
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-dim: #5b21b6;
+  --accent-glow: rgba(124, 58, 237, 0.18);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 强调色预设：电光蓝（agent 冷峻） ---------- */
+[data-accent="blue"] {
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-dim: #1e40af;
+  --accent-glow: rgba(59, 130, 246, 0.22);
+  --accent-contrast: #ffffff;
+}
+
+[data-theme="light"][data-accent="blue"] {
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-dim: #1e3a8a;
+  --accent-glow: rgba(37, 99, 235, 0.18);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 强调色预设：琥珀（行动 / 暖色备选） ---------- */
+[data-accent="amber"] {
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-dim: #b45309;
+  --accent-glow: rgba(245, 158, 11, 0.22);
   --accent-contrast: #1a1614;
+}
+
+[data-theme="light"][data-accent="amber"] {
+  --accent: #d97706;
+  --accent-hover: #b45309;
+  --accent-dim: #92400e;
+  --accent-glow: rgba(217, 119, 6, 0.18);
+  --accent-contrast: #ffffff;
+}
+
+/* ---------- 强调色预设：深青（神秘） ---------- */
+[data-accent="teal"] {
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-dim: #0d9488;
+  --accent-glow: rgba(45, 212, 191, 0.22);
+  --accent-contrast: #0d1117;
 }
 
 [data-theme="light"][data-accent="teal"] {
-  --accent: #2d5a58;
-  --accent-hover: #244a48;
-  --accent-dim: #1f3f3d;
-  --accent-glow: rgba(45, 90, 88, 0.14);
-  --accent-contrast: #ffffff;
-}
-
-/* ---------- 强调色预设：紫罗兰（神秘） ---------- */
-[data-accent="violet"] {
-  --accent: #9d7cd8;
-  --accent-hover: #ad90e0;
-  --accent-dim: #6b4f8a;
-  --accent-glow: rgba(157, 124, 216, 0.16);
-  --accent-contrast: #1a1614;
-}
-
-[data-theme="light"][data-accent="violet"] {
-  --accent: #6b4f8a;
-  --accent-hover: #5a4078;
-  --accent-dim: #4a3666;
-  --accent-glow: rgba(107, 79, 138, 0.14);
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --accent-dim: #115e59;
+  --accent-glow: rgba(13, 148, 136, 0.18);
   --accent-contrast: #ffffff;
 }
 
