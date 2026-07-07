@@ -1,12 +1,90 @@
 /* ============================================================
-   chat-settings.js — 设置弹窗 / 配置表单 / 保存 / 重启
+   chat-settings.js — 设置弹出菜单（flyout） + 高级设置弹窗
    currentConfig 由 utils.js 全局声明
    ============================================================ */
 
 const settingsBodyEl = document.getElementById('settingsBody');
+const flyoutEl = document.getElementById('settingsFlyout');
+const flyoutBodyEl = document.getElementById('settingsFlyoutBody');
 
-// ========== 打开设置 ==========
+// ========== 设置弹出菜单（flyout） ==========
+async function toggleSettingsFlyout() {
+  if (!flyoutEl) return;
+  const isOpen = flyoutEl.classList.contains('show');
+  if (isOpen) {
+    closeSettingsFlyout();
+    return;
+  }
+  // 定位：设置按钮上方
+  const btn = document.getElementById('btnSettingsFlyout');
+  if (btn) {
+    const rect = btn.getBoundingClientRect();
+    const flyoutWidth = 280;
+    let left = rect.right - flyoutWidth;
+    if (left < 8) left = 8;
+    const bottom = window.innerHeight - rect.top + 8;
+    flyoutEl.style.left = left + 'px';
+    flyoutEl.style.bottom = bottom + 'px';
+    flyoutEl.style.minWidth = flyoutWidth + 'px';
+  }
+  flyoutEl.classList.add('show');
+  await renderQuickSettings();
+}
+
+function closeSettingsFlyout() {
+  if (flyoutEl) flyoutEl.classList.remove('show');
+}
+
+// 渲染快捷开关到 flyout body
+async function renderQuickSettings() {
+  if (!flyoutBodyEl) return;
+  try {
+    const data = await api('/config');
+    currentConfig = data.config;
+  } catch (e) {
+    flyoutBodyEl.innerHTML = '<div style="color: var(--danger); padding: 12px;">加载失败: ' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+
+  const security = currentConfig.security || {};
+  const guardrails = currentConfig.guardrails || {};
+  const securityEnabled = security.enabled === true || security.enabled === 'true';
+  const inputScanEnabled = (guardrails.input_scan || {}).enabled !== false;
+  const sanitizerEnabled = (guardrails.sanitizer || {}).enabled !== false;
+  const outputFilterEnabled = (guardrails.output_filter || {}).enabled !== false;
+
+  const toggleCard = (path, checked, label, hint) => `
+    <div class="flyout-toggle-card">
+      <div class="flyout-toggle-info">
+        <div class="flyout-toggle-label">${label}</div>
+        <div class="flyout-toggle-hint">${hint}</div>
+      </div>
+      <label class="switch"><input type="checkbox" data-guardrail="${path}" ${checked ? 'checked' : ''}><span class="slider"></span></label>
+    </div>`;
+
+  flyoutBodyEl.innerHTML = `
+    <div class="flyout-section-title">防护系统</div>
+    ${toggleCard('security.enabled', securityEnabled, 'HIL 审批', '高危操作弹确认卡片')}
+    ${toggleCard('guardrails.input_scan.enabled', inputScanEnabled, '输入扫描', '检测 Prompt 注入')}
+    ${toggleCard('guardrails.sanitizer.enabled', sanitizerEnabled, '工具结果脱敏', '隔离注入内容')}
+    ${toggleCard('guardrails.output_filter.enabled', outputFilterEnabled, 'PII 过滤', '脱敏手机号/邮箱')}
+    <div class="flyout-section-title">推理模式</div>
+    <div class="flyout-toggle-card">
+      <div class="flyout-toggle-info">
+        <div class="flyout-toggle-label">思考模式</div>
+        <div class="flyout-toggle-hint">深度推理，质量更高</div>
+      </div>
+      <label class="switch"><input type="checkbox" data-reasoning-toggle="main"><span class="slider"></span></label>
+    </div>`;
+
+  bindGuardrailToggles();
+  bindReasoningToggle();
+  syncReasoningStatus();
+}
+
+// ========== 打开高级设置弹窗 ==========
 async function openSettings() {
+  closeSettingsFlyout();
   openModal('settingsModal');
   try {
     const data = await api('/config');
@@ -705,6 +783,9 @@ window.addEventListener('storage', (e) => {
 // 暴露给其他模块
 window.HermesChatSettings = {
   openSettings,
+  toggleSettingsFlyout,
+  closeSettingsFlyout,
+  renderQuickSettings,
   renderSettingsForm,
   saveConfig,
   restartServer,

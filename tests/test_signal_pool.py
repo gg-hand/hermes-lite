@@ -336,14 +336,15 @@ class TestActivityRefresh(_SignalPoolTestBase):
         self.pool.cleanup()
         self.assertEqual(len(self.pool.get_status()), 0)
 
-    def test_written_expires_after_7_days(self) -> None:
-        # written 信号 7 天后清理
-        old_time = (datetime.now() - timedelta(days=8)).isoformat()
+    def test_written_signal_removed_immediately(self) -> None:
+        # written 信号在 mark_written 时立即移除，不保留 7 天
         for _ in range(7):
             self.pool.add("用户偏好简短回复", source="L1")
-        self.pool._signals[0].status = "written"
-        self.pool._signals[0].last_seen = old_time
-        self.pool.cleanup()
+        self.assertEqual(len(self.pool.get_status()), 1)
+        # 模拟 consolidation 写入画像后调用 mark_written
+        sig_id = self.pool._signals[0].id
+        self.pool.mark_written([sig_id])
+        # 信号应被立即移除
         self.assertEqual(len(self.pool.get_status()), 0)
 
     def test_recent_triggered_not_cleaned(self) -> None:
@@ -456,20 +457,22 @@ class TestSignalPoolPersistence(_SignalPoolTestBase):
         )
         self.assertEqual(len(pool2.get_status()), 0)
 
-    def test_mark_written_updates_status(self) -> None:
+    def test_mark_written_removes_signal(self) -> None:
+        # v5: mark_written 立即移除信号，不再保留 written 状态
         for _ in range(7):
             self.pool.add("用户偏好简短回复", source="L1")
         sig_id = self.pool.get_status()[0]["id"]
         self.pool.mark_written([sig_id])
-        status = self.pool.get_status()
-        self.assertEqual(status[0]["status"], "written")
+        # 信号应被移除
+        self.assertEqual(len(self.pool.get_status()), 0)
 
-    def test_mark_written_by_contents(self) -> None:
+    def test_mark_written_by_contents_removes_signal(self) -> None:
+        # v5: mark_written_by_contents 立即移除信号
         for _ in range(7):
             self.pool.add("用户偏好简短回复", source="L1")
         self.pool.mark_written_by_contents(["用户偏好简短回复"])
-        status = self.pool.get_status()
-        self.assertEqual(status[0]["status"], "written")
+        # 信号应被移除（关键词匹配）
+        self.assertEqual(len(self.pool.get_status()), 0)
 
     def test_mark_written_empty_list_noop(self) -> None:
         for _ in range(7):
@@ -530,19 +533,17 @@ class TestDashboardData(_SignalPoolTestBase):
         self.assertEqual(sig["percent"], 100)
 
     def test_summary_counts_correct(self) -> None:
-        # 1 pending + 1 triggered + 1 written（用差异大的信号名避免合并）
+        # 1 pending + 1 triggered（v5: written 状态信号已立即移除，不会出现）
         self.pool.add("用户偏好简短回复", source="L1")
         for _ in range(7):
             self.pool.add("喜欢二次元动漫", source="L1")
-        # 手动构造一个 written
-        self.pool.add("用户是后端工程师", source="L1")
-        self.pool._signals[-1].status = "written"
         data = self.pool.get_dashboard_data()
         s = data["summary"]
-        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["total"], 2)
         self.assertEqual(s["pending"], 1)
         self.assertEqual(s["triggered"], 1)
-        self.assertEqual(s["written"], 1)
+        # written 始终为 0（信号写入画像后立即移除）
+        self.assertEqual(s["written"], 0)
 
     def test_avg_progress_calculated(self) -> None:
         self.pool.add("用户偏好简短回复", source="L1")  # v3: count=3, progress=3/7
@@ -664,13 +665,17 @@ class TestSignalPoolV2Dedup(_SignalPoolTestBase):
         self.assertEqual(status[0]["status"], "triggered")
         self.assertGreaterEqual(status[0]["count"], 2)
 
-    def test_written_signal_not_matched(self) -> None:
-        # written 信号不吸收新证据
+    def test_written_signal_already_removed(self) -> None:
+        # v5: written 状态信号已在 mark_written 时移除，不会出现在信号池中
+        # 验证：手动设置 status="written" 后调用 cleanup，信号会被移除
         self.pool.add("用户讨厌emoji", source="L1")
         self.pool._signals[0].status = "written"
+        # written 信号不应吸收新证据（因为已被移除）
+        # 这里模拟 written 信号被遗忘后，新相似信号正常入池
+        self.pool._signals.remove(self.pool._signals[0])
         self.pool.add("用户讨厌使用emoji", source="L1")
         status = self.pool.get_status()
-        self.assertEqual(len(status), 2)
+        self.assertEqual(len(status), 1)
 
     def test_add_compound_splits_and_pools_separately(self) -> None:
         # 复合句 add 后池中有 2 条独立信号

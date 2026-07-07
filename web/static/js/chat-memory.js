@@ -6,7 +6,7 @@ let memoryPanelMode = 'all';
 
 // ========== 侧边栏 Tab 切换 ==========
 function switchSidebarTab(tabName) {
-  document.querySelectorAll('.sidebar-tab').forEach(btn => {
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
   sessionListEl.classList.toggle('active', tabName === 'sessions');

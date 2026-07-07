@@ -265,7 +265,7 @@ class Signal:
     一条信号代表系统观察到的某个用户特征/偏好/习惯的累积证据。
     多次出现的相似信号会合并为一条，count 累加。
     达阈值（THRESHOLD）后状态变 triggered，入 pending 队列等待写入画像。
-    consolidate 写入成功后状态变 written。
+    consolidate 写入成功后从信号池移除（不再保留 written 状态）。
     """
 
     id: str
@@ -276,7 +276,7 @@ class Signal:
     sources: List[str] = field(default_factory=list)
     first_seen: str = ""
     last_seen: str = ""
-    status: str = "pending"  # pending / triggered / written
+    status: str = "pending"  # pending / triggered（written 状态写入画像后立即移除）
     section: str = "沉淀笔记"
 
     def to_dict(self) -> Dict[str, Any]:
@@ -579,8 +579,7 @@ class SignalPool:
         new_pure_pos = bool(new_pos and not new_neg)
         new_pure_neg = bool(new_neg and not new_pos)
         for signal in self._signals:
-            if signal.status == "written":
-                continue
+            # written 状态信号已在 mark_written 时移除，此处无需再过滤
             sig_kw = set(signal.keywords)
             if not sig_kw:
                 continue
@@ -664,7 +663,10 @@ class SignalPool:
     # 状态更新
     # ------------------------------------------------------------------
     def mark_written(self, signal_ids: List[str]) -> None:
-        """consolidate apply 成功后，标记信号为 written。
+        """consolidate apply 成功后，从信号池移除已写入画像的信号。
+
+        写入画像后立即移除，而非保留 written 状态 7 天。入池前的
+        _already_in_profile 查重会防止同一信息再次入池，无需保留审计副本。
 
         参数:
             signal_ids: 已写入画像的信号 ID 列表。
@@ -673,32 +675,54 @@ class SignalPool:
             return
         with self._lock:
             id_set = set(signal_ids)
-            for signal in self._signals:
-                if signal.id in id_set:
-                    signal.status = "written"
-            self._save_debounced()
+            removed = [s for s in self._signals if s.id in id_set]
+            self._signals = [s for s in self._signals if s.id not in id_set]
+            if removed:
+                logger.info("信号写入画像后移除 %d 条: %s", len(removed),
+                            ", ".join(s.id for s in removed))
+                self._save_debounced()
 
     def mark_written_by_contents(self, contents: List[str]) -> None:
-        """consolidate apply 成功后，通过 content 匹配标记信号为 written。
+        """consolidate apply 成功后，通过关键词匹配移除已写入画像的信号。
 
         consolidate 的 _apply_pending_ops 应用 profile_updates 后，无法直接
         获知哪些 signal 触发了这次写入（pending 队列中混合了 L1 add 信号、
-        replace/delete 显式修改）。本方法通过 content 文本匹配找出已写入的
-        triggered 信号，标记为 written。
+        replace/delete 显式修改）。本方法通过关键词 Jaccard 匹配找出已写入的
+        triggered 信号并移除。
+
+        使用关键词匹配而非精确 content 匹配，容错 LLM 抽取时对 content 的
+        改写（如"用户讨厌emoji" vs LLM 改写为"用户不喜欢使用emoji符号"）。
+        Jaccard ≥ DEDUP_THRESHOLD 视为匹配。
 
         参数:
             contents: 本次 apply 的 profile_updates 中所有 add 操作的 content 列表。
         """
         if not contents:
             return
-        content_set = set(c.strip() for c in contents if c)
-        if not content_set:
+        # 预计算 contents 的关键词集
+        content_keywords_list = [
+            _extract_keywords(c.strip()) for c in contents if c and c.strip()
+        ]
+        if not content_keywords_list:
             return
         with self._lock:
-            for signal in self._signals:
-                if signal.status == "triggered" and signal.content.strip() in content_set:
-                    signal.status = "written"
-            self._save_debounced()
+            removed = []
+            for signal in list(self._signals):
+                if signal.status != "triggered":
+                    continue
+                sig_kw = set(signal.keywords)
+                if not sig_kw:
+                    continue
+                # 与任一 content 关键词集 Jaccard ≥ 阈值即视为已写入
+                for ck in content_keywords_list:
+                    if _jaccard(sig_kw, ck) >= self.DEDUP_THRESHOLD:
+                        removed.append(signal)
+                        self._signals.remove(signal)
+                        break
+            if removed:
+                logger.info("信号写入画像后移除 %d 条（关键词匹配）: %s",
+                            len(removed), ", ".join(s.id for s in removed))
+                self._save_debounced()
 
     # ------------------------------------------------------------------
     # 过期清理
@@ -708,7 +732,10 @@ class SignalPool:
 
         过期判定基于 last_seen（最后活动时间）：
         - pending 信号 30 天未活动 → 移除
-        - triggered/written 信号 7 天后 → 移除（已处理完毕，保留 7 天供审计）
+        - triggered 信号 7 天后 → 移除（consolidation 失败兜底，避免无限堆积）
+
+        注：written 状态信号已在 mark_written/mark_written_by_contents 时立即移除，
+        不会进入此方法。
         """
         now = datetime.now()
         with self._lock:
@@ -723,14 +750,14 @@ class SignalPool:
                         signal.content[:50], age,
                     )
                 elif (
-                    signal.status in ("triggered", "written")
+                    signal.status == "triggered"
                     and age > self.TRIGGERED_EXPIRE_DAYS
                 ):
                     self._signals.remove(signal)
                     removed += 1
                     logger.info(
-                        "清理已处理信号: %s（%s，%d 天后移除）",
-                        signal.content[:50], signal.status, age,
+                        "清理过期 triggered 信号: %s（%d 天后移除）",
+                        signal.content[:50], age,
                     )
             if removed > 0:
                 self._save_debounced()
@@ -795,13 +822,13 @@ class SignalPool:
             for sec_signals in sections.values():
                 sec_signals.sort(key=lambda x: x["progress"], reverse=True)
 
-            # 状态汇总
+            # 状态汇总（written 状态信号已立即移除，不会出现）
             total = len(signals_data)
             summary = {
                 "total": total,
                 "pending": sum(1 for s in signals_data if s["status"] == "pending"),
                 "triggered": sum(1 for s in signals_data if s["status"] == "triggered"),
-                "written": sum(1 for s in signals_data if s["status"] == "written"),
+                "written": 0,  # 保留字段供前端兼容，但实际值始终为 0
                 "avg_progress": (
                     sum(s["progress"] for s in signals_data) / total
                     if total > 0 else 0.0
@@ -918,8 +945,7 @@ class SignalPool:
                 other = self._signals[j]
                 if other.id in merged_ids:
                     continue
-                if target.status == "written" or other.status == "written":
-                    continue
+                # written 状态信号已在 mark_written 时移除，回填时不会出现
                 if self._has_distinct_objects(set(target.keywords), set(other.keywords)):
                     continue
                 jaccard = _jaccard(set(target.keywords), set(other.keywords))
@@ -939,6 +965,17 @@ class SignalPool:
         if merged_ids:
             self._signals = [s for s in self._signals if s.id not in merged_ids]
             logger.info("信号池回填合并 %d 条重复信号", len(merged_ids))
+        # triggered 信号重新入队：v5 回填合并可能产生新的 triggered 信号
+        # （如 sig_0002+sig_0003 合并后 count=14 triggered），但这些信号
+        # 没有经过 _add_single 的阈值检查路径，不会调用 _enqueue_profile_update。
+        # 需要重新入队，确保 consolidation 能处理它们。
+        triggered_count = 0
+        for s in self._signals:
+            if s.status == "triggered":
+                self._enqueue_profile_update(s)
+                triggered_count += 1
+        if triggered_count:
+            logger.info("信号池回填重新入队 %d 条 triggered 信号", triggered_count)
         # 即使无合并也需保存：keywords 已用 v4 重新提取，需持久化新版本号
         self._save_debounced()
 
