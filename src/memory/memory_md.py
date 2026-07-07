@@ -105,6 +105,68 @@ class MemoryMdManager:
         with self._lock:
             return self._read_unchecked()
 
+    def read_system_profile(self) -> str:
+        """读取用于 system_text 的画像文本（排除 Agent 自画像和沟通偏好段）。
+
+        这两段从 system_text 移出注入 messages[0] 动态区，避免 memory.md
+        异步更新时破坏 system_text 缓存稳定性。其余段（用户画像主体）保留
+        在 system_text 中享受前缀缓存。
+
+        返回:
+            排除 Agent 自画像和沟通偏好段后的画像文本。文件不存在时返回空字符串。
+        """
+        full_text = self.read()
+        if not full_text:
+            return ""
+        for section_title in ("Agent 自画像", "沟通偏好"):
+            full_text = self._remove_section_from_text(full_text, section_title)
+        # 清理末尾多余空行
+        return full_text.rstrip()
+
+    def read_section_body(self, section_title: str) -> str:
+        """读取指定 section 的 body 文本（不含 ``## 标题`` 行）。
+
+        用于 context_manager 注入 messages[0] 动态区（如 Agent 自画像、
+        沟通偏好）。
+
+        参数:
+            section_title: section 标题（不含 ``## `` 前缀）。
+
+        返回:
+            section body 文本。section 不存在时返回空字符串。
+        """
+        full_text = self.read()
+        if not full_text:
+            return ""
+        lines = full_text.split("\n")
+        start, end = self._find_section_range(lines, section_title)
+        if start < 0:
+            return ""
+        body_lines = lines[start + 1:end]
+        return "\n".join(body_lines).strip()
+
+    @staticmethod
+    def _remove_section_from_text(text: str, section_title: str) -> str:
+        """从文本中移除指定 section（含标题行与 body）。
+
+        移除后清理残留的连续空行（最多清一行），避免段间出现双空行。
+
+        参数:
+            text: 原始文本。
+            section_title: section 标题（不含 ``## `` 前缀）。
+
+        返回:
+            移除指定 section 后的文本。section 不存在时原样返回。
+        """
+        lines = text.split("\n")
+        start, end = MemoryMdManager._find_section_range(lines, section_title)
+        if start < 0:
+            return text
+        del lines[start:end]
+        if start < len(lines) and lines[start].strip() == "":
+            lines.pop(start)
+        return "\n".join(lines)
+
     def write(self, facts: List[Dict[str, Any]]) -> None:
         """同步写入 facts 到 memory.md（覆盖式更新）。
 
@@ -157,6 +219,19 @@ class MemoryMdManager:
     # 画像总长度硬上限（防止画像膨胀失控）
     MAX_PROFILE_TOTAL_CHARS = 8000
 
+    # 存储层分段独立计数上限（三段总和保持 ≤ MAX_PROFILE_TOTAL_CHARS）
+    # 用户画像段：含基本信息/技术栈/工作习惯/兴趣爱好/其他/沉淀笔记等所有
+    #   非 Agent、非沟通偏好的 section（含 H1 标题与文件头部空行）
+    MAX_USER_PROFILE_CHARS = 5000
+    # Agent 自画像段：仅含 `## Agent 自画像` section
+    MAX_AGENT_PROFILE_CHARS = 2000
+    # 沟通偏好段：仅含 `## 沟通偏好` section
+    MAX_COMMUNICATION_CHARS = 1000
+
+    # section → segment 映射（其余 section 均归入 user 段）
+    _AGENT_SECTIONS = frozenset({"Agent 自画像"})
+    _COMMUNICATION_SECTIONS = frozenset({"沟通偏好"})
+
     def apply_profile_updates(self, updates: List[Dict[str, Any]]) -> None:
         """应用一批画像更新操作（add/replace/delete）到 memory.md。
 
@@ -173,9 +248,11 @@ class MemoryMdManager:
             - replace: 替换指定 section 的全部 body；section 不存在则新建。
             - delete: 删除指定 section（含标题行与 body）；section 不存在则跳过。
 
-        **硬上限**：写文件前检查 ``len(new_text)``，超过
-        ``MAX_PROFILE_TOTAL_CHARS``（8000 字符）时拒绝 add 操作（不抛异常，
-        记录警告日志，避免阻断 consolidate）。
+        **分段硬上限**：写文件前按段独立检查长度——用户画像段 ≤5000、
+        Agent 自画像段 ≤2000、沟通偏好段 ≤1000。某段超限时仅拒绝该段的
+        add 操作（replace/delete 不受影响，仍正常应用），其他段的 add 正常执行。
+        分段检查后再做总长度兜底（≤8000），防止分段遗漏导致总长度失控。
+        超限时不抛异常，仅记录警告日志，避免阻断 consolidate。
 
         参数:
             updates: 更新操作列表，每项含:
@@ -188,18 +265,96 @@ class MemoryMdManager:
             # 第二道去重防线：过滤掉 section 已有相似内容的 add 操作
             deduped_updates = self._dedupe_add_updates(current_text, updates)
             new_text = self._apply_updates_to_text(current_text, deduped_updates)
-            # 硬上限检查：超限时拒绝 add（仅记录日志，不抛异常）
+
+            # 分段硬上限检查：按段拒绝超限的 add 操作
+            segment_limits = {
+                "user": self.MAX_USER_PROFILE_CHARS,
+                "agent": self.MAX_AGENT_PROFILE_CHARS,
+                "communication": self.MAX_COMMUNICATION_CHARS,
+            }
+            segment_lengths = self._compute_segment_lengths(new_text)
+            exceeded_segments = {
+                seg
+                for seg, length in segment_lengths.items()
+                if length > segment_limits[seg]
+            }
+            for seg in exceeded_segments:
+                logger.warning(
+                    "画像段 '%s' 长度 %d 超过上限 %d，拒绝该段 add 操作",
+                    seg, segment_lengths[seg], segment_limits[seg],
+                )
+
+            if exceeded_segments:
+                safe_updates = [
+                    u for u in deduped_updates
+                    if u.get("action") != "add"
+                    or self._categorize_section(str(u.get("section", "")))
+                    not in exceeded_segments
+                ]
+                new_text = self._apply_updates_to_text(current_text, safe_updates)
+
+            # 总长度兜底检查（分段检查的 fallback，防止分段遗漏）
             if len(new_text) > self.MAX_PROFILE_TOTAL_CHARS:
                 logger.warning(
-                    "画像总长度 %d 超过上限 %d，拒绝本次 add 操作",
+                    "画像总长度 %d 超过上限 %d，拒绝全部 add 操作",
                     len(new_text), self.MAX_PROFILE_TOTAL_CHARS,
                 )
-                # 过滤掉 add 操作，仅应用 replace/delete
                 safe_updates = [
                     u for u in deduped_updates if u.get("action") != "add"
                 ]
                 new_text = self._apply_updates_to_text(current_text, safe_updates)
             self._write_raw_text(new_text)
+
+    @classmethod
+    def _categorize_section(cls, section_title: str) -> str:
+        """将 section 标题归类到对应段（user/agent/communication）。
+
+        参数:
+            section_title: section 标题（不含 ``## `` 前缀）。
+
+        返回:
+            段标识符：``"agent"`` / ``"communication"`` / ``"user"``。
+        """
+        if section_title in cls._AGENT_SECTIONS:
+            return "agent"
+        if section_title in cls._COMMUNICATION_SECTIONS:
+            return "communication"
+        return "user"
+
+    def _compute_segment_lengths(self, text: str) -> Dict[str, int]:
+        """计算文本中各段的字符长度。
+
+        按 ``## section`` 边界切分文本，累加各 section（含标题行）字符数到
+        对应段。H1 标题（``# 用户画像``）与首段前的空行归入 user 段。
+
+        参数:
+            text: memory.md 全文。
+
+        返回:
+            ``{"user": int, "agent": int, "communication": int}`` 字典。
+        """
+        if not text:
+            return {"user": 0, "agent": 0, "communication": 0}
+
+        lines = text.split("\n")
+        segments = {"user": 0, "agent": 0, "communication": 0}
+        current_segment = "user"
+        current_lines: List[str] = []
+
+        def flush() -> None:
+            if current_lines:
+                segments[current_segment] += len("\n".join(current_lines))
+
+        for line in lines:
+            if line.startswith("## "):
+                flush()
+                current_lines = [line]
+                section_title = line[3:].strip()
+                current_segment = self._categorize_section(section_title)
+            else:
+                current_lines.append(line)
+        flush()
+        return segments
 
     def _dedupe_add_updates(
         self, current_text: str, updates: List[Dict[str, Any]]

@@ -154,6 +154,9 @@ web_search:
   baidu_api_key: ${BAIDU_API_KEY}
 tasks: {}
 schedules: []
+cron:
+  inject_history: true
+  max_concurrency: 10
 reasoning:
   main:
     enabled: false

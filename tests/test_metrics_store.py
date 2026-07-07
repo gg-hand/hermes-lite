@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -48,6 +49,10 @@ def _snapshot(
     tool_calls=None,
     tool_errors=None,
     err_classes=None,
+    intent_cron_skips=0,
+    intent_classifications=None,
+    intent_fallbacks=None,
+    intent_hist=None,
 ):
     """构造 MetricsCollector snapshot 风格的快照。"""
     return {
@@ -66,6 +71,10 @@ def _snapshot(
         "tool_error_classes_total": err_classes or {},
         "tool_retries_total": {},
         "approval_decisions_total": {},
+        "intent_cron_skips_total": intent_cron_skips,
+        "intent_classifications_total": intent_classifications or {},
+        "intent_fallbacks_total": intent_fallbacks or {},
+        "intent_latency_ms": intent_hist or _hist(),
     }
 
 
@@ -255,6 +264,251 @@ class TestResetClamp(unittest.TestCase):
         current = _snapshot(llm_calls=30)  # reset 后
         delta = compute_delta(current, baseline)
         self.assertEqual(delta["llm_calls_total"], 0)  # clamp 到 0
+
+
+class TestIntentFieldsDelta(unittest.TestCase):
+    """验证 compute_delta 中 intent 字段增量计算（Task 1.4）。"""
+
+    def test_intent_cron_skips_total_scalar_delta(self):
+        """intent_cron_skips_total 标量增量计算，含 reset 场景 clamp。"""
+        # 正常增量
+        delta = compute_delta(
+            _snapshot(intent_cron_skips=10),
+            _snapshot(intent_cron_skips=3),
+        )
+        self.assertEqual(delta["intent_cron_skips_total"], 7)
+
+        # reset 场景 clamp 到 0
+        delta_reset = compute_delta(
+            _snapshot(intent_cron_skips=2),
+            _snapshot(intent_cron_skips=5),
+        )
+        self.assertEqual(delta_reset["intent_cron_skips_total"], 0)
+
+    def test_intent_classifications_total_dict_delta(self):
+        """intent_classifications_total 按 key 取 max(0, diff)。"""
+        delta = compute_delta(
+            _snapshot(
+                intent_classifications={"simple_qa": 8, "multi_step_task": 5, "react_task": 2},
+            ),
+            _snapshot(
+                intent_classifications={"simple_qa": 3, "multi_step_task": 5},
+            ),
+        )
+        self.assertEqual(delta["intent_classifications_total"]["simple_qa"], 5)
+        self.assertEqual(delta["intent_classifications_total"]["multi_step_task"], 0)
+        self.assertEqual(delta["intent_classifications_total"]["react_task"], 2)
+
+        # 缺失 key 兜底为 0
+        delta_missing = compute_delta(
+            _snapshot(intent_classifications={"simple_qa": 5}),
+            _snapshot(),
+        )
+        self.assertEqual(delta_missing["intent_classifications_total"]["simple_qa"], 5)
+
+    def test_intent_latency_ms_hist_delta(self):
+        """intent_latency_ms 直方图增量，含 baseline.count==0 的 min/max 兜底。"""
+        # baseline 非空：正常差值
+        delta = compute_delta(
+            _snapshot(intent_hist=_hist(count=10, sum_val=2000.0, min_val=100.0, max_val=500.0)),
+            _snapshot(intent_hist=_hist(count=4, sum_val=800.0, min_val=200.0, max_val=400.0)),
+        )
+        self.assertEqual(delta["intent_latency_ms"]["count"], 6)
+        self.assertAlmostEqual(delta["intent_latency_ms"]["sum"], 1200.0)
+        # cur_min=100 < base_min=200 → 取 100
+        self.assertEqual(delta["intent_latency_ms"]["min"], 100.0)
+        # cur_max=500 > base_max=400 → 取 500
+        self.assertEqual(delta["intent_latency_ms"]["max"], 500.0)
+
+        # baseline.count==0（重启后）：min/max 直接取 current
+        delta_restart = compute_delta(
+            _snapshot(intent_hist=_hist(count=5, sum_val=1000.0, min_val=150.0, max_val=400.0)),
+            _snapshot(intent_hist=_hist(count=0)),
+        )
+        self.assertEqual(delta_restart["intent_latency_ms"]["count"], 5)
+        self.assertEqual(delta_restart["intent_latency_ms"]["min"], 150.0)
+        self.assertEqual(delta_restart["intent_latency_ms"]["max"], 400.0)
+
+
+class TestIntentFieldsPersistence(unittest.TestCase):
+    """验证 MetricsStore 持久化 intent 字段（Task 2.9）。"""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        self.store = MetricsStore(db_path=self._db_path)
+
+    def tearDown(self):
+        self.store.close()
+        for f in os.listdir(self._tmpdir):
+            os.unlink(os.path.join(self._tmpdir, f))
+        os.rmdir(self._tmpdir)
+
+    def test_first_write_intent_fields(self):
+        """首次插入 intent 字段值正确。"""
+        delta = compute_delta(
+            _snapshot(
+                intent_cron_skips=3,
+                intent_classifications={"simple_qa": 5, "multi_step_task": 2},
+                intent_fallbacks={"llm_failure": 1},
+                intent_hist=_hist(count=7, sum_val=1400.0, min_val=120.0, max_val=350.0),
+            ),
+            _snapshot(),
+        )
+        self.store.upsert_daily("2026-07-01", delta)
+        record = self.store.get_daily("2026-07-01")
+        self.assertEqual(record["intent_cron_skips_total"], 3)
+        self.assertEqual(record["intent_classifications_total"]["simple_qa"], 5)
+        self.assertEqual(record["intent_classifications_total"]["multi_step_task"], 2)
+        self.assertEqual(record["intent_fallbacks_total"]["llm_failure"], 1)
+        self.assertEqual(record["intent_latency_ms"]["count"], 7)
+        self.assertEqual(record["intent_latency_ms"]["min"], 120.0)
+        self.assertEqual(record["intent_latency_ms"]["max"], 350.0)
+        self.assertAlmostEqual(record["intent_latency_ms"]["avg"], 200.0)
+
+    def test_merge_intent_fields_same_day(self):
+        """同一天两次 upsert，intent 字段累加合并。"""
+        delta1 = compute_delta(
+            _snapshot(
+                intent_cron_skips=2,
+                intent_classifications={"simple_qa": 3},
+                intent_hist=_hist(count=4, sum_val=800.0, min_val=200.0, max_val=400.0),
+            ),
+            _snapshot(),
+        )
+        self.store.upsert_daily("2026-07-01", delta1)
+
+        delta2 = compute_delta(
+            _snapshot(
+                intent_cron_skips=5,
+                intent_classifications={"simple_qa": 7, "react_task": 2},
+                intent_hist=_hist(count=8, sum_val=1600.0, min_val=100.0, max_val=500.0),
+            ),
+            _snapshot(
+                intent_cron_skips=2,
+                intent_classifications={"simple_qa": 3},
+                intent_hist=_hist(count=4, sum_val=800.0, min_val=200.0, max_val=400.0),
+            ),
+        )
+        self.store.upsert_daily("2026-07-01", delta2)
+
+        record = self.store.get_daily("2026-07-01")
+        self.assertEqual(record["intent_cron_skips_total"], 5)  # 2 + 3
+        self.assertEqual(record["intent_classifications_total"]["simple_qa"], 7)  # 3 + 4
+        self.assertEqual(record["intent_classifications_total"]["react_task"], 2)
+        self.assertEqual(record["intent_latency_ms"]["count"], 8)  # 4 + 4
+        self.assertEqual(record["intent_latency_ms"]["min"], 100.0)  # 新极端值
+        self.assertEqual(record["intent_latency_ms"]["max"], 500.0)  # 新极端值
+
+    def test_alter_table_migration_for_old_db(self):
+        """旧 DB 缺 intent 列时启动时 ALTER TABLE 补齐。"""
+        # 先用旧 schema 建表（不含 intent 列）
+        self.store.close()
+        old_conn = sqlite3.connect(self._db_path)
+        old_conn.execute("DROP TABLE IF EXISTS metrics_daily")
+        old_conn.execute(
+            """
+            CREATE TABLE metrics_daily (
+                date TEXT PRIMARY KEY,
+                llm_calls_total INTEGER DEFAULT 0,
+                llm_tokens_input_total INTEGER DEFAULT 0,
+                llm_tokens_output_total INTEGER DEFAULT 0,
+                llm_cache_creation_tokens_total INTEGER DEFAULT 0,
+                llm_cache_read_tokens_total INTEGER DEFAULT 0,
+                memory_retrieval_hits_total INTEGER DEFAULT 0,
+                memory_retrieval_misses_total INTEGER DEFAULT 0,
+                llm_latency_count INTEGER DEFAULT 0,
+                llm_latency_sum REAL DEFAULT 0,
+                llm_latency_min REAL DEFAULT 0,
+                llm_latency_max REAL DEFAULT 0,
+                tool_latency_count INTEGER DEFAULT 0,
+                tool_latency_sum REAL DEFAULT 0,
+                tool_latency_min REAL DEFAULT 0,
+                tool_latency_max REAL DEFAULT 0,
+                tool_calls_total_json TEXT DEFAULT '{}',
+                tool_calls_errors_total_json TEXT DEFAULT '{}',
+                termination_reasons_total_json TEXT DEFAULT '{}',
+                tool_error_classes_total_json TEXT DEFAULT '{}',
+                tool_retries_total_json TEXT DEFAULT '{}',
+                approval_decisions_total_json TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # 插入一条旧记录（无 intent 字段）
+        old_conn.execute(
+            "INSERT INTO metrics_daily (date, llm_calls_total, created_at, updated_at) "
+            "VALUES ('2026-06-30', 5, '2026-06-30T00:00:00', '2026-06-30T00:00:00')"
+        )
+        old_conn.commit()
+        old_conn.close()
+
+        # 重新初始化 MetricsStore，触发 ALTER 迁移
+        self.store = MetricsStore(db_path=self._db_path)
+
+        # 旧记录仍在，intent 字段默认值
+        old_record = self.store.get_daily("2026-06-30")
+        self.assertIsNotNone(old_record)
+        self.assertEqual(old_record["llm_calls_total"], 5)
+        self.assertEqual(old_record["intent_cron_skips_total"], 0)
+        self.assertEqual(old_record["intent_classifications_total"], {})
+        self.assertEqual(old_record["intent_fallbacks_total"], {})
+        self.assertEqual(old_record["intent_latency_ms"]["count"], 0)
+
+        # 新记录可正常写入 intent 字段
+        self.store.upsert_daily(
+            "2026-07-01",
+            compute_delta(
+                _snapshot(intent_cron_skips=2, intent_classifications={"simple_qa": 1}),
+                _snapshot(),
+            ),
+        )
+        new_record = self.store.get_daily("2026-07-01")
+        self.assertEqual(new_record["intent_cron_skips_total"], 2)
+        self.assertEqual(new_record["intent_classifications_total"]["simple_qa"], 1)
+
+    def test_row_to_dict_reads_intent_fields(self):
+        """_row_to_dict 返回的记录含完整 intent 字段（含 avg 计算）。"""
+        delta = compute_delta(
+            _snapshot(
+                intent_cron_skips=4,
+                intent_classifications={"simple_qa": 3, "react_task": 1},
+                intent_fallbacks={"parse_failure": 2},
+                intent_hist=_hist(count=4, sum_val=800.0, min_val=150.0, max_val=250.0),
+            ),
+            _snapshot(),
+        )
+        self.store.upsert_daily("2026-07-01", delta)
+
+        record = self.store.get_daily("2026-07-01")
+        # 标量
+        self.assertEqual(record["intent_cron_skips_total"], 4)
+        # dict
+        self.assertEqual(record["intent_classifications_total"], {"simple_qa": 3, "react_task": 1})
+        self.assertEqual(record["intent_fallbacks_total"], {"parse_failure": 2})
+        # hist 含 avg
+        self.assertEqual(record["intent_latency_ms"]["count"], 4)
+        self.assertEqual(record["intent_latency_ms"]["sum"], 800.0)
+        self.assertEqual(record["intent_latency_ms"]["min"], 150.0)
+        self.assertEqual(record["intent_latency_ms"]["max"], 250.0)
+        self.assertAlmostEqual(record["intent_latency_ms"]["avg"], 200.0)
+
+    def test_empty_delta_default_values(self):
+        """空 delta（无 intent 字段）写入时使用默认值兜底。"""
+        # 只含 llm_calls，不含 intent 字段
+        delta = compute_delta(_snapshot(llm_calls=5), _snapshot())
+        # intent 字段在 delta 中应为默认值
+        self.assertEqual(delta.get("intent_cron_skips_total", 0), 0)
+        self.assertEqual(delta.get("intent_classifications_total", {}), {})
+
+        self.store.upsert_daily("2026-07-01", delta)
+        record = self.store.get_daily("2026-07-01")
+        self.assertEqual(record["llm_calls_total"], 5)
+        self.assertEqual(record["intent_cron_skips_total"], 0)
+        self.assertEqual(record["intent_classifications_total"], {})
+        self.assertEqual(record["intent_fallbacks_total"], {})
+        self.assertEqual(record["intent_latency_ms"]["count"], 0)
 
 
 class TestTtlCleanup(unittest.TestCase):

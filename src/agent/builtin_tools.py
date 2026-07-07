@@ -1522,18 +1522,24 @@ def _register_update_profile(
     # key: session_id, value: write count
     session_write_counts: dict = {}
 
-    def _update_profile(action: str, section: str, content: str = "") -> str:
+    def _update_profile(action: str, section: str, content: str = "", target: str = "user") -> str:
         """update_profile 工具 handler（closure 捕获 consolidation_engine/signal_pool）。
 
         参数:
             action: 操作类型，``"add"`` / ``"replace"`` / ``"delete"`` 之一。
             section: memory.md 中的 section 标题（不含 ``## `` 前缀）。
             content: 新内容（add/replace 时必填，delete 时忽略）。
+            target: 信号目标对象，``"user"``（默认，用户画像）或 ``"agent"``
+                （Agent 自画像，写入 ``## Agent 自画像`` section）。target=agent
+                时按 target 分组计算 Jaccard 相似度，仅与同 target 信号去重。
 
         返回:
             操作结果字符串。校验失败时返回错误提示（不抛异常，
             与其它工具 handler 一致，保证 ReactLoop 稳定）。
         """
+        # target 参数校验
+        if target not in ("user", "agent"):
+            return f"错误：target 必须是 user 或 agent，收到 {target!r}"
         # 1. 参数校验（与 ToolRegistry.execute_tool 的异常兜底互补，
         #    这里返回友好的错误提示给 LLM，便于其纠正后重试）
         if action not in ("add", "replace", "delete"):
@@ -1622,13 +1628,15 @@ def _register_update_profile(
             if action == "add" and signal_pool is not None:
                 # add 走信号池累积：L1 入池，相似信号去重 + 计数累加，
                 # 达阈值（7）才入 pending 队列写入画像
+                # target 路由：user 信号走用户画像，agent 信号走 Agent 自画像
                 signal_pool.add(
                     content=content,
                     source="L1",
                     section=section,
+                    target=target,
                 )
                 result_msg = (
-                    f"信号已加入池累积，达阈值（{signal_pool.THRESHOLD} 次）后"
+                    f"信号已加入池累积（target={target}），达阈值（{signal_pool.THRESHOLD} 次）后"
                     f"才会写入画像（section={section}）"
                 )
             else:
@@ -1636,7 +1644,7 @@ def _register_update_profile(
                 consolidation_engine.enqueue_profile_update(action, section, content)
                 result_msg = (
                     f"已加入待合并队列，下次记忆沉淀时生效"
-                    f"（action={action}, section={section}）"
+                    f"（action={action}, section={section}, target={target}）"
                 )
         except Exception as e:
             return f"入队失败: {e}"
@@ -1664,7 +1672,9 @@ def _register_update_profile(
             "replace（替换 section 全部内容，section 不存在则新建）、"
             "delete（删除整个 section）三种操作。"
             "section 标题不含 '## ' 前缀，如 '背景'、'偏好'。\n\n"
-            "正确示例：action=add, section=技术栈, content='用户主力语言为 Python 和 Go'\n"
+            "target 参数：user（默认，用户画像）或 agent（Agent 自画像，"
+            "如'Agent 在 cron 任务中倾向过度调用 file_read'，写入 ## Agent 自画像 section）。\n\n"
+            "正确示例：action=add, section=技术栈, content='用户主力语言为 Python 和 Go', target=user\n"
             "错误示例：action=replace, section=系统架构, content='系统采用 FastAPI + ChromaDB，分为三层...' "
             "（这是系统描述，不是用户画像，应拒绝）"
         ),
@@ -1684,7 +1694,7 @@ def _register_update_profile(
                     "type": "string",
                     "description": (
                         "memory.md 中的 section 标题（不含 '## ' 前缀，"
-                        "如 '背景'、'偏好'、'技术栈'）。"
+                        "如 '背景'、'偏好'、'技术栈'、'Agent 自画像'）。"
                     ),
                 },
                 "content": {
@@ -1692,6 +1702,16 @@ def _register_update_profile(
                     "description": (
                         "新内容（add/replace 时必填，delete 时忽略）。"
                         "可多行，原样写入 section body。"
+                    ),
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["user", "agent"],
+                    "description": (
+                        "信号目标对象：user=用户画像信号（默认），"
+                        "agent=Agent 自画像信号（如'Agent 倾向过度调用 file_read'，"
+                        "写入 ## Agent 自画像 section）。target=agent 时按 target "
+                        "分组计算 Jaccard 相似度，仅与同 target 信号去重。"
                     ),
                 },
             },

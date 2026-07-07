@@ -172,6 +172,12 @@ class TestContextManagerLayering(unittest.TestCase):
             def read(self):
                 return "# 用户画像\n\n## 基本信息\n- 用户是测试用户"
 
+            def read_system_profile(self):
+                return self.read()
+
+            def read_section_body(self, section_title):
+                return ""
+
         class MockMemoryRetriever:
             def get_injection_text(self, user_input):
                 return "## 相关记忆\n1. 测试记忆 (相关度: 0.90)"

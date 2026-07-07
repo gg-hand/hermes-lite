@@ -54,6 +54,12 @@ class MockMemoryMdManager:
     def read(self):
         return "# 用户画像\n\n## 背景\n- 测试用户画像内容"
 
+    def read_system_profile(self):
+        return self.read()
+
+    def read_section_body(self, section_title):
+        return ""
+
 
 class MockMemoryRetriever:
     """Mock MemoryRetriever，返回固定的检索记忆文本。"""

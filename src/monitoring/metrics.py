@@ -78,6 +78,15 @@ class MetricsCollector:
         self._ocr_latency_ms: Dict[str, Dict[str, float]] = {}
         # reasoning_tokens 累计（spec integrate-llm-reasoning-mode Task 15）
         self._llm_reasoning_tokens_total: int = 0
+        # intent_classifier 监控（spec agent-metacognition-uplift Task 5）
+        # 按 intent 类型分桶的计数器（simple_qa/knowledge_lookup/multi_step_task/out_of_scope）
+        self._intent_classifications_total: Dict[str, int] = {}
+        # 降级原因分桶（llm_failure/timeout/parse_failure/low_confidence/cron_skip）
+        self._intent_fallbacks_total: Dict[str, int] = {}
+        # intent 分类延迟统计（毫秒）
+        self._intent_latency_ms: Dict[str, float] = {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0}
+        # cron 会话跳过计数（is_cron=True 时短路）
+        self._intent_cron_skips_total: int = 0
 
     # ------------------------------------------------------------------
     # 公开采集方法
@@ -234,7 +243,60 @@ class MetricsCollector:
                 stats["max"] = latency_ms
             else:
                 stats["min"] = min(stats["min"], latency_ms)
-                stats["max"] = max(stats["max"], latency_ms)
+            stats["max"] = max(stats["max"], latency_ms)
+
+    def observe_intent(
+        self,
+        intent_type: Optional[str] = None,
+        confidence: float = 0.0,
+        fallback_reason: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        is_cron_skip: bool = False,
+    ) -> None:
+        """记录一次 intent_classifier 分类结果或降级事件。
+
+        spec agent-metacognition-uplift Task 5 监控要求：记录 intent 分类
+        分布、降级率、低置信度回退率、延迟统计，便于在 /monitor 页面展示。
+
+        三种调用场景：
+        1. 正常分类成功：intent_type="simple_qa", confidence=0.9, fallback_reason=None
+        2. 降级（LLM 失败/超时/解析失败）：intent_type=None, fallback_reason="llm_failure"
+        3. cron 跳过：is_cron_skip=True（不消耗 LLM 调用）
+
+        参数:
+            intent_type: IntentType 枚举的 value（如 "simple_qa"），降级时为 None。
+            confidence: 分类置信度 0.0-1.0，降级时为 0.0。
+            fallback_reason: 降级原因，取值：
+                - "llm_failure": LLM 调用抛异常
+                - "timeout": LLM 调用超时
+                - "parse_failure": LLM 输出解析失败
+                - "low_confidence": 置信度 < 0.6 触发回退
+                - None: 正常分类成功
+            latency_ms: intent 分类耗时（毫秒），cron 跳过时为 None。
+            is_cron_skip: 是否为 cron 会话跳过（is_cron=True 短路）。
+        """
+        with self._lock:
+            if is_cron_skip:
+                self._intent_cron_skips_total += 1
+                return
+            if intent_type is not None:
+                self._intent_classifications_total[intent_type] = (
+                    self._intent_classifications_total.get(intent_type, 0) + 1
+                )
+            if fallback_reason is not None:
+                self._intent_fallbacks_total[fallback_reason] = (
+                    self._intent_fallbacks_total.get(fallback_reason, 0) + 1
+                )
+            if latency_ms is not None:
+                stats = self._intent_latency_ms
+                stats["count"] += 1
+                stats["sum"] += latency_ms
+                if stats["count"] == 1:
+                    stats["min"] = latency_ms
+                    stats["max"] = latency_ms
+                else:
+                    stats["min"] = min(stats["min"], latency_ms)
+                    stats["max"] = max(stats["max"], latency_ms)
 
     # ------------------------------------------------------------------
     # 导出与重置
@@ -281,6 +343,10 @@ class MetricsCollector:
                 "ocr_calls_total": copy.deepcopy(self._ocr_calls_total),
                 "ocr_errors_total": copy.deepcopy(self._ocr_errors_total),
                 "ocr_latency_ms": copy.deepcopy(self._ocr_latency_ms),
+                "intent_classifications_total": copy.deepcopy(self._intent_classifications_total),
+                "intent_fallbacks_total": copy.deepcopy(self._intent_fallbacks_total),
+                "intent_latency_ms": copy.deepcopy(self._intent_latency_ms),
+                "intent_cron_skips_total": self._intent_cron_skips_total,
             }
 
     def get_reasoning_tokens(self) -> int:
@@ -310,6 +376,10 @@ class MetricsCollector:
             self._ocr_calls_total = {}
             self._ocr_errors_total = {}
             self._ocr_latency_ms = {}
+            self._intent_classifications_total = {}
+            self._intent_fallbacks_total = {}
+            self._intent_latency_ms = {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0}
+            self._intent_cron_skips_total = 0
 
     # ------------------------------------------------------------------
     # 内部辅助方法

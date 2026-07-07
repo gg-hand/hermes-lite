@@ -339,6 +339,10 @@ class CronScheduler:
         # 为 None 时 _trigger 内部使用默认工厂（依赖 orchestrator 属性）。
         self.workflow_context_factory = workflow_context_factory
 
+        # ops-reliability-uplift Task 4.4: 预留 cron 调度项锁字典
+        # Phase 3 Task 15 并发改造时使用，每个 schedule 一个 asyncio.Lock 防 overlap
+        self._cron_locks: Dict[str, "asyncio.Lock"] = {}
+
         # 启动时加载已持久化的调度项
         self._load_persisted()
 
@@ -461,6 +465,121 @@ class CronScheduler:
                 # 被取消，退出循环
                 break
 
+    def _clear_cron_history(self, orchestrator: Any, session_id: str) -> None:
+        """清空指定 cron 会话的 history_buffer（ops-reliability-uplift Task 4.2）。
+
+        触发前调用，清空内存中的该 session 历史并删除磁盘 JSONL 文件，
+        确保 LLM 上下文不含上一次执行的 user/assistant 消息。
+
+        参数:
+            orchestrator: 编排器实例，从中读取 ``history_buffer`` 属性。
+            session_id: cron 会话 ID（形如 ``cron:{schedule_id}``）。
+        """
+        history_buffer = getattr(orchestrator, "history_buffer", None)
+        if history_buffer is None:
+            logger.warning(
+                "orchestrator.history_buffer 为 None，跳过 cron 上下文清空 session_id=%s",
+                session_id,
+            )
+            return
+        try:
+            history_buffer.clear_session(session_id)
+            logger.info(
+                "已清空 cron 会话历史 session_id=%s（隔离上下文）",
+                session_id,
+            )
+        except Exception:
+            logger.warning(
+                "清空 cron 会话历史失败 session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    def _build_cron_archive_callback(self, orchestrator: Any, schedule_id: str):
+        """构造 cron 专用 archive_callback 闭包（ops-reliability-uplift Task 6.2）。
+
+        cron session 不走 orchestrator 默认的 ``_archive_evicted_message``
+        （后者把完整 conversation_turn 写入向量库），而是改为从
+        ``runs_store.read_last(schedule_id)`` 读取上次 run 的 ``llm_summary``
+        字段（精炼摘要），以 ``type=summary`` 写入 cron namespace，避免
+        history_buffer FIFO 淘汰时机不可控导致摘要丢失或原文污染。
+
+        闭包签名与 orchestrator 默认 archive_callback 一致：
+        ``(sid: str, msg: Dict[str, Any]) -> None``，仅处理 ``sid`` 以
+        ``cron:`` 开头的会话（user session 由 orchestrator 闭包处理）。
+
+        参数:
+            orchestrator: 编排器实例，用于读取 ``chroma_store`` 属性。
+            schedule_id: 调度项 ID（不含 ``cron:`` 前缀）。
+
+        返回:
+            archive_callback 闭包函数。``runs_store`` / ``chroma_store``
+            不可用时返回 None（调用方应跳过覆盖）。
+        """
+        if self.runs_store is None:
+            logger.debug(
+                "runs_store 不可用，跳过 cron archive_callback 覆盖 schedule_id=%s",
+                schedule_id,
+            )
+            return None
+
+        chroma_store = getattr(orchestrator, "chroma_store", None)
+        if chroma_store is None:
+            logger.debug(
+                "orchestrator.chroma_store 不可用，跳过 cron archive_callback 覆盖 schedule_id=%s",
+                schedule_id,
+            )
+            return None
+
+        runs_store = self.runs_store
+
+        def _archive_cron_evicted(sid: str, msg: Dict[str, Any]) -> None:
+            """cron session 归档回调：写入上次 run 的 llm_summary（非完整对话）。"""
+            # 仅处理 cron session（user session 由 orchestrator 闭包处理）
+            if not sid.startswith("cron:"):
+                return
+            try:
+                last_run = runs_store.read_last(schedule_id)
+            except Exception:
+                logger.warning(
+                    "读取 runs.jsonl 上次记录失败，跳过 cron 归档 schedule_id=%s",
+                    schedule_id,
+                    exc_info=True,
+                )
+                return
+            if last_run is None:
+                return
+            summary_text = getattr(last_run, "llm_summary", "") or ""
+            if not summary_text.strip():
+                return
+            metadata = {
+                "type": "summary",
+                "session_id": sid,
+                "run_id": getattr(last_run, "run_id", "") or "",
+                "started_at": getattr(last_run, "started_at", "") or "",
+                "timestamp": getattr(last_run, "finished_at", "") or "",
+            }
+            try:
+                chroma_store.add_memory(
+                    summary_text,
+                    metadata=metadata,
+                    namespace="cron",
+                    cron_id=schedule_id,
+                )
+                logger.debug(
+                    "cron session 归档 summary 到向量库 schedule_id=%s run_id=%s",
+                    schedule_id,
+                    metadata["run_id"],
+                )
+            except Exception:
+                logger.warning(
+                    "cron archive_callback 写入 chroma_store 失败 schedule_id=%s",
+                    schedule_id,
+                    exc_info=True,
+                )
+
+        return _archive_cron_evicted
+
     async def _trigger(
         self, orchestrator: Any, schedule: Schedule
     ) -> None:
@@ -477,124 +596,169 @@ class CronScheduler:
         触发中的异常被捕获并记录，不影响其他调度项。``started_at`` /
         ``finished_at`` / ``duration_seconds`` 自动记录。
 
+        上下文隔离（ops-reliability-uplift Task 4）：触发前清空该 schedule 的
+        history_buffer，确保 LLM 上下文不含上一次执行的 user/assistant 消息，
+        从根源杜绝偷懒复用上次结果。保留 ``cron:{schedule.id}`` 稳定 session_id
+        用于审计视图与画像隔离前缀检测。
+
+        归档隔离（ops-reliability-uplift Task 6）：触发期间临时覆盖
+        ``history_buffer.archive_callback`` 为 cron 专用闭包，把 FIFO 淘汰
+        归档改为写入上次 run 的 ``llm_summary``（``type=summary``）而非
+        完整 ``conversation_turn``，避免原文污染 + 摘要时机不可控。
+        try/finally 保证 chat 异常时也能恢复原 archive_callback。
+
         参数:
             orchestrator: 编排器实例（用于 legacy 路径与默认 workflow 上下文）。
             schedule: 待触发的调度项。
         """
         session_id = f"cron:{schedule.id}"
-        started_at_dt = datetime.now()
-        started_at = started_at_dt.isoformat()
+        # ops-reliability-uplift Task 4.1: 触发前清空 history_buffer 隔离上下文
+        self._clear_cron_history(orchestrator, session_id)
 
-        # Task 10：提前生成 run_id，供 WorkflowContext 注入与 RunSummary 持久化
-        run_id = uuid.uuid4().hex[:12]
-
-        # 解析上次执行时间（用于 WorkflowContext.last_run_time 与时间变量替换）
-        last_run_dt = self._parse_last_run_time(schedule)
-
-        # 任务文本渲染（SubTask 2.7 第三层：任务文本层时间变量替换）
-        task_text = schedule.task or ""
-        if render_time_variables is not None:
-            task_text = render_time_variables(
-                task_text,
-                current_time=started_at_dt,
-                last_run_time=last_run_dt,
-            )
-
-        success = True
-        assistant_response = ""
-        tool_calls: List[Dict[str, Any]] = []
-        outputs: List[Dict[str, Any]] = []
-        errors: List[str] = []
-        # Task 10.4：step_traces / workflow_name 从 WorkflowResult 提取并持久化
-        step_traces_for_summary: List[Dict[str, Any]] = []
-        workflow_name: Optional[str] = None
+        # ops-reliability-uplift Task 6.4: 临时覆盖 archive_callback
+        # cron session 不走 orchestrator 默认归档（type=conversation_turn 全文），
+        # 改为归档上次 run 的 llm_summary（type=summary 精炼摘要）。
+        # 用 try/finally 保证 chat 异常时也能恢复原值，避免污染后续 user session。
+        _history_buf = getattr(orchestrator, "history_buffer", None)
+        _orig_archive_cb = getattr(_history_buf, "archive_callback", None) if _history_buf else None
+        _new_archive_cb = self._build_cron_archive_callback(orchestrator, schedule.id)
+        if _history_buf is not None and _new_archive_cb is not None:
+            try:
+                _history_buf.archive_callback = _new_archive_cb
+            except Exception:
+                logger.warning(
+                    "覆盖 archive_callback 失败，降级到 orchestrator 默认归档 schedule_id=%s",
+                    schedule.id,
+                    exc_info=True,
+                )
+                _new_archive_cb = None  # 标记未生效
 
         try:
-            if schedule.workflow:
-                # workflow 路径（Task 10.2 双轨：多步经 WorkflowEngine，简易走模板）
-                wf_result = await asyncio.to_thread(
-                    self._execute_workflow,
-                    orchestrator,
-                    schedule,
+            started_at_dt = datetime.now()
+            started_at = started_at_dt.isoformat()
+
+            # Task 10：提前生成 run_id，供 WorkflowContext 注入与 RunSummary 持久化
+            run_id = uuid.uuid4().hex[:12]
+
+            # 解析上次执行时间（用于 WorkflowContext.last_run_time 与时间变量替换）
+            last_run_dt = self._parse_last_run_time(schedule)
+
+            # 任务文本渲染（SubTask 2.7 第三层：任务文本层时间变量替换）
+            task_text = schedule.task or ""
+            if render_time_variables is not None:
+                task_text = render_time_variables(
                     task_text,
-                    started_at_dt,
-                    last_run_dt,
-                    run_id,
+                    current_time=started_at_dt,
+                    last_run_time=last_run_dt,
                 )
-                if wf_result is not None:
-                    success = wf_result.success
-                    assistant_response = wf_result.assistant_response
-                    tool_calls = list(wf_result.tool_calls)
-                    outputs = list(wf_result.outputs)
-                    errors = list(wf_result.errors)
-                    # Task 10.4：把 StepTrace 列表转为 List[Dict] 持久化到 runs.jsonl
-                    step_traces_for_summary = [
-                        t.to_dict() if hasattr(t, "to_dict") else dict(t)
-                        for t in (wf_result.step_traces or [])
-                    ]
-                    # workflow_name 优先取 wf_result.workflow_name，回退 schedule.name
-                    workflow_name = (
-                        wf_result.workflow_name or schedule.name
+
+            success = True
+            assistant_response = ""
+            tool_calls: List[Dict[str, Any]] = []
+            outputs: List[Dict[str, Any]] = []
+            errors: List[str] = []
+            # Task 10.4：step_traces / workflow_name 从 WorkflowResult 提取并持久化
+            step_traces_for_summary: List[Dict[str, Any]] = []
+            workflow_name: Optional[str] = None
+
+            try:
+                if schedule.workflow:
+                    # workflow 路径（Task 10.2 双轨：多步经 WorkflowEngine，简易走模板）
+                    wf_result = await asyncio.to_thread(
+                        self._execute_workflow,
+                        orchestrator,
+                        schedule,
+                        task_text,
+                        started_at_dt,
+                        last_run_dt,
+                        run_id,
                     )
-            else:
-                # legacy 路径：直接 orchestrator.chat（Task 5 已改 async）
-                # is_cron=True 使 LLMClient 选择 reasoning.cron 配置
-                response = await orchestrator.chat(
-                    session_id, task_text, is_cron=True
-                )
-                assistant_response = response or ""
-                workflow_name = schedule.name
-        except Exception as e:
-            logger.exception("调度项 %s 触发失败", schedule.id)
-            success = False
-            errors.append(f"触发异常: {e}")
-            workflow_name = schedule.name
-
-        # 设置 cron 会话标题为 schedule.name（避免 cron 会话显示随机串）
-        # 首次触发后写入，后续触发复用（update_session_title 内部用 WHERE id=?，
-        # 若会话尚未创建则 UPDATE 不影响任何行，等下一轮日志记录时由
-        # ensure_session 创建后再写入）。orchestrator.chat 内部会调 ensure_session。
-        _sl = getattr(orchestrator, "session_logger", None)
-        if _sl is not None and schedule.name:
-            try:
-                _sl.update_session_title(session_id, schedule.name)
+                    if wf_result is not None:
+                        success = wf_result.success
+                        assistant_response = wf_result.assistant_response
+                        tool_calls = list(wf_result.tool_calls)
+                        outputs = list(wf_result.outputs)
+                        errors = list(wf_result.errors)
+                        # Task 10.4：把 StepTrace 列表转为 List[Dict] 持久化到 runs.jsonl
+                        step_traces_for_summary = [
+                            t.to_dict() if hasattr(t, "to_dict") else dict(t)
+                            for t in (wf_result.step_traces or [])
+                        ]
+                        # workflow_name 优先取 wf_result.workflow_name，回退 schedule.name
+                        workflow_name = (
+                            wf_result.workflow_name or schedule.name
+                        )
+                else:
+                    # legacy 路径：直接 orchestrator.chat（Task 5 已改 async）
+                    # is_cron=True 使 LLMClient 选择 reasoning.cron 配置
+                    response = await orchestrator.chat(
+                        session_id, task_text, is_cron=True
+                    )
+                    assistant_response = response or ""
+                    workflow_name = schedule.name
             except Exception as e:
-                logger.warning("设置 cron 会话标题失败: %s", e)
+                logger.exception("调度项 %s 触发失败", schedule.id)
+                success = False
+                errors.append(f"触发异常: {e}")
+                workflow_name = schedule.name
 
-        finished_at_dt = datetime.now()
-        finished_at = finished_at_dt.isoformat()
-        duration_seconds = (finished_at_dt - started_at_dt).total_seconds()
+            # 设置 cron 会话标题为 schedule.name（避免 cron 会话显示随机串）
+            # 首次触发后写入，后续触发复用（update_session_title 内部用 WHERE id=?，
+            # 若会话尚未创建则 UPDATE 不影响任何行，等下一轮日志记录时由
+            # ensure_session 创建后再写入）。orchestrator.chat 内部会调 ensure_session。
+            _sl = getattr(orchestrator, "session_logger", None)
+            if _sl is not None and schedule.name:
+                try:
+                    _sl.update_session_title(session_id, schedule.name)
+                except Exception as e:
+                    logger.warning("设置 cron 会话标题失败: %s", e)
 
-        # 更新 last_run / next_run 并持久化（无论成功失败）
-        schedule.last_run = finished_at
-        cron_expr = self._cron_exprs.get(schedule.id)
-        if cron_expr is not None:
-            try:
-                schedule.next_run = cron_expr.next_run(
-                    finished_at_dt
-                ).isoformat()
-            except Exception:
-                pass
-        self._persist()
+            finished_at_dt = datetime.now()
+            finished_at = finished_at_dt.isoformat()
+            duration_seconds = (finished_at_dt - started_at_dt).total_seconds()
 
-        # SubTask 2.9: 生成 RunSummary 并 append 到 runs.jsonl
-        # Task 10.4：透传 step_traces / workflow_name / run_id
-        await asyncio.to_thread(
-            self._append_run_summary,
-            schedule,
-            started_at,
-            finished_at,
-            duration_seconds,
-            success,
-            task_text,
-            assistant_response,
-            tool_calls,
-            outputs,
-            errors,
-            step_traces_for_summary,
-            workflow_name,
-            run_id,
-        )
+            # 更新 last_run / next_run 并持久化（无论成功失败）
+            schedule.last_run = finished_at
+            cron_expr = self._cron_exprs.get(schedule.id)
+            if cron_expr is not None:
+                try:
+                    schedule.next_run = cron_expr.next_run(
+                        finished_at_dt
+                    ).isoformat()
+                except Exception:
+                    pass
+            self._persist()
+
+            # SubTask 2.9: 生成 RunSummary 并 append 到 runs.jsonl
+            # Task 10.4：透传 step_traces / workflow_name / run_id
+            await asyncio.to_thread(
+                self._append_run_summary,
+                schedule,
+                started_at,
+                finished_at,
+                duration_seconds,
+                success,
+                task_text,
+                assistant_response,
+                tool_calls,
+                outputs,
+                errors,
+                step_traces_for_summary,
+                workflow_name,
+                run_id,
+            )
+        finally:
+            # ops-reliability-uplift Task 6.4: 恢复原 archive_callback
+            # 即使 chat 异常也要恢复，避免污染后续 user session 归档行为
+            if _history_buf is not None and _orig_archive_cb is not None and _new_archive_cb is not None:
+                try:
+                    _history_buf.archive_callback = _orig_archive_cb
+                except Exception:
+                    logger.warning(
+                        "恢复 archive_callback 失败 schedule_id=%s",
+                        schedule.id,
+                        exc_info=True,
+                    )
 
     def _execute_workflow(
         self,

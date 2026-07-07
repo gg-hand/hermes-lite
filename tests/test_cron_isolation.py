@@ -46,6 +46,12 @@ class MockMemoryMdManager:
     def read(self):
         return "# 用户画像\n\n## 背景\n- 测试用户画像内容"
 
+    def read_system_profile(self):
+        return self.read()
+
+    def read_section_body(self, section_title):
+        return ""
+
 
 class MockMemoryRetriever:
     """Mock MemoryRetriever，记录 namespace/cron_id 调用参数。
@@ -58,9 +64,10 @@ class MockMemoryRetriever:
     def __init__(self):
         self.calls = []  # 记录所有调用参数
 
-    def get_injection_text(self, user_input, namespace="user", cron_id=None):
+    def get_injection_text(self, user_input, namespace="user", cron_id=None, exclude_types=None):
         self.calls.append(
-            {"user_input": user_input, "namespace": namespace, "cron_id": cron_id}
+            {"user_input": user_input, "namespace": namespace, "cron_id": cron_id,
+             "exclude_types": exclude_types}
         )
         if namespace == "user":
             return "## 相关记忆\n1. user memory fact (相关度: 0.90)"

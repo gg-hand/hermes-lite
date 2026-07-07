@@ -180,6 +180,20 @@
           </svg>
           <div class="uxp-sparkline-value">--</div>
         </div>
+        <div class="uxp-sparkline" data-metric="intent_classifications_total">
+          <div class="uxp-sparkline-label">意图分类总数</div>
+          <svg class="uxp-sparkline-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="uxp-sparkline-path" d=""/>
+          </svg>
+          <div class="uxp-sparkline-value">--</div>
+        </div>
+        <div class="uxp-sparkline" data-metric="intent_fallbacks_total">
+          <div class="uxp-sparkline-label">意图降级次数</div>
+          <svg class="uxp-sparkline-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="uxp-sparkline-path" d=""/>
+          </svg>
+          <div class="uxp-sparkline-value">--</div>
+        </div>
       </div>
       <div class="tool-table-wrap">
         <table class="data-table">
@@ -187,6 +201,9 @@
             <tr>
               <th>日期</th>
               <th class="num">LLM 调用</th>
+              <th class="num" title="intent_classifications_total 各类目求和">意图分类总数</th>
+              <th class="num" title="intent_fallbacks_total ÷ intent_classifications_total">降级率(%)</th>
+              <th class="num" title="intent_cron_skips_total">cron 跳过</th>
               <th class="num">Token 输入</th>
               <th class="num">Token 输出</th>
               <th class="num">工具调用</th>
@@ -195,7 +212,7 @@
             </tr>
           </thead>
           <tbody id="historyTableBody">
-            <tr><td colspan="7" class="empty-state-text">加载中...</td></tr>
+            <tr><td colspan="10" class="empty-state-text">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -337,6 +354,17 @@
         <h2 class="section-title">审批统计</h2>
       </div>
       <div id="approvalStatsBody" class="approval-cards">
+        <div class="empty-state"><div class="empty-state-text">暂无数据</div></div>
+      </div>
+    </section>
+
+    <!-- ========== 意图分类监控 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Intent Classifier</div>
+        <h2 class="section-title">意图分类监控</h2>
+      </div>
+      <div id="intentStatsBody" class="term-list">
         <div class="empty-state"><div class="empty-state-text">暂无数据</div></div>
       </div>
     </section>

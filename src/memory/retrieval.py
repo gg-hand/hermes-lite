@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 # LLMClient、ChromaMemoryStore、MemoryMdManager 仅用于类型提示，
 # 运行时通过鸭子类型调用实例方法，用 TYPE_CHECKING 守卫避免在 import 期
@@ -447,6 +447,7 @@ class MemoryRetriever:
         user_input: str,
         namespace: str = "user",
         cron_id: Optional[str] = None,
+        exclude_types: Optional[Set[str]] = None,
     ) -> str:
         """一站式检索并格式化注入文本。
 
@@ -458,12 +459,21 @@ class MemoryRetriever:
         - cron 调用方显式传 ``namespace="cron"`` + ``cron_id``，只召回该调度项
           自己命名空间下的记忆。
 
+        ops-reliability-uplift Task 5: 支持 exclude_types 过滤。
+        - 在 retrieve() 召回后、format_for_prompt 格式化前，过滤 metadata.type
+          命中 exclude_types 的记录。
+        - 主要用途：cron 会话过滤 ``type=conversation_turn`` 避免注入上次完整
+          assistant_response（get_injection_text 返回已格式化字符串，metadata
+          已丢失，必须在 retriever 层过滤而非 orchestrator 层事后过滤）。
+        - ``exclude_types`` 为 None 或空集时不过滤（向后兼容）。
+
         参数:
             user_input: 用户输入文本。
             namespace: Phase 8 隔离层命名空间。``"user"``（默认）只检索用户
                 命名空间条目；``"cron"`` 只检索 cron 命名空间且要求 ``cron_id``
                 匹配；``None`` 不按命名空间过滤。
             cron_id: 当 ``namespace="cron"`` 时必填，用于匹配 ``metadata.cron_id``。
+            exclude_types: 需过滤掉的 metadata.type 集合。为 None 或空集时不过滤。
 
         返回:
             可注入 prompt 的文本，无相关记忆时返回空字符串。
@@ -471,6 +481,15 @@ class MemoryRetriever:
         retrieval_result = self.retrieve(
             user_input, namespace=namespace, cron_id=cron_id
         )
+        # ops-reliability-uplift Task 5.2: 在 format_for_prompt 前过滤 exclude_types
+        if exclude_types:
+            memories = retrieval_result.get("long_term_memories", [])
+            filtered = [
+                m for m in memories
+                if str(m.get("metadata", {}).get("type", "")).lower()
+                not in {t.lower() for t in exclude_types}
+            ]
+            retrieval_result["long_term_memories"] = filtered
         return self.format_for_prompt(retrieval_result)
 
     def get_injection_text_lightweight(
