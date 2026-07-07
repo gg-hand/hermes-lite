@@ -157,6 +157,29 @@
           <button class="btn btn-ghost btn-sm" id="btnRefreshHistory" title="刷新历史数据">↻</button>
         </div>
       </div>
+      <div class="uxp-sparklines" id="uxpSparklines">
+        <div class="uxp-sparkline" data-metric="llm_calls_total">
+          <div class="uxp-sparkline-label">LLM 调用数</div>
+          <svg class="uxp-sparkline-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="uxp-sparkline-path" d=""/>
+          </svg>
+          <div class="uxp-sparkline-value">--</div>
+        </div>
+        <div class="uxp-sparkline" data-metric="error_rate">
+          <div class="uxp-sparkline-label">错误率</div>
+          <svg class="uxp-sparkline-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="uxp-sparkline-path" d=""/>
+          </svg>
+          <div class="uxp-sparkline-value">--</div>
+        </div>
+        <div class="uxp-sparkline" data-metric="memory_used_mb">
+          <div class="uxp-sparkline-label">内存使用 (MB)</div>
+          <svg class="uxp-sparkline-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="uxp-sparkline-path" d=""/>
+          </svg>
+          <div class="uxp-sparkline-value">--</div>
+        </div>
+      </div>
       <div class="tool-table-wrap">
         <table class="data-table">
           <thead>

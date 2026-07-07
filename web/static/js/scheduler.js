@@ -19,6 +19,13 @@ let _cronToolsCache = [];
 let _pendingCronToolsCache = [];
 let _runsCache = [];  // 缓存 run 详情，供展开时读取
 
+// PENDING 空态判定状态：两个子列表（proposals + cron_tool pending）都加载完后，
+// 两者皆为 0 时才显示空态引导
+let _proposalsLoaded = false;
+let _cronToolPendingLoaded = false;
+let _proposalsCount = 0;
+let _cronToolPendingCount = 0;
+
 // refresh-picker 状态
 let _refreshInterval = 30000;  // 默认 30s
 let _refreshTimer = null;
@@ -149,26 +156,28 @@ function renderSchedules(schedules) {
   if (countEl) countEl.textContent = schedules.length;
   if (!schedules.length) {
     listEl.innerHTML = '<div class="schedule-empty">暂无调度项，点击「+ 新建」创建</div>';
-    return;
+  } else {
+    listEl.innerHTML = schedules.map(s => `
+      <div class="schedule-item" data-id="${escapeHtml(s.id)}">
+        <div class="schedule-item-header">
+          <span class="schedule-name">${escapeHtml(s.name)}</span>
+          <span class="schedule-cron mono">${escapeHtml(s.cron)}</span>
+          <span class="schedule-status-dot ${s.enabled ? 'is-enabled' : 'is-disabled'}" title="${s.enabled ? '已启用' : '已禁用'}"></span>
+        </div>
+        <div class="schedule-meta text-muted text-sm">
+          ${s.last_run ? `上次: ${formatTime(s.last_run)}` : '上次: 未运行'}
+          ${s.next_run ? ` | 下次: ${formatTime(s.next_run)}` : ''}
+        </div>
+        <div class="schedule-actions">
+          <button class="btn btn-primary btn-sm" onclick="openScheduleDetail('${escapeHtml(s.id)}')">详情</button>
+          <button class="btn btn-ghost btn-sm" data-action="expand" data-id="${escapeHtml(s.id)}">记忆/审计</button>
+        </div>
+        <div class="sched-detail"></div>
+      </div>
+    `).join('');
   }
-  listEl.innerHTML = schedules.map(s => `
-    <div class="schedule-item" data-id="${escapeHtml(s.id)}">
-      <div class="schedule-item-header">
-        <span class="schedule-name">${escapeHtml(s.name)}</span>
-        <span class="schedule-cron mono">${escapeHtml(s.cron)}</span>
-        <span class="schedule-status-dot ${s.enabled ? 'is-enabled' : 'is-disabled'}" title="${s.enabled ? '已启用' : '已禁用'}"></span>
-      </div>
-      <div class="schedule-meta text-muted text-sm">
-        ${s.last_run ? `上次: ${formatTime(s.last_run)}` : '上次: 未运行'}
-        ${s.next_run ? ` | 下次: ${formatTime(s.next_run)}` : ''}
-      </div>
-      <div class="schedule-actions">
-        <button class="btn btn-primary btn-sm" onclick="openScheduleDetail('${escapeHtml(s.id)}')">详情</button>
-        <button class="btn btn-ghost btn-sm" data-action="expand" data-id="${escapeHtml(s.id)}">记忆/审计</button>
-      </div>
-      <div class="sched-detail"></div>
-    </div>
-  `).join('');
+  // 更新 SCHEDULES 空态
+  updateSchedulesEmpty(schedules.length);
 }
 
 function openScheduleDetail(id) {
@@ -468,12 +477,16 @@ function renderProposals(proposals) {
   if (countEl) countEl.textContent = proposals.length;
   if (!sorted.length) {
     listEl.innerHTML = '<div class="schedule-empty">暂无待确认的提议</div>';
-    return;
+  } else {
+    proposals.forEach(p => {
+      proposalToolsCache[p.proposal_id] = p.requested_tools || [];
+    });
+    listEl.innerHTML = sorted.map(p => renderProposalCard(p)).join('');
   }
-  proposals.forEach(p => {
-    proposalToolsCache[p.proposal_id] = p.requested_tools || [];
-  });
-  listEl.innerHTML = sorted.map(p => renderProposalCard(p)).join('');
+  // 更新 PENDING 空态
+  _proposalsCount = proposals.length;
+  _proposalsLoaded = true;
+  updatePendingEmpty();
 }
 
 function renderProposalCard(p) {
@@ -721,9 +734,13 @@ function renderCronToolsPending(items) {
   if (countEl) countEl.textContent = items.length;
   if (!items.length) {
     listEl.innerHTML = '<div class="schedule-empty">暂无待审查 cron_tool</div>';
-    return;
+  } else {
+    listEl.innerHTML = items.map(t => renderCronToolPendingCard(t)).join('');
   }
-  listEl.innerHTML = items.map(t => renderCronToolPendingCard(t)).join('');
+  // 更新 PENDING 空态
+  _cronToolPendingCount = items.length;
+  _cronToolPendingLoaded = true;
+  updatePendingEmpty();
 }
 
 function renderCronToolPendingCard(t) {
@@ -1049,10 +1066,58 @@ function renderScheduleMessageBubble(m) {
   </div>`;
 }
 
+// ========== UXP 空状态引导（PENDING / SCHEDULES 0 项时） ==========
+
+/** 更新 PENDING 整体空态：两子分组都加载完且都为 0 时显示 */
+function updatePendingEmpty() {
+  const el = document.getElementById('pendingEmpty');
+  if (!el) return;
+  // 等两个子列表都至少渲染过一次，避免初始加载时短暂闪现空态
+  if (!_proposalsLoaded || !_cronToolPendingLoaded) {
+    el.hidden = true;
+    return;
+  }
+  const isEmpty = _proposalsCount === 0 && _cronToolPendingCount === 0;
+  el.hidden = !isEmpty;
+}
+
+/** 更新 SCHEDULES 空态：调度项为 0 时显示 */
+function updateSchedulesEmpty(count) {
+  const el = document.getElementById('schedulesEmpty');
+  if (!el) return;
+  el.hidden = count > 0;
+}
+
+/** 触发新建调度弹窗（复用 btnNewScheduleTab 的逻辑：清空表单 + 重置 workflow + 打开 modal） */
+function openScheduleModal() {
+  const schedName = document.getElementById('schedName');
+  const schedCron = document.getElementById('schedCron');
+  const schedTask = document.getElementById('schedTask');
+  if (schedName) schedName.value = '';
+  if (schedCron) schedCron.value = '';
+  if (schedTask) schedTask.value = '';
+  const schedEnabled = document.getElementById('schedEnabled');
+  if (schedEnabled) schedEnabled.value = 'true';
+  if (typeof resetWorkflowConfig === 'function') resetWorkflowConfig();
+  if (typeof updateCreateScheduleBtnState === 'function') updateCreateScheduleBtnState();
+  openModal('scheduleModal');
+}
+
+/** 绑定 PENDING / SCHEDULES 空态引导按钮的 click 事件 */
+function setupEmptyStateActions() {
+  const pendingAction = document.getElementById('pendingEmptyAction');
+  if (pendingAction) pendingAction.addEventListener('click', openScheduleModal);
+  const schedulesAction = document.getElementById('schedulesEmptyAction');
+  if (schedulesAction) schedulesAction.addEventListener('click', openScheduleModal);
+}
+
 // ========== init：页面入口 ==========
 function init() {
   // 1. 初始化数据
   refreshAll();
+
+  // 1.5 空状态引导按钮绑定（PENDING / SCHEDULES 0 项时点击触发新建调度弹窗）
+  setupEmptyStateActions();
 
   // 2. refresh-picker 绑定
   const refreshIntervalSel = document.getElementById('refreshInterval');

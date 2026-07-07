@@ -20,6 +20,12 @@ function initGlobals() {
   memorySearchInputEl = document.getElementById('memorySearchInput');
   memoryTypeFilterEl = document.getElementById('memoryTypeFilter');
   memoryListEl = document.getElementById('memoryList');
+  // Task 3: 顶栏上下文元素
+  topbarModelEl = document.getElementById('topbarModel');
+  topbarModelValueEl = topbarModelEl ? topbarModelEl.querySelector('.topbar-model-value') : null;
+  topbarSessionNameEl = document.getElementById('topbarSessionName');
+  topbarSessionTextEl = topbarSessionNameEl ? topbarSessionNameEl.querySelector('.topbar-session-text') : null;
+  topbarConnectionEl = document.getElementById('topbarConnection');
 }
 
 // ========== 输入框自动调整 ==========
@@ -34,9 +40,127 @@ async function checkHealth() {
   try {
     await api('/health');
     if (statusDotEl) statusDotEl.classList.remove('offline');
+    if (topbarConnectionEl) topbarConnectionEl.classList.remove('disconnected');
   } catch {
     if (statusDotEl) statusDotEl.classList.add('offline');
+    if (topbarConnectionEl) topbarConnectionEl.classList.add('disconnected');
   }
+}
+
+// ========== 侧边栏底部调度快捷入口徽章 ==========
+async function loadSchedulerBadge() {
+  try {
+    // 尝试从 /api/schedules/pending-count 拉取待办数
+    // 如果端点不存在，徽章保持 hidden（不影响功能）
+    const resp = await fetch('/api/schedules/pending-count');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const count = data.count || 0;
+    if (count > 0) {
+      const badge = document.getElementById('schedulerBadge');
+      if (badge) {
+        badge.textContent = count > 99 ? '99+' : count;
+        badge.hidden = false;
+      }
+    }
+  } catch (e) {
+    // 静默失败，徽章不显示
+  }
+}
+
+// ========== Task 3: 顶栏模型信息加载 ==========
+async function loadTopbarModel() {
+  if (!topbarModelValueEl) return;
+  try {
+    const data = await api('/config');
+    const llm = (data && data.config && data.config.llm) || {};
+    const provider = llm.main_provider || 'unknown';
+    const model = llm.main_model || 'unknown';
+    topbarModelValueEl.textContent = `${provider} / ${model}`;
+    topbarModelValueEl.title = `${provider} / ${model}`;
+  } catch (e) {
+    topbarModelValueEl.textContent = '加载失败';
+    topbarModelValueEl.title = e && e.message ? e.message : '加载失败';
+  }
+}
+
+// ========== Task 3: 顶栏会话名显示 ==========
+function updateTopbarSessionName(title) {
+  if (!topbarSessionTextEl) return;
+  const display = (title && title.trim()) ? title.trim() : '新会话';
+  topbarSessionTextEl.textContent = display;
+  if (topbarSessionNameEl) topbarSessionNameEl.title = display === '新会话' ? '点击重命名' : `${display}（点击重命名）`;
+}
+
+// ========== Task 3: 顶栏会话名点击重命名 ==========
+function setupSessionRename() {
+  if (!topbarSessionNameEl) return;
+  // 避免重复绑定
+  if (topbarSessionNameEl.dataset.bound === '1') return;
+  topbarSessionNameEl.dataset.bound = '1';
+
+  topbarSessionNameEl.addEventListener('click', () => {
+    if (!topbarSessionTextEl) return;
+    const container = topbarSessionNameEl;
+    const current = topbarSessionTextEl.textContent || '新会话';
+    if (container.querySelector('input')) return; // 已在编辑态
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = current === '新会话' ? '' : current;
+    input.placeholder = '输入新名称...';
+    input.maxLength = 100;
+    container.innerHTML = '';
+    container.appendChild(input);
+    input.focus();
+    input.select();
+    let submitted = false;
+    const restore = () => updateTopbarSessionName(current);
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitted = true;
+        const newTitle = (input.value || '').trim();
+        // 空值或未变：取消（恢复原值）
+        if (!newTitle || newTitle === current) {
+          restore();
+          return;
+        }
+        // 未选会话：仅本地显示（无后端持久化）
+        if (!currentSessionId) {
+          updateTopbarSessionName(newTitle);
+          showToast('新会话需先发送消息才会保存', 'success');
+          return;
+        }
+        try {
+          const resp = await fetch(`/sessions/${encodeURIComponent(currentSessionId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle }),
+          });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+          }
+          updateTopbarSessionName(newTitle);
+          // 同步刷新侧边栏会话列表
+          if (typeof loadSessions === 'function') {
+            try { await loadSessions(); } catch (_) {}
+          }
+          showToast('重命名成功', 'success');
+        } catch (err) {
+          restore();
+          showToast('重命名失败：' + (err.message || err), 'error');
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        submitted = true;
+        restore();
+      }
+    });
+    input.addEventListener('blur', () => {
+      if (!submitted) restore();
+    });
+  });
 }
 
 // ========== 事件绑定 ==========
@@ -216,6 +340,13 @@ function start() {
   checkHealth();
   setInterval(checkHealth, 30000);
 
+  // Task 3: 加载顶栏模型信息 + 绑定会话重命名交互
+  loadTopbarModel();
+  setupSessionRename();
+
+  // Task 4: 侧边栏底部调度快捷入口徽章
+  loadSchedulerBadge();
+
   (async () => {
     await loadSessions();
     const persisted = loadPersistedSession();
@@ -239,4 +370,110 @@ if (document.readyState === 'loading') {
   start();
 }
 
-window.HermesChatMain = { start, initGlobals, bindEvents, autoResize, checkHealth };
+// ========== 键盘快捷键 ==========
+function isInputFocused() {
+  const tag = document.activeElement?.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+function focusMessageInput() {
+  const input = document.getElementById('messageInput') || document.querySelector('textarea[name="message"]');
+  if (input) input.focus();
+}
+
+function setupKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    // Ctrl+K / Cmd+K 聚焦输入框
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k' && !e.shiftKey) {
+      e.preventDefault();
+      focusMessageInput();
+      return;
+    }
+    // / 聚焦输入框（非输入态）
+    if (e.key === '/' && !isInputFocused() && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      focusMessageInput();
+      return;
+    }
+    // Ctrl+Shift+N 新建会话
+    if (e.ctrlKey && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+      e.preventDefault();
+      const input = document.getElementById('messageInput');
+      if (input && input.value.trim()) {
+        if (!window.confirm('丢弃当前输入？')) return;
+      }
+      const btn = document.getElementById('btnNewSession') || document.querySelector('[data-action="new-session"]');
+      if (btn) btn.click();
+      return;
+    }
+    // Esc 关闭弹窗（按优先级）
+    if (e.key === 'Escape') {
+      const cheatsheet = document.querySelector('.uxp-cheatsheet.visible');
+      if (cheatsheet) {
+        cheatsheet.classList.remove('visible');
+        return;
+      }
+      const flyout = document.querySelector('.settings-flyout.show');
+      if (flyout) {
+        flyout.classList.remove('show');
+        return;
+      }
+      const approval = document.querySelector('.approval-card');
+      if (approval) {
+        const closeBtn = approval.querySelector('.approval-cancel, [data-action="cancel"]');
+        if (closeBtn) { closeBtn.click(); return; }
+      }
+      const modal = document.querySelector('.modal-overlay.show');
+      if (modal) {
+        modal.classList.remove('show');
+        return;
+      }
+    }
+  }, true);  // capture 阶段
+
+  // cheat-sheet 显示链接
+  const cheatsheetLink = document.getElementById('btnShowCheatsheet');
+  if (cheatsheetLink) {
+    cheatsheetLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleCheatsheet();
+    });
+  }
+}
+
+function toggleCheatsheet() {
+  let sheet = document.querySelector('.uxp-cheatsheet');
+  if (!sheet) {
+    sheet = document.createElement('div');
+    sheet.className = 'uxp-cheatsheet';
+    sheet.innerHTML = `
+      <div class="cheatsheet-header">⌨ 快捷键</div>
+      <div class="cheatsheet-body">
+        <div class="cheatsheet-row"><kbd>Ctrl</kbd>+<kbd>K</kbd><span>聚焦输入框</span></div>
+        <div class="cheatsheet-row"><kbd>/</kbd><span>聚焦输入框</span></div>
+        <div class="cheatsheet-row"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd><span>新建会话</span></div>
+        <div class="cheatsheet-row"><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>发送消息</span></div>
+        <div class="cheatsheet-row"><kbd>Esc</kbd><span>关闭弹窗</span></div>
+      </div>
+      <div class="cheatsheet-footer">点击外部或按 Esc 关闭</div>
+    `;
+    document.body.appendChild(sheet);
+    // 点击外部关闭
+    document.addEventListener('click', (e) => {
+      if (!sheet.classList.contains('visible')) return;
+      if (!sheet.contains(e.target) && e.target.id !== 'btnShowCheatsheet') {
+        sheet.classList.remove('visible');
+      }
+    });
+  }
+  sheet.classList.toggle('visible');
+}
+
+// 启动时绑定快捷键
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupKeyboardShortcuts);
+} else {
+  setupKeyboardShortcuts();
+}
+
+window.HermesChatMain = { start, initGlobals, bindEvents, autoResize, checkHealth, setupKeyboardShortcuts, toggleCheatsheet };

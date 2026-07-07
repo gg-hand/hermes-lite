@@ -72,6 +72,8 @@ function renderSessionList(sessions) {
       const t = (cur.title && cur.title.trim()) ? cur.title.trim()
         : (_preview ? _preview : currentSessionId.slice(0, 20) + '...');
       if (sessionTitleEl) sessionTitleEl.textContent = t;
+      // Task 3: 同步新顶栏会话名显示
+      if (typeof updateTopbarSessionName === 'function') updateTopbarSessionName(cur.title);
     }
   }
 }
@@ -102,6 +104,8 @@ async function selectSession(sessionId) {
   // 标题占位：优先首条消息 preview，回退 id 前 20 字符
   const _preview = (window._firstMessagePreview && window._firstMessagePreview[sessionId]) || '';
   sessionTitleEl.textContent = (_preview ? _preview : sessionId.slice(0, 20)) + '...';
+  // Task 3: 同步新顶栏会话名（切换瞬间暂无 title，先显示 id 截断）
+  if (typeof updateTopbarSessionName === 'function') updateTopbarSessionName((_preview || sessionId.slice(0, 20)) + '...');
   await loadMessages(sessionId);
   loadSessions();
 }
@@ -258,6 +262,8 @@ async function newSession() {
   messagesEl.appendChild(welcomeScreenEl);
   welcomeScreenEl.style.display = 'flex';
   messageInputEl.focus();
+  // Task 3: 同步新顶栏会话名
+  if (typeof updateTopbarSessionName === 'function') updateTopbarSessionName(null);
   showToast('已创建新会话，发送消息后自动保存');
 }
 

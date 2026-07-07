@@ -117,6 +117,65 @@
   }
 
   // ----------------------------------------------------------------
+  // 健康检查 hover 浮窗（Task 5）
+  // ----------------------------------------------------------------
+  let healthTooltipEl = null;
+  function getHealthTooltip() {
+    if (!healthTooltipEl) {
+      healthTooltipEl = document.createElement('div');
+      healthTooltipEl.className = 'uxp-monitor-tooltip';
+      document.body.appendChild(healthTooltipEl);
+    }
+    return healthTooltipEl;
+  }
+
+  function attachHealthTooltip(item, data) {
+    if (!item) return;
+    let timer = null;
+    item.addEventListener('mouseenter', () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const tip = getHealthTooltip();
+        let html = `<div class="tooltip-message">${escapeHtml(data && data.message ? data.message : '')}</div>`;
+        if (data && data.detail) {
+          const detailStr = typeof data.detail === 'string'
+            ? data.detail
+            : JSON.stringify(data.detail, null, 2);
+          html += `<div class="tooltip-detail">${escapeHtml(detailStr)}</div>`;
+        }
+        tip.innerHTML = html;
+        tip.classList.add('visible');
+        // 定位：默认放在元素右侧
+        const rect = item.getBoundingClientRect();
+        tip.style.left = `${rect.right + 8}px`;
+        tip.style.top = `${rect.top}px`;
+        // 边界检测：超出右边界则左移到元素左侧；超出下边界则上移
+        requestAnimationFrame(() => {
+          const tipRect = tip.getBoundingClientRect();
+          if (tipRect.right > window.innerWidth - 8) {
+            tip.style.left = `${rect.left - tipRect.width - 8}px`;
+          }
+          if (tipRect.bottom > window.innerHeight - 8) {
+            tip.style.top = `${window.innerHeight - tipRect.height - 8}px`;
+          }
+          if (parseFloat(tip.style.left) < 8) {
+            tip.style.left = '8px';
+          }
+        });
+      }, 500);
+    });
+    item.addEventListener('mouseleave', () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (healthTooltipEl) {
+        healthTooltipEl.classList.remove('visible');
+      }
+    });
+  }
+
+  // ----------------------------------------------------------------
   // 健康检查渲染
   // ----------------------------------------------------------------
   // Health 检查项分组映射
@@ -178,7 +237,7 @@
           else if (st === 'critical') gCrit++;
           const msg = escapeHtml(truncate(info.message || '', 60));
           groupCells.push(`
-            <div class="health-cell is-${st}" title="${escapeHtml(info.message || '')}">
+            <div class="health-cell is-${st}">
               <span class="health-cell-dot"></span>
               <span class="health-cell-name">${escapeHtml(name)}</span>
               <span class="health-cell-msg">${msg}</span>
@@ -206,7 +265,7 @@
         const st = info.status || 'ok';
         const msg = escapeHtml(truncate(info.message || '', 60));
         return `
-          <div class="health-cell is-${st}" title="${escapeHtml(info.message || '')}">
+          <div class="health-cell is-${st}">
             <span class="health-cell-dot"></span>
             <span class="health-cell-name">${escapeHtml(name)}</span>
             <span class="health-cell-msg">${msg}</span>
@@ -224,6 +283,17 @@
       `;
     }
     grid.innerHTML = html;
+
+    // Task 5：为每个健康检查项绑定 hover 浮窗
+    grid.querySelectorAll('.health-cell').forEach((cellEl) => {
+      // 通过索引取回原始 info 数据：定位当前 cell 对应的检查项名
+      const nameEl = cellEl.querySelector('.health-cell-name');
+      if (!nameEl) return;
+      const cellName = nameEl.textContent;
+      const info = checks[cellName];
+      if (!info) return;
+      attachHealthTooltip(cellEl, { message: info.message || '', detail: info.detail || null });
+    });
   }
 
   // ----------------------------------------------------------------
@@ -637,11 +707,52 @@
     try {
       const data = await fetchJson(`/metrics/history?days=${days}`);
       renderHistory(data);
+      renderSparklines(data);
     } catch (e) {
       console.error('history error:', e);
       const body = $('historyTableBody');
       if (body) body.innerHTML = '<tr><td colspan="7" class="empty-state-text text-danger">加载失败</td></tr>';
     }
+  }
+
+  // 渲染 3 个 sparkline（Task 6 - 2026-07-07）
+  function renderSparklines(records) {
+    if (!records || records.length === 0) {
+      document.querySelectorAll('.uxp-sparkline').forEach(el => el.classList.add('empty'));
+      return;
+    }
+    // 按日期正序
+    const sorted = records.slice().sort((a, b) => (a.date > b.date ? 1 : -1));
+    const metrics = [
+      { key: 'llm_calls_total', label: 'LLM 调用数', format: v => fmtNum(v) },
+      { key: 'error_rate', label: '错误率', format: v => fmtPct(v) },
+      { key: 'memory_used_mb', label: '内存 (MB)', format: v => `${Math.round(v)} MB` },
+    ];
+    metrics.forEach(({ key, format }) => {
+      const el = document.querySelector(`.uxp-sparkline[data-metric="${key}"]`);
+      if (!el) return;
+      const values = sorted.map(r => Number(r[key] || 0));
+      const latest = values[values.length - 1] || 0;
+      const valueEl = el.querySelector('.uxp-sparkline-value');
+      if (valueEl) valueEl.textContent = format(latest);
+      // 至少 2 个非零值才画
+      const nonZero = values.filter(v => v > 0);
+      if (values.length < 2 || nonZero.length < 1) {
+        el.classList.add('empty');
+        return;
+      }
+      const max = Math.max(...values, 1);
+      const min = Math.min(...values, 0);
+      const range = (max - min) || 1;
+      const w = 200, h = 40;
+      const points = values.map((v, i) => {
+        const x = (i / (values.length - 1 || 1)) * w;
+        const y = h - ((v - min) / range) * (h - 4) - 2;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      const path = el.querySelector('.uxp-sparkline-path');
+      if (path) path.setAttribute('d', `M ${points.join(' L ')}`);
+    });
   }
 
   function renderHistory(records) {
@@ -919,9 +1030,9 @@
           <div class="run-task">${task}</div>
           ${response}
           <div class="run-meta">
-            <span>🔧 ${toolCount}</span>
-            <span>⚠ ${errCount}</span>
-            <span>📤 ${outCount}</span>
+            <span>工具 ${toolCount}</span>
+            <span>异常 ${errCount}</span>
+            <span>输出 ${outCount}</span>
             ${r.run_id ? `<span>id: ${escapeHtml(truncate(r.run_id, 12))}</span>` : ''}
           </div>
         </div>

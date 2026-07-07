@@ -1594,6 +1594,18 @@ def _register_update_profile(
         except ImportError:
             pass
 
+        # cron 会话提前拦截：根本不进入画像更新流程，频次限制/信号池/入队全跳过
+        is_cron_session = (
+            session_id is not None
+            and isinstance(session_id, str)
+            and session_id.startswith("cron:")
+        )
+        if is_cron_session:
+            return (
+                f"cron 会话不更新用户画像，已跳过"
+                f"（action={action}, section={section}）"
+            )
+
         if action == "add" and session_id is not None:
             current_count = session_write_counts.get(session_id, 0)
             if current_count >= MAX_PROFILE_WRITES_PER_SESSION:
@@ -1603,7 +1615,7 @@ def _register_update_profile(
                     f"用户画像应精简，避免频繁修改。"
                 )
             # 频次计数在入池/入队成功后累加（见下方）
-        # 注：session_id 为 None 时（如测试或 cron 路径）跳过频次限制
+        # 注：session_id 为 None 时（如测试路径）跳过频次限制
 
         # 2. 操作分流
         try:

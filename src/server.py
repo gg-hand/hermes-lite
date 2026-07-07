@@ -418,6 +418,15 @@ class SessionListResponse(BaseModel):
     sessions: List[SessionItem]
 
 
+class SessionTitleUpdate(BaseModel):
+    """更新会话标题请求体（Task 0 PATCH 端点）。
+
+    ``title`` 长度 1-100 字符（包含两端），由 FastAPI 自动校验，越界返回 422。
+    """
+
+    title: str = Field(..., min_length=1, max_length=100)
+
+
 class MessageItem(BaseModel):
     """消息条目。
 
@@ -3253,6 +3262,35 @@ def get_session_messages(
         return MessageListResponse(messages=messages)
     except Exception as e:
         logger.exception("获取会话消息失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"内部错误: {e}")
+
+
+@app.patch("/sessions/{session_id}")
+def update_session_title(session_id: str, body: SessionTitleUpdate):
+    """更新指定会话的标题（Task 0 PATCH 端点）。
+
+    请求体：``{"title": "新标题"}``，长度 1-100 字符（由 Pydantic Field 校验，越界 422）。
+    会话不存在时返回 404；成功返回 ``{id, title, updated_at}``。
+    """
+    if session_logger is None:
+        raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
+    if not session_logger.session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+    try:
+        session_logger.update_session_title(session_id, body.title)
+        # 再次校验写入成功（title 截断后为空时 update 静默忽略）
+        stored = session_logger.get_session_title(session_id)
+        if not stored:
+            raise HTTPException(status_code=422, detail="title 不能为空")
+        return {
+            "id": session_id,
+            "title": stored,
+            "updated_at": datetime.now().isoformat(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("更新会话标题失败: %s", e)
         raise HTTPException(status_code=500, detail=f"内部错误: {e}")
 
 

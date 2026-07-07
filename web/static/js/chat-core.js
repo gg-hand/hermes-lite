@@ -39,7 +39,7 @@ function appendMessage(role, content, attachments, reasoning) {
     msg.innerHTML = `<div class="message-role ${role}">${roleLabel}</div>`;
     // 历史加载的 reasoning：构建已完成的思考块
     if (reasoning && reasoning.trim()) {
-      const rBlock = _buildReasoningBlock();
+      const rBlock = _buildReasoningBlock({ initial: true });
       const rContent = rBlock.querySelector('.reasoning-content');
       if (rContent) rContent.innerHTML = renderMarkdown(reasoning);
       const rTitle = rBlock.querySelector('.reasoning-title');
@@ -51,10 +51,293 @@ function appendMessage(role, content, attachments, reasoning) {
     bubble.innerHTML = renderMarkdown(content);
     msg.appendChild(bubble);
     enhanceCodeBlocks(bubble);
+    // 任务 2：hover 操作条（仅 assistant 文本消息）
+    _attachMsgActions(msg);
   }
   messagesEl.appendChild(msg);
   scrollMessagesToBottom();
   return msg;
+}
+
+// ========== 消息气泡 Hover 操作条（任务 2） ==========
+function _attachMsgActions(msg) {
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'uxp-msg-actions';
+  actionsEl.innerHTML =
+    '<button class="uxp-action-btn" data-action="copy" title="复制" type="button" aria-label="复制">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<rect x="9" y="9" width="13" height="13" rx="2"></rect>' +
+        '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>' +
+      '</svg>' +
+    '</button>' +
+    '<button class="uxp-action-btn" data-action="regenerate" title="重新生成" type="button" aria-label="重新生成">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>' +
+        '<path d="M21 3v5h-5"></path>' +
+        '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>' +
+        '<path d="M3 21v-5h5"></path>' +
+      '</svg>' +
+    '</button>';
+  msg.appendChild(actionsEl);
+
+  // 复制按钮：取 message-bubble 的纯文本
+  const copyBtn = actionsEl.querySelector('[data-action="copy"]');
+  copyBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const bubble = msg.querySelector('.message-bubble');
+    const text = bubble ? bubble.innerText : msg.innerText;
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } else {
+        // 降级：textarea + execCommand
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+    } catch (err) {
+      ok = false;
+    }
+    // 使用闭包捕获的 copyBtn 引用（避免 e.currentTarget 在 async 中变 null）
+    if (ok && copyBtn) {
+      copyBtn.classList.add('copied');
+      setTimeout(() => copyBtn.classList.remove('copied'), 1500);
+    } else if (!ok) {
+      showToast('复制失败，请手动复制', 'error');
+    }
+  });
+
+  // 重新生成按钮：复用 sendMessage 的 SSE 流式管线，落到当前 msg
+  const regenBtn = actionsEl.querySelector('[data-action="regenerate"]');
+  regenBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _regenerateAssistantMessage(msg);
+  });
+}
+
+// 重新生成：向前找最近的 user 消息，POST /chat/stream 流式更新当前 msg
+async function _regenerateAssistantMessage(msg) {
+  if (streamState === StreamState.STREAMING) {
+    showToast('当前有消息正在生成，请先停止', '');
+    return;
+  }
+  if (!currentSessionId) {
+    showToast('没有活动会话', 'error');
+    return;
+  }
+  // 向前查找最近的 .message.user
+  let prev = msg.previousElementSibling;
+  while (prev && !(prev.classList && prev.classList.contains('user'))) {
+    prev = prev.previousElementSibling;
+  }
+  if (!prev) {
+    showToast('找不到对应的用户消息', 'error');
+    return;
+  }
+  const userBubble = prev.querySelector('.message-bubble');
+  const userText = userBubble ? userBubble.innerText.trim() : prev.innerText.trim();
+  if (!userText) {
+    showToast('用户消息为空', 'error');
+    return;
+  }
+
+  // 清空当前 msg（保留 role 标签和 actions 条），构建新流式气泡
+  const preserved = [];
+  msg.querySelectorAll('.message-role, .uxp-msg-actions').forEach((el) => preserved.push(el));
+  while (msg.firstChild) msg.removeChild(msg.firstChild);
+  preserved.forEach((el) => msg.appendChild(el));
+  const newBubble = _buildStreamBubble();
+  msg.appendChild(newBubble);
+  scrollMessagesToBottom();
+
+  // 复用 sendMessage 相同的全局状态管理
+  abortController = new AbortController();
+  streamState = StreamState.STREAMING;
+  isSending = true;
+  updateSendBtnToStopBtn(false);
+
+  const rounds = [{ el: newBubble, text: '', reasoning: '', reasoning_el: null }];
+  let roundIdx = 0;
+
+  try {
+    const res = await fetch(API_BASE + '/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: currentSessionId, message: userText }),
+      signal: abortController.signal,
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `HTTP ${res.status}`);
+    }
+
+    await readSSE(res, (evt) => _handleRegenStreamEvent(evt, msg, rounds, roundIdx, (i) => { roundIdx = i; }));
+    _cleanupStreamRounds(rounds, msg);
+    loadSessions();
+  } catch (err) {
+    _cleanupStreamRounds(rounds, msg);
+    const er = rounds[roundIdx];
+    if (err.name === 'AbortError') {
+      if (er && er.el && er.el.parentNode) {
+        updateStreamBubble(er.el, (er.text || '') + '\n\n> —— 回复已中断 ——');
+      }
+    } else {
+      if (er && er.el && er.el.parentNode) {
+        if (er.text) {
+          updateStreamBubble(er.el, er.text + '\n\n> **[错误]** ' + escapeHtml(err.message));
+        } else {
+          er.el.innerHTML = renderMarkdown('> **[错误]** ' + err.message);
+        }
+      }
+      showToast('重新生成失败: ' + err.message, 'error');
+    }
+  } finally {
+    isSending = false;
+    streamState = StreamState.IDLE;
+    updateSendBtnToSend();
+    if (messageInputEl) messageInputEl.focus();
+  }
+}
+
+// 重新生成场景的 SSE 事件处理：复用 sendMessage 的事件分支，但 target msg 是当前 msg
+function _handleRegenStreamEvent(evt, streamMsg, rounds, roundIdx, setRoundIdx) {
+  switch (evt.type) {
+    case 'session':
+      // session 已在 sendMessage 中处理；regen 用同一会话，忽略
+      break;
+    case 'status': {
+      const cur = rounds[roundIdx];
+      if (cur && cur.el) {
+        const stEl = cur.el.querySelector('.bubble-status');
+        if (stEl) stEl.textContent = evt.message || evt.status || '正在思考…';
+      }
+      break;
+    }
+    case 'reasoning': {
+      const r = rounds[roundIdx];
+      if (r) {
+        r.reasoning = (r.reasoning || '') + (evt.text || '');
+        if (!r.reasoning_el) {
+          r.reasoning_el = _buildReasoningBlock();
+          if (r.el && r.el.parentNode) {
+            r.el.parentNode.insertBefore(r.reasoning_el, r.el);
+          } else {
+            streamMsg.appendChild(r.reasoning_el);
+          }
+        }
+        updateReasoningBubble(r);
+      }
+      break;
+    }
+    case 'round_start':
+      if (evt.loop_idx === 0) break;
+      {
+        const prevR = rounds[rounds.length - 1];
+        if (prevR && prevR.el) prevR.el.classList.remove('is-streaming');
+        if (prevR && prevR.reasoning_el) finalizeReasoningBlock(prevR, 0);
+        if (prevR && prevR.text.trim()) {
+          const sep = document.createElement('div');
+          sep.className = 'divider-round';
+          sep.textContent = `第 ${evt.loop_idx + 1} 步`;
+          streamMsg.appendChild(sep);
+        }
+        const nb = _buildStreamBubble();
+        streamMsg.appendChild(nb);
+        rounds.push({ el: nb, text: '', reasoning: '', reasoning_el: null });
+        setRoundIdx(rounds.length - 1);
+      }
+      break;
+    case 'text':
+      rounds[roundIdx].text += evt.text;
+      if (rounds[roundIdx].el) {
+        rounds[roundIdx].el.classList.add('is-streaming');
+        rounds[roundIdx].el.classList.add('has-text');
+      }
+      updateStreamBubble(rounds[roundIdx].el, rounds[roundIdx].text);
+      break;
+    case 'tool_start':
+    case 'tool':
+      _hideEmptyRoundBubble(rounds, roundIdx);
+      _pauseDots(rounds, roundIdx);
+      appendToolCard(streamMsg, evt);
+      break;
+    case 'todo_init':
+    case 'todo_update':
+    case 'todo_complete':
+      _hideEmptyRoundBubble(rounds, roundIdx);
+      _pauseDots(rounds, roundIdx);
+      appendTodoCard(streamMsg, evt.todo);
+      break;
+    case 'approval_request':
+      _hideEmptyRoundBubble(rounds, roundIdx);
+      _pauseDots(rounds, roundIdx);
+      appendApprovalCard(streamMsg, evt);
+      break;
+    case 'interrupt':
+      _cleanupStreamRounds(rounds, streamMsg);
+      rounds.forEach((r) => { if (r.reasoning_el) finalizeReasoningBlock(r, 0); });
+      {
+        const last = rounds[rounds.length - 1];
+        if (last && last.el) updateStreamBubble(last.el, last.text + '\n\n> —— 回复已中断 ——');
+      }
+      break;
+    case 'done':
+      _cleanupStreamRounds(rounds, streamMsg);
+      {
+        const rStats = evt.reasoning_stats || {};
+        const rTokens = (evt.usage && evt.usage.reasoning_tokens)
+          ? evt.usage.reasoning_tokens
+          : (rStats.reasoning_tokens || 0);
+        rounds.forEach((r, i) => {
+          if (r.reasoning_el) {
+            const isLast = (i === rounds.length - 1);
+            finalizeReasoningBlock(r, isLast ? rTokens : 0);
+          }
+        });
+      }
+      if (evt.response) {
+        let target = rounds[rounds.length - 1];
+        if (!target || !target.el || !target.el.parentNode) {
+          const nb = document.createElement('div');
+          nb.className = 'message-bubble markdown';
+          streamMsg.appendChild(nb);
+          rounds.push({ el: nb, text: '', reasoning: '', reasoning_el: null });
+          target = rounds[rounds.length - 1];
+        }
+        const norm = (s) => (s || '').trim().replace(/\s+/g, ' ');
+        const targetNorm = norm(target.text);
+        const respNorm = norm(evt.response);
+        const alreadyStreamed = targetNorm.length > 0 && (
+          targetNorm === respNorm ||
+          targetNorm.endsWith(respNorm) ||
+          respNorm.endsWith(targetNorm)
+        );
+        if (!alreadyStreamed) {
+          target.text = (target.text ? target.text + '\n\n' : '') + evt.response;
+          updateStreamBubble(target.el, target.text);
+        }
+      }
+      break;
+    case 'error':
+      _cleanupStreamRounds(rounds, streamMsg);
+      rounds.forEach((r) => { if (r.reasoning_el) finalizeReasoningBlock(r, 0); });
+      {
+        const er = rounds[roundIdx];
+        const reasonSuffix = evt.reason ? `\n\n> **原因：** ${escapeHtml(evt.reason)}` : '';
+        if (er && er.el) {
+          updateStreamBubble(er.el, er.text + '\n\n> **[错误]** ' + escapeHtml(evt.message) + reasonSuffix);
+        }
+        showToast('重新生成失败: ' + evt.message + (evt.reason ? '（' + evt.reason + '）' : ''), 'error');
+      }
+      break;
+  }
 }
 
 // ========== 附件渲染（图片缩略图 / 文档卡片） ==========
@@ -228,15 +511,24 @@ function _setReasoningCollapsed(collapsed) {
 // 构建思考区容器（每轮独立，插入到气泡之前）
 function _buildReasoningBlock() {
   const block = document.createElement('div');
-  block.className = 'reasoning-block collapsed';
+  // 历史加载（带初始 reasoning）默认展开；流式新增默认折叠
+  const isInitial = arguments[0] && arguments[0].initial;
+  block.className = isInitial ? 'reasoning-block' : 'reasoning-block collapsed';
   const header = document.createElement('div');
   header.className = 'reasoning-header';
-  header.innerHTML = '<span class="reasoning-icon">💡</span>' +
+  header.innerHTML =
+    '<span class="reasoning-icon" aria-hidden="true">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M9 18h6"/>' +
+        '<path d="M10 22h4"/>' +
+        '<path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2v.3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V17c0-.7.4-1.5 1-2A7 7 0 0 0 12 2z"/>' +
+      '</svg>' +
+    '</span>' +
     '<span class="reasoning-title">思考中...</span>' +
     '<span class="reasoning-toggle">▸</span>';
   const content = document.createElement('div');
   content.className = 'reasoning-content';
-  content.style.display = 'none';
+  content.style.display = isInitial ? '' : 'none';
   block.appendChild(header);
   block.appendChild(content);
   // 点击头部展开/折叠
@@ -296,6 +588,8 @@ function createStreamMessage() {
   const bubble = _buildStreamBubble();
   msg.appendChild(roleEl);
   msg.appendChild(bubble);
+  // 任务 2：流式消息也挂上 hover 操作条（复制立即可用；重新生成在 done 后生效）
+  _attachMsgActions(msg);
   messagesEl.appendChild(msg);
   scrollMessagesToBottom();
   return { msg, bubble };
@@ -626,7 +920,13 @@ function renderGenericApproval(evt) {
   const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
   return `
     <div class="approval-header">
-      <span class="approval-icon">⚠</span>
+      <span class="approval-icon" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </span>
       <span class="approval-title">需要审批</span>
       <span class="approval-risk tag tag-${safeRisk === 'high' ? 'danger' : safeRisk === 'low' ? 'success' : 'warning'}">${riskLabel}</span>
     </div>
@@ -677,7 +977,12 @@ function renderShellApproval(evt) {
   const cmd = (evt.tool_input && evt.tool_input.command) || '(空命令)';
   return `
     <div class="approval-header">
-      <span class="approval-icon">⚡</span>
+      <span class="approval-icon" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
+      </span>
       <span class="approval-title">Shell 命令审批</span>
       <span class="approval-risk tag tag-danger">高危</span>
     </div>
@@ -763,12 +1068,18 @@ function renderMemoryApproval(evt) {
   const inputJson = evt.tool_input ? JSON.stringify(evt.tool_input, null, 2) : '{}';
   return `
     <div class="approval-header">
-      <span class="approval-icon">🧠</span>
+      <span class="approval-icon" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2v.3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V17c0-.7.4-1.5 1-2A7 7 0 0 0 12 2z"/>
+          <path d="M9 18h6"/>
+          <path d="M10 22h4"/>
+        </svg>
+      </span>
       <span class="approval-title">记忆操作审批</span>
       <span class="approval-risk tag tag-danger">高危</span>
     </div>
     <div class="approval-memory-warning">
-      ⚠ 此操作将直接修改长期记忆/用户画像,可能不可恢复,请谨慎确认。
+      此操作将直接修改长期记忆/用户画像,可能不可恢复,请谨慎确认。
     </div>
     <div class="approval-body">
       <div class="approval-reason">${escapeHtml(evt.reason || '')}</div>

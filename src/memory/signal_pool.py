@@ -641,7 +641,13 @@ class SignalPool:
     # 阈值触发
     # ------------------------------------------------------------------
     def _enqueue_profile_update(self, signal: Signal) -> None:
-        """达阈值的信号入 pending 队列，等 consolidate 时写入画像。"""
+        """达阈值的信号入 pending 队列，并立即异步触发 consolidate 写入画像。
+
+        入队后异步触发 consolidate，避免信号卡在 triggered 状态等待
+        info_counter 达 15 阈值。consolidate 内部 ``if not pending:`` 分支
+        会跳过 LLM 调用，仅应用 pending_profile_updates，无额外 LLM 成本。
+        多次触发由 ``_consolidation_lock`` 串行化，安全。
+        """
         if self._consolidation_engine is None:
             logger.debug(
                 "consolidation_engine 未注入，信号 %s 仅标记 triggered 不入队",
@@ -656,12 +662,65 @@ class SignalPool:
                 "信号达阈值入队: id=%s section=%s count=%d content=%s",
                 signal.id, signal.section, signal.count, signal.content[:50],
             )
+            # 异步触发 consolidate：立即写入画像，不等待 info_counter 达阈值。
+            self._trigger_consolidate_async()
         except Exception as e:
             logger.error("信号入队失败: %s", e)
+
+    def _trigger_consolidate_async(self) -> None:
+        """异步触发 consolidate，让达阈值的信号立即写入画像。
+
+        consolidate 内部 ``if not pending:`` 分支会跳过 LLM 调用，仅 apply
+        pending_profile_updates，无额外 LLM 成本。若同时有 pending_messages，
+        会顺带提取事实（合理行为）。
+
+        使用守护线程而非 asyncio：signal_pool 是同步类，无事件循环引用。
+        consolidate 内部 ``_consolidation_lock`` 保证并发安全，多次触发
+        会串行执行，多余的会因 pending 为空且 profile_updates 已被消费而早返回。
+        """
+        if self._consolidation_engine is None:
+            return
+        try:
+            import threading
+
+            def _run() -> None:
+                try:
+                    self._consolidation_engine.consolidate()
+                except Exception as e:
+                    logger.warning("信号 triggered 异步 consolidate 失败: %s", e)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+        except Exception as e:
+            logger.warning("启动异步 consolidate 线程失败: %s", e)
 
     # ------------------------------------------------------------------
     # 状态更新
     # ------------------------------------------------------------------
+    def flush_triggered_signals(self) -> None:
+        """启动后所有 triggered 信号重新入队并异步触发 consolidate。
+
+        存量 triggered 信号（启动加载时已在池中）没经过 _add_single 的
+        pending→triggered 阈值检查路径，不会调用 _enqueue_profile_update。
+        本方法由 Orchestrator 在初始化完成后显式调用，让这些信号入队并
+        立即异步触发 consolidate 写入画像，避免永远卡在池中。
+
+        _enqueue_profile_update 末尾的 _trigger_consolidate_async 会启动
+        守护线程调用 consolidate，consolidate 内部 _consolidation_lock
+        串行化保证多次触发安全。consolidate 内部 ``if not pending:``
+        分支会跳过 LLM 调用仅 apply profile_updates，无额外 LLM 成本。
+        """
+        with self._lock:
+            triggered = [s for s in self._signals if s.status == "triggered"]
+        if not triggered:
+            return
+        logger.info(
+            "启动后重新入队 %d 条 triggered 信号并异步触发 consolidate",
+            len(triggered),
+        )
+        for s in triggered:
+            self._enqueue_profile_update(s)
+
     def mark_written(self, signal_ids: List[str]) -> None:
         """consolidate apply 成功后，从信号池移除已写入画像的信号。
 
