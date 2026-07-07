@@ -7,8 +7,8 @@
   'use strict';
 
   const THEME_KEY = 'hermes_theme';        // 'dark' | 'light'
-  const ACCENT_KEY = 'hermes_accent';      // 'amber' | 'teal' | 'violet'
-  const ACCENTS = ['amber', 'teal', 'violet'];
+  const ACCENT_KEY = 'hermes_accent';      // 'violet' | 'blue' | 'teal' | 'amber'
+  const ACCENTS = ['violet', 'blue', 'teal', 'amber'];
 
   const root = document.documentElement;
 
@@ -16,7 +16,7 @@
   function initTheme() {
     const storedTheme = localStorage.getItem(THEME_KEY);
     const theme = storedTheme || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-    const accent = localStorage.getItem(ACCENT_KEY) || 'amber';
+    const accent = localStorage.getItem(ACCENT_KEY) || 'violet';
     applyTheme(theme, accent);
   }
 
@@ -30,7 +30,7 @@
   }
 
   function getAccent() {
-    return root.dataset.accent || 'amber';
+    return root.dataset.accent || 'violet';
   }
 
   function toggleTheme() {
