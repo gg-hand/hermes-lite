@@ -1,11 +1,11 @@
 llm:
   main_provider: deepseek
   main_model: deepseek-v4-flash
-  main_api_key: sk-9c77bc376f584e9ebe2869d9a05cffb0
+  main_api_key: ${DEEPSEEK_API_KEY}
   main_base_url: https://api.deepseek.com
   consolidation_provider: deepseek
   consolidation_model: deepseek-v4-flash
-  consolidation_api_key: sk-9c77bc376f584e9ebe2869d9a05cffb0
+  consolidation_api_key: ${DEEPSEEK_API_KEY}
   consolidation_base_url: https://api.deepseek.com
   max_context_tokens: 200000
   context_threshold: 0.8
@@ -150,8 +150,8 @@ guardrails:
     enabled: false
     enable_bank_card: true
 web_search:
-  bing_api_key: ''
-  baidu_api_key: BAIDU_API_KEY_PLACEHOLDER
+  bing_api_key: ${BING_API_KEY}
+  baidu_api_key: ${BAIDU_API_KEY}
 tasks: {}
 schedules: []
 reasoning:

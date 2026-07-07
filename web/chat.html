@@ -21,53 +21,78 @@
   <!-- 侧边栏遮罩（移动端浮层化时显示，点击关闭侧栏） -->
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
   <!-- 侧边栏 -->
-  <aside class="sidebar collapsed" id="sidebar">
+  <aside class="sidebar" id="sidebar">
+    <!-- 头部：Logo + 新建会话 -->
     <div class="sidebar-header">
       <h1>hermes<span>-lite</span></h1>
-      <div class="sidebar-actions">
-        <button class="icon-btn" id="btnNewSession" title="新建会话">+</button>
-        <button class="icon-btn" id="btnSettings" title="Agent 设置">&#9881;</button>
+      <button class="icon-btn" id="btnNewSession" title="新建会话">+</button>
+    </div>
+    <!-- 垂直导航 -->
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="sessions">
+        <span class="nav-icon">◈</span><span class="nav-label">会话</span>
+      </button>
+      <button class="nav-item" data-tab="memories">
+        <span class="nav-icon">◇</span><span class="nav-label">记忆</span>
+      </button>
+      <button class="nav-item" data-tab="files">
+        <span class="nav-icon">▦</span><span class="nav-label">文件</span>
+      </button>
+    </nav>
+    <!-- 内容区：会话/记忆/文件面板 -->
+    <div class="sidebar-content">
+      <!-- 会话列表 -->
+      <div class="session-list tab-pane active" id="sessionList">
+        <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">暂无会话<br>点击上方 + 新建</div></div>
       </div>
-    </div>
-    <!-- Tab 切换：会话 / 记忆 / 文件 -->
-    <div class="sidebar-tabs">
-      <button class="sidebar-tab active" data-tab="sessions">会话</button>
-      <button class="sidebar-tab" data-tab="memories">记忆</button>
-      <button class="sidebar-tab" data-tab="files">文件</button>
-    </div>
-    <!-- 会话列表 -->
-    <div class="session-list tab-pane active" id="sessionList">
-      <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">暂无会话<br>点击上方 + 新建</div></div>
-    </div>
-    <!-- 记忆面板 -->
-    <div class="memory-panel tab-pane" id="memoryPanel">
-      <div class="memory-toolbar">
-        <div class="memory-search-row">
-          <input type="text" id="memorySearchInput" placeholder="搜索记忆关键词...">
-          <button class="memory-search-btn" id="memorySearchBtn">搜索</button>
+      <!-- 记忆面板 -->
+      <div class="memory-panel tab-pane" id="memoryPanel">
+        <div class="memory-toolbar">
+          <div class="memory-search-row">
+            <input type="text" id="memorySearchInput" placeholder="搜索记忆关键词...">
+            <button class="memory-search-btn" id="memorySearchBtn">搜索</button>
+          </div>
+          <div class="memory-filter-row">
+            <select id="memoryTypeFilter" title="按类型过滤">
+              <option value="all">全部类型</option>
+              <option value="fact">fact</option>
+              <option value="conversation_turn">conversation_turn</option>
+              <option value="relation">relation</option>
+              <option value="user_profile">user_profile</option>
+            </select>
+            <button class="memory-profile-btn" id="btnUserProfile">用户画像</button>
+          </div>
         </div>
-        <div class="memory-filter-row">
-          <select id="memoryTypeFilter" title="按类型过滤">
-            <option value="all">全部类型</option>
-            <option value="fact">fact</option>
-            <option value="conversation_turn">conversation_turn</option>
-            <option value="relation">relation</option>
-            <option value="user_profile">user_profile</option>
-          </select>
-          <button class="memory-profile-btn" id="btnUserProfile">用户画像</button>
+        <div class="memory-list" id="memoryList">
+          <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">点击搜索或选择类型浏览</div></div>
         </div>
       </div>
-      <div class="memory-list" id="memoryList">
-        <div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">切换到「记忆」Tab 后<br>点击搜索或选择类型浏览</div></div>
+      <!-- 文件面板 -->
+      <div class="file-panel tab-pane" id="filePanel">
+        <div class="file-list" id="fileList">
+          <div class="file-empty">无已上传文件</div>
+        </div>
       </div>
     </div>
-    <!-- 文件面板 -->
-    <div class="file-panel tab-pane" id="filePanel">
-      <div class="file-list" id="fileList">
-        <div class="file-empty">无已上传文件</div>
-      </div>
+    <!-- 底部：设置按钮（弹出菜单） -->
+    <div class="sidebar-footer">
+      <button class="nav-item" id="btnSettingsFlyout">
+        <span class="nav-icon">⚙</span><span class="nav-label">设置</span>
+      </button>
     </div>
   </aside>
+
+  <!-- 设置弹出菜单（flyout） -->
+  <div class="settings-flyout" id="settingsFlyout">
+    <div class="flyout-header">设置</div>
+    <div class="flyout-body" id="settingsFlyoutBody">
+      <div class="flyout-loading">加载中...</div>
+    </div>
+    <div class="flyout-footer">
+      <button class="flyout-btn" id="btnAdvancedSettings">高级设置</button>
+      <button class="flyout-btn flyout-danger" id="btnRestartFlyout">重启服务</button>
+    </div>
+  </div>
 
   <!-- 主对话区 -->
   <main class="main">
@@ -118,11 +143,11 @@
   </main>
 </div>
 
-<!-- 设置弹窗 -->
+<!-- 设置弹窗（高级设置） -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
     <div class="modal-header">
-      <h2>Agent 设置</h2>
+      <h2>高级设置</h2>
       <button class="modal-close" onclick="closeModal('settingsModal')">&times;</button>
     </div>
     <div class="modal-body" id="settingsBody">

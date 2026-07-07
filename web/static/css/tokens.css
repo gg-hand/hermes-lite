@@ -48,6 +48,14 @@
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
   --shadow-glow: 0 0 24px var(--accent-glow);
 
+  /* 毛玻璃 */
+  --glass-bg: rgba(45, 38, 34, 0.55);
+  --glass-bg-hover: rgba(56, 47, 42, 0.65);
+  --glass-bg-active: rgba(224, 169, 109, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-border-strong: rgba(255, 255, 255, 0.1);
+  --blur: 12px;
+
   /* 代码块 */
   --code-bg: #14110f;
   --code-border: #2d2622;
@@ -90,6 +98,14 @@
   --shadow-md: 0 4px 12px rgba(42, 34, 24, 0.1);
   --shadow-lg: 0 12px 32px rgba(42, 34, 24, 0.14);
   --shadow-glow: 0 0 24px var(--accent-glow);
+
+  /* 毛玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-hover: rgba(221, 212, 198, 0.65);
+  --glass-bg-active: rgba(184, 115, 51, 0.1);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border-strong: rgba(0, 0, 0, 0.1);
+  --blur: 12px;
 
   --code-bg: #ebe5db;
   --code-border: #ddd4c6;
@@ -211,7 +227,7 @@
   --z-toast: 2000;
 
   /* 布局 */
-  --sidebar-w: 280px;
+  --sidebar-w: 300px;
   --sidebar-w-collapsed: 0px;
   --topbar-h: 52px;
   --content-max: 820px;

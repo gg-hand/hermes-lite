@@ -63,18 +63,24 @@ function bindEvents() {
     });
   }
 
-  // 侧边栏折叠 + 移动端遮罩
+  // 侧边栏：PC 端始终展开，移动端浮层收纳
   const menuToggle = document.getElementById('menuToggle');
   const sidebarOverlay = document.getElementById('sidebarOverlay');
-  if (menuToggle && sidebarEl) {
-    // HTML 中 sidebar 已带 collapsed 类，双端默认收起
-    // 移动端遮罩初始隐藏
+  if (sidebarEl) {
+    // 初始状态：移动端默认收起，PC 端始终展开
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (isMobile) {
+      sidebarEl.classList.add('collapsed');
+    } else {
+      sidebarEl.classList.remove('collapsed');
+    }
     if (sidebarOverlay) sidebarOverlay.classList.remove('show');
+  }
 
+  if (menuToggle && sidebarEl) {
     const toggleSidebar = () => {
       const willCollapse = !sidebarEl.classList.contains('collapsed');
       sidebarEl.classList.toggle('collapsed');
-      // 移动端：展开时显示遮罩，收起时隐藏遮罩
       if (sidebarOverlay) {
         if (willCollapse) {
           sidebarOverlay.classList.remove('show');
@@ -84,7 +90,6 @@ function bindEvents() {
       }
     };
     menuToggle.addEventListener('click', toggleSidebar);
-    // 点击遮罩关闭侧栏
     if (sidebarOverlay) {
       sidebarOverlay.addEventListener('click', () => {
         sidebarEl.classList.add('collapsed');
@@ -93,12 +98,48 @@ function bindEvents() {
     }
   }
 
-  // 新建会话 / 设置
+  // 窗口尺寸变化时同步侧边栏状态（PC 切移动端自动收起，移动端切 PC 自动展开）
+  window.addEventListener('resize', () => {
+    if (!sidebarEl) return;
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (!isMobile) {
+      sidebarEl.classList.remove('collapsed');
+      if (sidebarOverlay) sidebarOverlay.classList.remove('show');
+    } else {
+      sidebarEl.classList.add('collapsed');
+      if (sidebarOverlay) sidebarOverlay.classList.remove('show');
+    }
+  });
+
+  // 新建会话 / 设置弹出菜单
   const btnNewSession = document.getElementById('btnNewSession');
   if (btnNewSession) btnNewSession.addEventListener('click', newSession);
 
-  const btnSettings = document.getElementById('btnSettings');
-  if (btnSettings) btnSettings.addEventListener('click', openSettings);
+  const btnSettingsFlyout = document.getElementById('btnSettingsFlyout');
+  if (btnSettingsFlyout) btnSettingsFlyout.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSettingsFlyout();
+  });
+
+  const btnAdvancedSettings = document.getElementById('btnAdvancedSettings');
+  if (btnAdvancedSettings) btnAdvancedSettings.addEventListener('click', openSettings);
+
+  const btnRestartFlyout = document.getElementById('btnRestartFlyout');
+  if (btnRestartFlyout) btnRestartFlyout.addEventListener('click', () => {
+    closeSettingsFlyout();
+    restartServer();
+  });
+
+  // 外部点击关闭 flyout
+  const flyoutEl = document.getElementById('settingsFlyout');
+  document.addEventListener('click', (e) => {
+    if (!flyoutEl) return;
+    if (flyoutEl.classList.contains('show') &&
+        !flyoutEl.contains(e.target) &&
+        !btnSettingsFlyout?.contains(e.target)) {
+      closeSettingsFlyout();
+    }
+  });
 
   const saveConfigBtn = document.getElementById('saveConfigBtn');
   if (saveConfigBtn) saveConfigBtn.addEventListener('click', saveConfig);
@@ -106,8 +147,8 @@ function bindEvents() {
   const restartServerBtn = document.getElementById('restartServerBtn');
   if (restartServerBtn) restartServerBtn.addEventListener('click', restartServer);
 
-  // 侧边栏 Tab 切换
-  document.querySelectorAll('.sidebar-tab').forEach(btn => {
+  // 侧边栏导航切换
+  document.querySelectorAll('.sidebar-nav .nav-item[data-tab]').forEach(btn => {
     btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
   });
 

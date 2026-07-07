@@ -169,9 +169,10 @@ async function loadMessages(sessionId) {
           appendToolResultCard(m.tool_name, m.content, m.is_error);
         } else {
           // 普通文本消息：传递 attachments（后端 file_upload 消息有附件）
+          // 和 reasoning（LLM 思考内容，仅 assistant 消息有值）
           const contentStr = (m.content || '').trim();
           if (contentStr) {
-            appendMessage(m.role, m.content, m.attachments);
+            appendMessage(m.role, m.content, m.attachments, m.reasoning);
           }
         }
       }

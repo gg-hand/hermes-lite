@@ -21,7 +21,7 @@ function renderToolValue(value) {
 }
 
 // ========== 消息渲染 ==========
-function appendMessage(role, content, attachments) {
+function appendMessage(role, content, attachments, reasoning) {
   welcomeScreenEl.style.display = 'none';
   const msg = document.createElement('div');
   msg.className = 'message ' + (role === 'user' ? 'user' : 'assistant');
@@ -36,10 +36,19 @@ function appendMessage(role, content, attachments) {
       <div class="message-bubble">${bubbleContent}</div>
     `;
   } else {
+    msg.innerHTML = `<div class="message-role ${role}">${roleLabel}</div>`;
+    // 历史加载的 reasoning：构建已完成的思考块
+    if (reasoning && reasoning.trim()) {
+      const rBlock = _buildReasoningBlock();
+      const rContent = rBlock.querySelector('.reasoning-content');
+      if (rContent) rContent.innerHTML = renderMarkdown(reasoning);
+      const rTitle = rBlock.querySelector('.reasoning-title');
+      if (rTitle) rTitle.textContent = '思考完成';
+      msg.appendChild(rBlock);
+    }
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble markdown';
     bubble.innerHTML = renderMarkdown(content);
-    msg.innerHTML = `<div class="message-role ${role}">${roleLabel}</div>`;
     msg.appendChild(bubble);
     enhanceCodeBlocks(bubble);
   }
@@ -1109,6 +1118,10 @@ async function sendMessage(textOverride) {
           {
             const prev = rounds[rounds.length - 1];
             if (prev && prev.el) prev.el.classList.remove('is-streaming');
+            // 前一轮的思考区标记为完成（中间轮次无 per-round token 数）
+            if (prev && prev.reasoning_el) {
+              finalizeReasoningBlock(prev, 0);
+            }
             if (prev && prev.text.trim()) {
               const sep = document.createElement('div');
               sep.className = 'divider-round';
@@ -1164,6 +1177,10 @@ async function sendMessage(textOverride) {
           break;
         case 'interrupt':
           _cleanupStreamRounds(rounds, streamMsg);
+          // 中断时把所有未完成的思考区标记为完成
+          rounds.forEach(r => {
+            if (r.reasoning_el) finalizeReasoningBlock(r, 0);
+          });
           {
             const last = rounds[rounds.length - 1];
             if (last && last.el) updateStreamBubble(last.el, last.text + '\n\n> —— 回复已中断 ——');
@@ -1171,17 +1188,20 @@ async function sendMessage(textOverride) {
           break;
         case 'done':
           _cleanupStreamRounds(rounds, streamMsg);
-          // SubTask 17.2/17.3/17.6：reasoning 最终化 —— 更新最后一轮思考区头部
+          // SubTask 17.2/17.3/17.6：reasoning 最终化 —— 更新所有轮次思考区头部
           // reasoning_tokens 容错：usage?.reasoning_tokens ?? reasoning_stats?.reasoning_tokens ?? 0
           {
-            const lastRound = rounds[rounds.length - 1];
-            if (lastRound && lastRound.reasoning_el) {
-              const rStats = evt.reasoning_stats || {};
-              const rTokens = (evt.usage && evt.usage.reasoning_tokens)
-                ? evt.usage.reasoning_tokens
-                : (rStats.reasoning_tokens || 0);
-              finalizeReasoningBlock(lastRound, rTokens);
-            }
+            const rStats = evt.reasoning_stats || {};
+            const rTokens = (evt.usage && evt.usage.reasoning_tokens)
+              ? evt.usage.reasoning_tokens
+              : (rStats.reasoning_tokens || 0);
+            // 所有有思考区的轮次都标记完成，最后一轮显示 token 数
+            rounds.forEach((r, i) => {
+              if (r.reasoning_el) {
+                const isLast = (i === rounds.length - 1);
+                finalizeReasoningBlock(r, isLast ? rTokens : 0);
+              }
+            });
           }
           // 渲染 done.response —— 仅当它是"未流式传输过的新内容"时才追加
           // 正常 end_turn：text 事件已渲染全文，done.response 与之相同，追加会重复，需跳过
@@ -1232,6 +1252,10 @@ async function sendMessage(textOverride) {
         }
         case 'error':
           _cleanupStreamRounds(rounds, streamMsg);
+          // 错误时把所有未完成的思考区标记为完成
+          rounds.forEach(r => {
+            if (r.reasoning_el) finalizeReasoningBlock(r, 0);
+          });
           // 修复点 3：追加显示 error.reason（deny 拦截原因）
           {
             const er = rounds[roundIdx];

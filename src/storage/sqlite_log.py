@@ -91,6 +91,13 @@ class SessionLogger:
                 self.conn.execute(
                     "ALTER TABLE messages ADD COLUMN message_type TEXT"
                 )
+            # 兼容旧库：若 messages 表无 reasoning 列则补加（LLM 思考内容）
+            try:
+                self.conn.execute("SELECT reasoning FROM messages LIMIT 1")
+            except sqlite3.OperationalError:
+                self.conn.execute(
+                    "ALTER TABLE messages ADD COLUMN reasoning TEXT"
+                )
             self.conn.commit()
 
     def _ensure_fts_table(self):
@@ -179,6 +186,7 @@ class SessionLogger:
         is_error: bool = False,
         attachments: str = None,
         message_type: str = None,
+        reasoning: str = None,
     ):
         """记录一条消息，并更新对应会话的 updated_at。
 
@@ -192,6 +200,7 @@ class SessionLogger:
             is_error: 工具调用是否出错（仅 tool_result 有意义，存为 0/1）
             attachments: 附件 JSON 字符串（如文件上传消息的附件元数据）
             message_type: 消息类型标记（如 'file_upload'）
+            reasoning: LLM 思考内容（reasoning/thinking），仅 assistant 消息
         """
         now = self._now_iso()
         with self._lock:
@@ -199,13 +208,14 @@ class SessionLogger:
                 """
                 INSERT INTO messages
                     (session_id, role, content, tool_name, tool_call_id,
-                     token_count, is_error, created_at, attachments, message_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     token_count, is_error, created_at, attachments,
+                     message_type, reasoning)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id, role, content, tool_name, tool_call_id,
                     token_count, 1 if is_error else 0, now,
-                    attachments, message_type,
+                    attachments, message_type, reasoning,
                 ),
             )
             message_id = cur.lastrowid

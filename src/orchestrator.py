@@ -1213,6 +1213,8 @@ class Orchestrator:
         # 当前轮的 assistant 文本累加器（在 round_start 时把上一轮累加的文本
         # 作为一条 assistant 消息提交，避免跨轮累加串台）
         current_round_text: str = ""
+        # 当前轮的 reasoning（思考）文本累加器，随 assistant 消息一起持久化
+        current_round_reasoning: str = ""
         # 工具调用 ID 自增计数器（ReactLoop 当前未在 tool 事件中透传 tool_use_id，
         # 这里用自增 ID 保证 tool_use 与 tool_result 能配对）
         last_tool_use_id_counter: int = 0
@@ -1270,10 +1272,17 @@ class Orchestrator:
                 if etype == "round_start":
                     # 新一轮开始：把上一轮累加的 assistant 文本作为一条消息提交
                     if current_round_text:
-                        collected_messages.append(
-                            {"role": "assistant", "content": current_round_text}
-                        )
+                        msg_dict: Dict[str, Any] = {
+                            "role": "assistant", "content": current_round_text
+                        }
+                        if current_round_reasoning:
+                            msg_dict["reasoning"] = current_round_reasoning
+                        collected_messages.append(msg_dict)
                         current_round_text = ""
+                        current_round_reasoning = ""
+                elif etype == "reasoning":
+                    # 累加到当前轮的 reasoning 文本
+                    current_round_reasoning += event.get("text", "")
                 elif etype == "text":
                     # 累加到当前轮的 assistant 文本
                     current_round_text += event.get("text", "")
@@ -1282,10 +1291,14 @@ class Orchestrator:
                     # 再调用工具），保证持久化顺序与事件实际顺序一致：
                     # text → tool_use → tool_result
                     if current_round_text:
-                        collected_messages.append(
-                            {"role": "assistant", "content": current_round_text}
-                        )
+                        msg_dict = {
+                            "role": "assistant", "content": current_round_text
+                        }
+                        if current_round_reasoning:
+                            msg_dict["reasoning"] = current_round_reasoning
+                        collected_messages.append(msg_dict)
                         current_round_text = ""
+                        current_round_reasoning = ""
                     # 工具调用：记录 2 条消息（tool_use + tool_result）
                     tool_name = event.get("name", "")
                     tool_input = event.get("input", {}) or {}
@@ -1349,10 +1362,14 @@ class Orchestrator:
                 elif etype == "done":
                     # done 事件触发时，把最后一轮累加的文本也提交
                     if current_round_text:
-                        collected_messages.append(
-                            {"role": "assistant", "content": current_round_text}
-                        )
+                        msg_dict = {
+                            "role": "assistant", "content": current_round_text
+                        }
+                        if current_round_reasoning:
+                            msg_dict["reasoning"] = current_round_reasoning
+                        collected_messages.append(msg_dict)
                         current_round_text = ""
+                        current_round_reasoning = ""
                     response_text = event.get("response", "") or ""
                     # 捕获完整 messages（含 history + 本轮新增），用于
                     # 在 finally 块中切出本轮新增部分持久化到 history_buffer
@@ -1470,6 +1487,7 @@ class Orchestrator:
                             tool_name=msg.get("tool_name"),
                             tool_call_id=msg.get("tool_call_id"),
                             is_error=msg.get("is_error", False),
+                            reasoning=msg.get("reasoning"),
                         )
                     # 兜底：如果 collected_messages 为空，或最后一条不是纯文本
                     # assistant 消息（无 tool_name），且 response_text 非空，补记一条
@@ -1484,6 +1502,7 @@ class Orchestrator:
                             session_id=session_id,
                             role="assistant",
                             content=response_text,
+                            reasoning=current_round_reasoning or None,
                         )
                 except Exception as e:
                     logger.warning("记录会话日志失败: %s", e)

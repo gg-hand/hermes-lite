@@ -512,19 +512,21 @@ class TestMarkWrittenAfterApply(_IntegrationTestBase):
         return engine
 
     def test_triggered_signal_marked_written_after_apply(self) -> None:
-        """triggered 信号在 _apply_pending_ops 应用后标记为 written。"""
+        """triggered 信号在 _apply_pending_ops 应用后从信号池移除。"""
         pool = self._make_signal_pool()
         engine = self._make_engine_with_manager(pool)
 
         # 手动构造一条 triggered 信号（模拟达阈值后的状态）
-        from src.memory.signal_pool import Signal, _now_iso
+        # 关键词使用 _extract_keywords 真实产出，确保 mark_written_by_contents
+        # 的 Jaccard 匹配能命中
+        from src.memory.signal_pool import Signal, _extract_keywords, _now_iso
 
         with pool._lock:
             pool._signals.append(
                 Signal(
                     id="sig_test_001",
                     content="用户偏好简洁回复",
-                    keywords=["用户", "偏好", "简洁", "回复"],
+                    keywords=list(_extract_keywords("用户偏好简洁回复")),
                     count=7,
                     sources=["L1"],
                     first_seen=_now_iso(),
@@ -545,10 +547,9 @@ class TestMarkWrittenAfterApply(_IntegrationTestBase):
             engine.add_info({"role": "user", "content": f"msg {i}"})
         engine.consolidate(session_id="test_sess")
 
-        # 信号状态应变为 written
+        # v5: 信号写入画像后立即从信号池移除（不再保留 written 状态）
         status = pool.get_status()
-        self.assertEqual(len(status), 1)
-        self.assertEqual(status[0]["status"], "written")
+        self.assertEqual(len(status), 0)
 
     def test_unrelated_triggered_signal_not_marked(self) -> None:
         """未在本次 apply 中的 triggered 信号不被标记为 written。"""
@@ -596,7 +597,8 @@ class TestMarkWrittenAfterApply(_IntegrationTestBase):
 
         status = pool.get_status()
         statuses = {s["content"]: s["status"] for s in status}
-        self.assertEqual(statuses["用户偏好简洁回复"], "written")
+        # v5: 已写入画像的信号从信号池移除，不在 status 中
+        self.assertNotIn("用户偏好简洁回复", statuses)
         # 未在 apply 中的信号仍为 triggered
         self.assertEqual(statuses["用户喜欢二次元"], "triggered")
 
@@ -871,7 +873,7 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
         super().tearDown()
 
     def test_seven_adds_trigger_consolidate_writes_profile(self) -> None:
-        """7 次 add 同一信号 → 触发入队 → consolidate 写入画像 → 信号变 written。"""
+        """7 次 add 同一信号 → 触发入队 → consolidate 写入画像 → 信号从池中移除。"""
         # 7 次 add（每次都走 signal_pool 累积）
         for _ in range(7):
             self.handler(
@@ -880,6 +882,11 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
 
         # 信号应已触发入队
         self.assertEqual(len(self.engine.pending_profile_updates), 1)
+
+        # 触发 consolidate 前，信号池有 1 条 triggered 信号
+        status_before = self.pool.get_status()
+        self.assertEqual(len(status_before), 1)
+        self.assertEqual(status_before[0]["status"], "triggered")
 
         # 触发 consolidate
         for i in range(15):
@@ -890,10 +897,9 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
         text = self.profile_path.read_text(encoding="utf-8")
         self.assertIn("用户偏好简洁回复", text)
 
-        # 信号状态应变 written
+        # v5: 信号写入画像后立即从池中移除（不再保留 written 状态）
         status = self.pool.get_status()
-        self.assertEqual(len(status), 1)
-        self.assertEqual(status[0]["status"], "written")
+        self.assertEqual(len(status), 0)
 
     def test_below_threshold_not_written(self) -> None:
         """6 次 add（未达阈值）→ consolidate 不写入画像。"""

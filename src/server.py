@@ -428,6 +428,7 @@ class MessageItem(BaseModel):
     老消息（无此列）或非工具消息返回 None。
     ``attachments`` 为附件 JSON 字符串（如文件上传消息），老消息为 None。
     ``message_type`` 为消息类型标记（如 'file_upload'），普通消息为 None。
+    ``reasoning`` 为 LLM 思考内容（reasoning/thinking），仅 assistant 消息有值。
     """
 
     role: str
@@ -438,6 +439,7 @@ class MessageItem(BaseModel):
     is_error: Optional[bool] = None
     attachments: Optional[str] = None
     message_type: Optional[str] = None
+    reasoning: Optional[str] = None
 
 
 class MessageListResponse(BaseModel):
@@ -3244,6 +3246,7 @@ def get_session_messages(
                 is_error=bool(r["is_error"]) if "is_error" in r.keys() else None,
                 attachments=r.get("attachments"),
                 message_type=r.get("message_type"),
+                reasoning=r.get("reasoning"),
             )
             for r in rows
         ]
