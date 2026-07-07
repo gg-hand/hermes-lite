@@ -538,7 +538,10 @@ class CronScheduler:
                     )
             else:
                 # legacy 路径：直接 orchestrator.chat（Task 5 已改 async）
-                response = await orchestrator.chat(session_id, task_text)
+                # is_cron=True 使 LLMClient 选择 reasoning.cron 配置
+                response = await orchestrator.chat(
+                    session_id, task_text, is_cron=True
+                )
                 assistant_response = response or ""
                 workflow_name = schedule.name
         except Exception as e:

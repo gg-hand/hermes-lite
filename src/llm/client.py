@@ -45,6 +45,7 @@ import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
+from dataclasses import replace as _dataclass_replace
 
 import anthropic
 import tiktoken
@@ -58,6 +59,12 @@ except ImportError:
     if _SRC_DIR not in sys.path:
         sys.path.insert(0, _SRC_DIR)
     from stream_manager import StreamCancelled  # type: ignore
+
+from .reasoning_profiles import (  # noqa: E402
+    REASONING_PROFILES,
+    ReasoningConfig,
+    ReasoningProfile,
+)
 
 if TYPE_CHECKING:
     try:
@@ -338,10 +345,19 @@ class AsyncBaseBackend:
     必要的格式转换。
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        provider_id: str = "",
+    ) -> None:
         self.model: str = model
         self.api_key: str = api_key
         self.base_url: Optional[str] = base_url
+        self.provider_id: str = provider_id
+        # reasoning_profile 按 provider_id 查 REASONING_PROFILES 表，缺省返回 None
+        self.reasoning_profile: Optional[ReasoningProfile] = REASONING_PROFILES.get(provider_id)
 
     async def chat(
         self,
@@ -349,6 +365,7 @@ class AsyncBaseBackend:
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> LLMResponse:
         """调用 LLM 并返回统一响应。子类必须实现。"""
         raise NotImplementedError
@@ -363,15 +380,19 @@ class AsyncBaseBackend:
         activity_timeout: float = 60.0,
         stream_manager: Optional["StreamManager"] = None,
         session_id: Optional[str] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LLM，async generator 逐个 yield 事件 dict。
 
         事件类型（统一格式）：
             - ``{"type": "text", "text": "<增量文本>"}``：
               文本增量片段，调用方应累加显示。
+            - ``{"type": "reasoning", "text": "<增量思考>", "signature": str|None}``：
+              推理增量片段（reasoning 模式开启时）。调用方应累加到思考区。
             - ``{"type": "done", "stop_reason": str, "content_blocks": list, "usage": dict|None}``：
               流结束事件，``content_blocks`` 为本次 LLM 响应的完整 content block
-              列表（含 text 与 tool_use 块，Anthropic 风格），
+              列表（含 text / tool_use / thinking 块，Anthropic 风格），
+              ``usage`` 含 ``reasoning_tokens`` 字段（reasoning 模式下），
               供调用方（如 ReactLoop）判断是否需要继续工具调用循环。
 
         参数:
@@ -388,6 +409,8 @@ class AsyncBaseBackend:
                             （Task 9 主路径：``/chat/cancel`` immediate 调
                             ``trigger_cancel`` 主动断流）。
             session_id: 可选会话 ID，与 ``stream_manager`` 配对使用。
+            reasoning_cfg: 可选 :class:`ReasoningConfig`，请求级透传 reasoning 配置，
+                           避免实例级状态导致并发污染。
 
         子类必须实现。
         """
@@ -408,8 +431,14 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
     :class:`StreamCancelled` 冒泡（spec SubTask 3.13）。
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None) -> None:
-        super().__init__(model, api_key, base_url)
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: Optional[str] = None,
+        provider_id: str = "anthropic",
+    ) -> None:
+        super().__init__(model, api_key, base_url, provider_id=provider_id)
         client_kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             client_kwargs["base_url"] = base_url
@@ -418,6 +447,43 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
         except anthropic.AnthropicError as e:
             raise RuntimeError(f"初始化 anthropic 客户端失败: {e}") from e
 
+    @staticmethod
+    def _strip_thinking_blocks(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """清理 messages 中的 thinking block（spec P0-5 边界修复）。
+
+        当 reasoning 未启用（``reasoning_cfg.enabled=False`` 或 ``reasoning_cfg=None``）
+        时，Anthropic API 不接受 messages 中的 thinking block，否则返回 400 错误。
+        典型场景：consolidation 路径强制关闭 reasoning，但 HistoryBuffer 中
+        可能存储了之前对话的 thinking block（``persist_thinking=True``）。
+
+        清理规则：
+        - assistant 消息的 content 列表中过滤掉 ``type=="thinking"`` 的 block
+        - 顶层 ``reasoning_content`` 字段移除（DeepSeek 历史格式）
+        - 过滤后 content 为空的 assistant 消息保留（避免破坏消息序列），
+          由下游 ``_clean_empty_assistant_messages`` 兜底处理
+        - 非 list content（字符串等）原样保留
+
+        参数:
+            messages: 原始消息列表。
+
+        返回:
+            清理后的新消息列表（不修改入参）。
+        """
+        result: List[Dict[str, Any]] = []
+        for msg in messages:
+            new_msg = dict(msg)
+            new_msg.pop("reasoning_content", None)
+            content = new_msg.get("content")
+            if isinstance(content, list):
+                new_msg["content"] = [
+                    b for b in content
+                    if not (isinstance(b, dict) and b.get("type") == "thinking")
+                ]
+            result.append(new_msg)
+        return result
+
     @async_retry_on_failure()
     async def chat(
         self,
@@ -425,7 +491,12 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> LLMResponse:
+        # P0-5: reasoning 未启用时清理 thinking block，避免 Anthropic 400。
+        # consolidation 路径强制 enabled=False，但 HistoryBuffer 可能含 thinking block。
+        if reasoning_cfg is None or not reasoning_cfg.enabled:
+            messages = self._strip_thinking_blocks(messages)
         request_kwargs: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS_MAIN,
@@ -435,6 +506,9 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
             request_kwargs["system"] = system
         if tools:
             request_kwargs["tools"] = tools
+        # reasoning_cfg 注入 thinking 参数（adaptive / enabled + budget_tokens）
+        if reasoning_cfg is not None and reasoning_cfg.enabled and self.reasoning_profile is not None:
+            request_kwargs = self.reasoning_profile.build_request_kwargs(reasoning_cfg, request_kwargs)
 
         response = await self._client.messages.create(**request_kwargs)
 
@@ -458,6 +532,15 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                         "input": getattr(block, "input", {}) or {},
                     }
                 )
+            elif block_type == "thinking":
+                # thinking block 完整保留 text + signature
+                content_blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": getattr(block, "thinking", ""),
+                        "signature": getattr(block, "signature", ""),
+                    }
+                )
             else:
                 content_blocks.append({"type": block_type or "unknown"})
 
@@ -470,6 +553,14 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                 "cache_creation_input_tokens": getattr(usage_obj, "cache_creation_input_tokens", 0),
                 "cache_read_input_tokens": getattr(usage_obj, "cache_read_input_tokens", 0),
             }
+            # 提取 reasoning_tokens（Anthropic extended thinking）
+            reasoning_tokens = getattr(usage_obj, "reasoning_tokens", None)
+            if reasoning_tokens is None:
+                details = getattr(usage_obj, "output_tokens_details", None)
+                if details is not None:
+                    reasoning_tokens = getattr(details, "reasoning_tokens", None)
+            if reasoning_tokens:
+                usage_dict["reasoning_tokens"] = reasoning_tokens
 
         return LLMResponse(
             content=content_blocks,
@@ -489,11 +580,12 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
         activity_timeout: float = 60.0,
         stream_manager: Optional["StreamManager"] = None,
         session_id: Optional[str] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Anthropic 异步流式调用，使用 ``client.messages.stream``。
 
         通过 ``stream.get_final_message()`` 在流结束后获取完整 message，
-        其中包含 content blocks（含 tool_use）与 stop_reason。
+        其中包含 content blocks（含 tool_use / thinking）与 stop_reason。
 
         取消双路径设计（spec SubTask 3.13）：
         - 主路径：``/chat/cancel`` → ``stream_manager.trigger_cancel`` →
@@ -502,6 +594,10 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
         - 兜底路径：``cancel_event.is_set()`` 在收到 chunk 后检查（防止
           trigger_cancel 失败或 stream.close 未注册的边界情况）。
         """
+        # P0-5: reasoning 未启用时清理 thinking block，避免 Anthropic 400。
+        # consolidation 路径强制 enabled=False，但 HistoryBuffer 可能含 thinking block。
+        if reasoning_cfg is None or not reasoning_cfg.enabled:
+            messages = self._strip_thinking_blocks(messages)
         request_kwargs: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS_MAIN,
@@ -511,6 +607,9 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
             request_kwargs["system"] = system
         if tools:
             request_kwargs["tools"] = tools
+        # reasoning_cfg 注入 thinking 参数（Task 5 完整实现）
+        if reasoning_cfg is not None and reasoning_cfg.enabled and self.reasoning_profile is not None:
+            request_kwargs = self.reasoning_profile.build_request_kwargs(reasoning_cfg, request_kwargs)
 
         async with self._client.messages.stream(**request_kwargs) as stream:
             # 注册 cancel_callback（Task 9 主路径），用 hasattr 守护兼容
@@ -532,6 +631,10 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                         logger.warning("set_cancel_callback 失败: %r", e)
 
             final_message: Any = None
+            # reasoning_parts 累积 thinking 增量文本（用于构造 thinking block）
+            reasoning_parts: List[str] = []
+            # signature 从 final_message.content 的 thinking block 中提取，
+            # 流式 delta 不携带 signature（Anthropic 仅在最终 block 中返回）
             try:
                 async for event in _with_activity_timeout(
                     stream, activity_timeout, _close_stream
@@ -543,10 +646,23 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                     # 文本增量事件
                     if getattr(event, "type", None) == "content_block_delta":
                         delta = getattr(event, "delta", None)
-                        if delta is not None and getattr(delta, "type", None) == "text_delta":
+                        if delta is None:
+                            continue
+                        delta_type = getattr(delta, "type", None)
+                        if delta_type == "text_delta":
                             text = getattr(delta, "text", "")
                             if text:
                                 yield {"type": "text", "text": text}
+                        elif delta_type == "thinking_delta":
+                            # 推理增量（Anthropic extended thinking）
+                            thinking_text = getattr(delta, "thinking", "")
+                            if thinking_text:
+                                reasoning_parts.append(thinking_text)
+                                yield {
+                                    "type": "reasoning",
+                                    "text": thinking_text,
+                                    "signature": None,
+                                }
                 final_message = await stream.get_final_message()
             except StreamCancelled:
                 raise
@@ -591,6 +707,17 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                             "input": getattr(block, "input", {}) or {},
                         }
                     )
+                elif block_type == "thinking":
+                    # thinking block 完整保留 text + signature（关键修复：
+                    # 原 else 分支仅保留 type，丢失 thinking 文本与 signature，
+                    # 导致后续轮次发送给 Anthropic 时 signature 缺失触发 400）
+                    content_blocks.append(
+                        {
+                            "type": "thinking",
+                            "thinking": getattr(block, "thinking", ""),
+                            "signature": getattr(block, "signature", ""),
+                        }
+                    )
                 else:
                     content_blocks.append({"type": block_type or "unknown"})
 
@@ -603,6 +730,17 @@ class AsyncAnthropicBackend(AsyncBaseBackend):
                     "cache_creation_input_tokens": getattr(usage_obj, "cache_creation_input_tokens", 0),
                     "cache_read_input_tokens": getattr(usage_obj, "cache_read_input_tokens", 0),
                 }
+                # 提取 reasoning_tokens（Anthropic extended thinking）
+                # Anthropic usage 不直接暴露 reasoning_tokens，但可从 output_tokens
+                # 中减去 text+tool_use token 估算；此处优先使用官方字段（若存在）
+                reasoning_tokens = getattr(usage_obj, "reasoning_tokens", None)
+                if reasoning_tokens is None:
+                    # 部分版本通过 output_tokens_details 暴露
+                    details = getattr(usage_obj, "output_tokens_details", None)
+                    if details is not None:
+                        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+                if reasoning_tokens:
+                    usage_dict["reasoning_tokens"] = reasoning_tokens
 
             yield {
                 "type": "done",
@@ -632,7 +770,7 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         base_url: Optional[str] = None,
         provider_name: str = "openai",
     ) -> None:
-        super().__init__(model, api_key, base_url)
+        super().__init__(model, api_key, base_url, provider_id=provider_name)
         self.provider_name: str = provider_name
         try:
             from openai import AsyncOpenAI  # type: ignore
@@ -653,8 +791,12 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> LLMResponse:
-        openai_messages = self._convert_messages(messages, system)
+        openai_messages = self._convert_messages(
+            messages, system,
+            preserve_history=reasoning_cfg.preserve_history if reasoning_cfg else True,
+        )
         openai_tools = self._convert_tools(tools) if tools else None
 
         request_kwargs: Dict[str, Any] = {
@@ -664,6 +806,9 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         }
         if openai_tools:
             request_kwargs["tools"] = openai_tools
+        # reasoning_cfg 注入 provider 特定参数（DeepSeek thinking:disabled / OpenAI reasoning_effort）
+        if self.reasoning_profile is not None:
+            request_kwargs = self.reasoning_profile.build_request_kwargs(reasoning_cfg, request_kwargs)
 
         response = await self._client.chat.completions.create(**request_kwargs)
 
@@ -680,15 +825,20 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         activity_timeout: float = 60.0,
         stream_manager: Optional["StreamManager"] = None,
         session_id: Optional[str] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """OpenAI 兼容异步流式调用（``stream=True``）。
 
-        增量文本通过 ``delta.content`` 累积并 yield；工具调用通过
-        ``delta.tool_calls`` 累积，流结束后组装为完整 content_blocks。
+        增量文本通过 ``delta.content`` 累积并 yield；推理增量通过
+        ``delta.reasoning_content``（DeepSeek/Qwen/GLM）累积并 yield；
+        工具调用通过 ``delta.tool_calls`` 累积，流结束后组装为完整 content_blocks。
 
         取消双路径设计同 :class:`AsyncAnthropicBackend`。
         """
-        openai_messages = self._convert_messages(messages, system)
+        openai_messages = self._convert_messages(
+            messages, system,
+            preserve_history=reasoning_cfg.preserve_history if reasoning_cfg else True,
+        )
         openai_tools = self._convert_tools(tools) if tools else None
 
         request_kwargs: Dict[str, Any] = {
@@ -701,6 +851,9 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         }
         if openai_tools:
             request_kwargs["tools"] = openai_tools
+        # reasoning_cfg 注入 provider 特定参数（DeepSeek thinking:disabled / OpenAI reasoning_effort）
+        if self.reasoning_profile is not None:
+            request_kwargs = self.reasoning_profile.build_request_kwargs(reasoning_cfg, request_kwargs)
 
         stream = await self._client.chat.completions.create(**request_kwargs)
 
@@ -721,8 +874,9 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                 except Exception as e:
                     logger.warning("set_cancel_callback 失败: %r", e)
 
-        # 累积文本与工具调用
+        # 累积文本、推理与工具调用
         full_text_parts: List[str] = []
+        reasoning_parts: List[str] = []
         # tool_calls 累积结构：{index: {"id", "name", "arguments_str"}}
         tool_calls_acc: Dict[int, Dict[str, str]] = {}
         finish_reason: str = "stop"
@@ -752,6 +906,14 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                 if delta_content:
                     full_text_parts.append(delta_content)
                     yield {"type": "text", "text": delta_content}
+
+                # 推理增量（DeepSeek reasoning_content / Qwen / GLM）
+                if self.reasoning_profile is not None:
+                    reasoning_text = self.reasoning_profile.extract_delta(delta)
+                    # 类型守护：仅接受 str（mock delta 可能返回 MagicMock 等非 str 值）
+                    if isinstance(reasoning_text, str) and reasoning_text:
+                        reasoning_parts.append(reasoning_text)
+                        yield {"type": "reasoning", "text": reasoning_text, "signature": None}
 
                 # 工具调用增量
                 delta_tool_calls = getattr(delta, "tool_calls", None)
@@ -806,6 +968,16 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         # 组装 content_blocks（Anthropic 风格）
         content_blocks: List[Dict[str, Any]] = []
         full_text = "".join(full_text_parts)
+
+        # 推理内容组装为 thinking block（仅 Anthropic profile 返回非 None）
+        # DeepSeek/OpenAI 用 reasoning_content 字段而非 block，不注入 content_blocks
+        if reasoning_parts and self.reasoning_profile is not None:
+            thinking_block = self.reasoning_profile.build_thinking_block(
+                "".join(reasoning_parts)
+            )
+            if thinking_block is not None:
+                content_blocks.append(thinking_block)
+
         if full_text:
             content_blocks.append({"type": "text", "text": full_text})
 
@@ -843,6 +1015,14 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                 "output_tokens": getattr(stream_usage, "completion_tokens", 0),
                 **AsyncOpenAICompatBackend._extract_cache_usage(stream_usage),
             }
+            # 提取 reasoning_tokens（DeepSeek/OpenAI o3 在 completion_tokens_details 中）
+            details = getattr(stream_usage, "completion_tokens_details", None) or getattr(
+                stream_usage, "output_tokens_details", None
+            )
+            if details is not None:
+                reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
+                if reasoning_tokens:
+                    usage_dict["reasoning_tokens"] = reasoning_tokens
 
         yield {
             "type": "done",
@@ -1029,18 +1209,72 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                     and b.get("text", "").strip()
                     for b in content
                 )
-                if not has_tool_use and not has_text:
+                has_thinking = any(
+                    isinstance(b, dict)
+                    and b.get("type") == "thinking"
+                    and (
+                        b.get("thinking", "").strip()
+                        or b.get("signature", "")
+                    )
+                    for b in content
+                )
+                if not has_tool_use and not has_text and not has_thinking:
                     logger.warning(
-                        "清理空 assistant 消息（content 列表无 tool_use 也无文本）"
+                        "清理空 assistant 消息（content 列表无 tool_use/text/thinking）"
                     )
                     continue
             result.append(msg)
+        return result
+
+    @staticmethod
+    def _clean_orphan_reasoning(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """清理转换残留的空 thinking block / 孤立 reasoning_content 字段。
+
+        在 :meth:`_convert_messages` 按 ``self.reasoning_profile.history_policy``
+        转换后调用，清理：
+
+        - assistant 消息中 ``content`` 列表内空 thinking block（``thinking``
+          为空字符串且 ``signature`` 为空）；
+        - assistant 消息顶层 ``reasoning_content`` 字段为空字符串或 None；
+        - user 消息中残留的 ``reasoning_content`` 字段（应为 assistant 专属）。
+
+        与 :meth:`_clean_orphan_tool_results` 同层，作为边界兜底防御
+        OpenAI 400 错误（DeepSeek 不接受空 reasoning_content 字段）。
+        """
+        result: List[Dict[str, Any]] = []
+        for msg in messages:
+            new_msg = dict(msg)
+            # 清理顶层 reasoning_content 空值
+            if "reasoning_content" in new_msg:
+                rc = new_msg.get("reasoning_content")
+                if not rc or (isinstance(rc, str) and not rc.strip()):
+                    new_msg.pop("reasoning_content", None)
+                elif new_msg.get("role") != "assistant":
+                    # reasoning_content 仅允许 assistant 消息携带
+                    new_msg.pop("reasoning_content", None)
+            # 清理 content 列表中的空 thinking block
+            content = new_msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for b in content:
+                    if (
+                        isinstance(b, dict)
+                        and b.get("type") == "thinking"
+                        and not b.get("thinking", "").strip()
+                        and not b.get("signature", "").strip()
+                    ):
+                        logger.warning("清理空 thinking block（无文本无 signature）")
+                        continue
+                    new_content.append(b)
+                new_msg["content"] = new_content
+            result.append(new_msg)
         return result
 
     def _convert_messages(
         self,
         messages: List[Dict[str, Any]],
         system: Optional[str],
+        preserve_history: bool = True,
     ) -> List[Dict[str, Any]]:
         """将 Anthropic 风格消息列表转为 OpenAI 消息列表。
 
@@ -1062,6 +1296,15 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         # Phase 9 Task 6 方案 B：转换前清理孤立 tool_result，避免 OpenAI 400
         messages = self._clean_orphan_tool_results(messages)
         messages = self._clean_empty_assistant_messages(messages)
+        # reasoning Profile 适配：按 history_policy 转换 thinking block
+        # / reasoning_content 字段，转换后再调用 _clean_orphan_reasoning
+        # 清理残留空 thinking block / 孤立 reasoning_content 字段
+        if self.reasoning_profile is not None:
+            messages = self.reasoning_profile.adapt_messages_for_provider(
+                messages,
+                preserve_history=preserve_history,
+            )
+        messages = self._clean_orphan_reasoning(messages)
 
         out: List[Dict[str, Any]] = []
         if system:
@@ -1083,6 +1326,9 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
             if role == "assistant":
                 text_parts: List[str] = []
                 tool_calls: List[Dict[str, Any]] = []
+                # thinking 文本累积（来自 adapt_messages_for_provider 转换后的
+                # content 列表内 thinking block，或残留 thinking block）
+                thinking_parts: List[str] = []
                 for block in content:
                     if not isinstance(block, dict):
                         continue
@@ -1105,12 +1351,26 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                                 },
                             }
                         )
+                    elif btype == "thinking":
+                        # adapt_messages_for_provider 已按 history_policy 处理，
+                        # 此处兜底收集残留 thinking 文本（避免丢失语义）
+                        thinking_text = block.get("thinking", "")
+                        if thinking_text:
+                            thinking_parts.append(thinking_text)
                 msg_out: Dict[str, Any] = {
                     "role": "assistant",
                     "content": "\n".join(text_parts) if text_parts else None,
                 }
                 if tool_calls:
                     msg_out["tool_calls"] = tool_calls
+                # 注入 reasoning_content 字段（DeepSeek/Qwen/GLM 接受）
+                # 优先使用顶层 reasoning_content（adapt_messages_for_provider 注入），
+                # 其次使用 thinking_parts 累积（残留 thinking block 兜底）
+                reasoning_content = msg.get("reasoning_content")
+                if not reasoning_content and thinking_parts:
+                    reasoning_content = "".join(thinking_parts)
+                if reasoning_content:
+                    msg_out["reasoning_content"] = reasoning_content
                 out.append(msg_out)
             elif role == "user":
                 # user 消息可能含 tool_result 块（工具结果回传）
@@ -1277,6 +1537,24 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
                 "output_tokens": getattr(usage_obj, "completion_tokens", 0),
                 **AsyncOpenAICompatBackend._extract_cache_usage(usage_obj),
             }
+            # 提取 reasoning_tokens（DeepSeek/OpenAI o3 在 completion_tokens_details 中）
+            details = getattr(usage_obj, "completion_tokens_details", None) or getattr(
+                usage_obj, "output_tokens_details", None
+            )
+            if details is not None:
+                reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
+                if reasoning_tokens:
+                    usage_dict["reasoning_tokens"] = reasoning_tokens
+
+        # 提取 reasoning_content（DeepSeek/Qwen/GLM 非流式响应）
+        # 注入为 thinking block（统一 content_blocks 格式，便于上层处理）
+        reasoning_content = getattr(message, "reasoning_content", None) if message else None
+        if reasoning_content:
+            content_blocks.insert(0, {
+                "type": "thinking",
+                "thinking": reasoning_content,
+                "signature": "",  # DeepSeek/OpenAI 无 signature
+            })
 
         return LLMResponse(
             content=content_blocks,
@@ -1308,11 +1586,18 @@ def _create_backend(
         raise ValueError("provider 未设置，请在 config.yaml 中配置 llm.main_provider")
 
     if provider_lower == "anthropic":
-        return AsyncAnthropicBackend(model=model, api_key=api_key, base_url=base_url)
+        return AsyncAnthropicBackend(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            provider_id="anthropic",
+        )
 
     if provider_lower in ("openai", "deepseek", "qwen"):
         # base_url 优先级：config 显式配置 > provider 默认值
         effective_base_url = base_url or _PROVIDER_DEFAULT_BASE_URL.get(provider_lower)
+        # provider_name 同时充当 provider_id（super().__init__ 透传），
+        # 用于在 REASONING_PROFILES 表中查找对应 Profile
         return AsyncOpenAICompatBackend(
             model=model,
             api_key=api_key,
@@ -1414,6 +1699,24 @@ class LLMClient:
         # stream_total_timeout: 流式总超时（兜底整个流式调用）
         self._activity_timeout, self._stream_total_timeout = get_llm_timeouts(config)
 
+        # Reasoning 配置（spec integrate-llm-reasoning-mode Task 7）
+        # 三个独立 ReasoningConfig：main / consolidation / cron
+        # consolidation 强制 enabled=False（避免成本浪费）
+        reasoning_config: Dict[str, Any] = config.get("reasoning", {}) or {}
+        self._main_reasoning_cfg = self._build_reasoning_cfg(
+            reasoning_config.get("main", {}), default_enabled=False
+        )
+        self._cron_reasoning_cfg = self._build_reasoning_cfg(
+            reasoning_config.get("cron", {}), default_enabled=False
+        )
+        self._consolidation_reasoning_cfg = self._build_reasoning_cfg(
+            reasoning_config.get("consolidation", {}), default_enabled=False
+        )
+        # 强制关闭 consolidation reasoning（spec 要求避免成本浪费）
+        self._consolidation_reasoning_cfg.enabled = False
+        # persist_thinking 全局开关（history_buffer 读取）
+        self._persist_thinking: bool = bool(reasoning_config.get("persist_thinking", False))
+
         # 校验必要配置
         if not self.main_model:
             raise ValueError("配置 llm.main_model 未设置")
@@ -1464,12 +1767,89 @@ class LLMClient:
         env_name = _PROVIDER_DEFAULT_ENV_KEY.get(provider, "")
         return os.environ.get(env_name, "") if env_name else ""
 
+    @staticmethod
+    def _build_reasoning_cfg(
+        section: Dict[str, Any], default_enabled: bool = False
+    ) -> ReasoningConfig:
+        """从 config 段构造 ReasoningConfig 实例。
+
+        参数:
+            section: config 中的 reasoning.main / reasoning.cron /
+                     reasoning.consolidation 段（dict）。
+            default_enabled: 当 section 未显式指定 enabled 时的默认值。
+
+        返回:
+            :class:`ReasoningConfig` 实例。
+        """
+        if not section:
+            return ReasoningConfig(enabled=default_enabled)
+        budget = section.get("budget_tokens")
+        return ReasoningConfig(
+            enabled=bool(section.get("enabled", default_enabled)),
+            effort=str(section.get("effort", "medium")),
+            budget_tokens=int(budget) if budget else None,
+            preserve_history=bool(section.get("preserve_history", True)),
+            display=bool(section.get("display", True)),
+        )
+
+    # ── Reasoning 热更新 property（server.py _apply_runtime_config 转发）──
+
+    @property
+    def main_reasoning_enabled(self) -> bool:
+        return self._main_reasoning_cfg.enabled
+
+    @main_reasoning_enabled.setter
+    def main_reasoning_enabled(self, value: bool) -> None:
+        self._main_reasoning_cfg.enabled = bool(value)
+
+    @property
+    def main_reasoning_effort(self) -> str:
+        return self._main_reasoning_cfg.effort
+
+    @main_reasoning_effort.setter
+    def main_reasoning_effort(self, value: str) -> None:
+        self._main_reasoning_cfg.effort = str(value)
+
+    @property
+    def main_reasoning_budget_tokens(self) -> Optional[int]:
+        return self._main_reasoning_cfg.budget_tokens
+
+    @main_reasoning_budget_tokens.setter
+    def main_reasoning_budget_tokens(self, value: Optional[int]) -> None:
+        self._main_reasoning_cfg.budget_tokens = int(value) if value else None
+
+    @property
+    def cron_reasoning_enabled(self) -> bool:
+        return self._cron_reasoning_cfg.enabled
+
+    @cron_reasoning_enabled.setter
+    def cron_reasoning_enabled(self, value: bool) -> None:
+        self._cron_reasoning_cfg.enabled = bool(value)
+
+    @property
+    def cron_reasoning_effort(self) -> str:
+        return self._cron_reasoning_cfg.effort
+
+    @cron_reasoning_effort.setter
+    def cron_reasoning_effort(self, value: str) -> None:
+        self._cron_reasoning_cfg.effort = str(value)
+
+    @property
+    def persist_thinking(self) -> bool:
+        return self._persist_thinking
+
+    @persist_thinking.setter
+    def persist_thinking(self, value: bool) -> None:
+        self._persist_thinking = bool(value)
+
     async def chat_main(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
+        is_cron: bool = False,
     ) -> LLMResponse:
         """主对话 LLM 调用（async）。
 
@@ -1481,16 +1861,25 @@ class LLMClient:
                    （``{"name", "description", "input_schema"}``）。
             system: 可选系统提示词。
             max_tokens: 输出 token 上限，默认使用 _DEFAULT_MAX_TOKENS_MAIN。
+            reasoning_cfg: 可选 ReasoningConfig，None 时按 ``is_cron`` 取
+                           ``self._main_reasoning_cfg`` 或 ``self._cron_reasoning_cfg``。
+            is_cron: 是否为 cron 会话调用，影响默认 reasoning_cfg 选择。
 
         返回:
             :class:`LLMResponse` 对象，包含 content / stop_reason / usage 字段。
         """
+        if reasoning_cfg is None:
+            # 兜底：未显式传 is_cron 时检测 session_id 前缀（迁移期兼容）
+            reasoning_cfg = (
+                self._cron_reasoning_cfg if is_cron else self._main_reasoning_cfg
+            )
         t0 = time.perf_counter()
         response = await self._main_backend.chat(
             messages=messages,
             tools=tools,
             system=system,
             max_tokens=max_tokens,
+            reasoning_cfg=reasoning_cfg,
         )
         if self._metrics_collector is not None and response.usage is not None:
             latency_ms = (time.perf_counter() - t0) * 1000
@@ -1507,11 +1896,14 @@ class LLMClient:
         activity_timeout: Optional[float] = None,
         stream_manager: Optional["StreamManager"] = None,
         session_id: Optional[str] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
+        is_cron: bool = False,
     ) -> AsyncIterator[Dict[str, Any]]:
         """主对话 LLM 异步流式调用，async generator yield 事件 dict。
 
         事件格式与 :meth:`AsyncBaseBackend.chat_stream` 一致：
             - ``{"type": "text", "text": str}``
+            - ``{"type": "reasoning", "text": str, "signature": str|None}``
             - ``{"type": "done", "stop_reason": str, "content_blocks": list, "usage": dict|None}``
 
         参数:
@@ -1520,11 +1912,29 @@ class LLMClient:
                               支持热更新（调用方重新读取 config 后透传新值）。
             stream_manager: 可选 :class:`StreamManager`，用于注册 ``cancel_callback``
                             （Task 9 主路径）。
-            session_id: 可选会话 ID，与 ``stream_manager`` 配对。
+            session_id: 可选会话 ID，与 ``stream_manager`` 配对。也用于
+                        ``is_cron=False`` 兜底检测 ``"cron:"`` 前缀（迁移期兼容）。
+            reasoning_cfg: 可选 ReasoningConfig，None 时按 ``is_cron`` 选择。
+            is_cron: 显式标记是否为 cron 会话。True 时使用 cron reasoning 配置，
+                     False 时使用 main reasoning 配置。
         """
         # activity_timeout 默认值：调用方透传 > config 默认值
         if activity_timeout is None:
             activity_timeout = self._activity_timeout
+
+        # reasoning_cfg 默认值：显式传入 > is_cron 选择 > session_id 前缀兜底
+        if reasoning_cfg is None:
+            if is_cron:
+                reasoning_cfg = self._cron_reasoning_cfg
+            elif session_id and session_id.startswith("cron:"):
+                # 迁移期兼容：调用者未显式传 is_cron 但 session_id 标识为 cron
+                logger.warning(
+                    "[DEPRECATION] chat_main_stream 检测到 session_id 'cron:' 前缀兜底，"
+                    "请调用方显式传 is_cron=True，未来版本将移除前缀检测"
+                )
+                reasoning_cfg = self._cron_reasoning_cfg
+            else:
+                reasoning_cfg = self._main_reasoning_cfg
 
         t0 = time.perf_counter()
         async for event in self._main_backend.chat_stream(
@@ -1536,6 +1946,7 @@ class LLMClient:
             activity_timeout=activity_timeout,
             stream_manager=stream_manager,
             session_id=session_id,
+            reasoning_cfg=reasoning_cfg,
         ):
             if event.get("type") == "done" and self._metrics_collector is not None:
                 usage = event.get("usage")
@@ -1549,6 +1960,7 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> LLMResponse:
         """consolidation LLM 调用（async），用于记忆沉淀提取。
 
@@ -1556,15 +1968,26 @@ class LLMClient:
             messages: 对话消息列表。
             system: 可选系统提示词（一般为 CONSOLIDATION_PROMPT）。
             max_tokens: 输出 token 上限，默认使用 _DEFAULT_MAX_TOKENS_CONSOLIDATION。
+            reasoning_cfg: 可选 ReasoningConfig。**consolidation 强制关闭 reasoning**
+                           （spec 要求避免成本浪费），即使传入 enabled=True 也会
+                           被覆盖为 disabled。None 时使用 self._consolidation_reasoning_cfg
+                           （已强制 enabled=False）。
 
         返回:
             :class:`LLMResponse` 对象。
         """
+        # 强制关闭 consolidation reasoning（spec 要求避免成本浪费）
+        # 使用 dataclasses.replace 创建新对象，避免修改入参导致副作用污染
+        if reasoning_cfg is None:
+            reasoning_cfg = self._consolidation_reasoning_cfg
+        else:
+            reasoning_cfg = _dataclass_replace(reasoning_cfg, enabled=False)
         return await self._consolidation_backend.chat(
             messages=messages,
             tools=None,
             system=system,
             max_tokens=max_tokens or _DEFAULT_MAX_TOKENS_CONSOLIDATION,
+            reasoning_cfg=reasoning_cfg,
         )
 
     # ── sync wrapper（供 workflow / memory 线程池路径调用）──
@@ -1575,6 +1998,8 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
+        is_cron: bool = False,
     ) -> LLMResponse:
         """sync wrapper for :meth:`chat_main`，供线程池路径调用。
 
@@ -1594,6 +2019,8 @@ class LLMClient:
                 tools=tools,
                 system=system,
                 max_tokens=max_tokens,
+                reasoning_cfg=reasoning_cfg,
+                is_cron=is_cron,
             )
         )
 
@@ -1602,17 +2029,20 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[ReasoningConfig] = None,
     ) -> LLMResponse:
         """sync wrapper for :meth:`chat_consolidation`，供线程池路径调用。
 
         内部 ``asyncio.run(self.chat_consolidation(...))``，约束同
-        :meth:`chat_main_sync`。
+        :meth:`chat_main_sync`。reasoning_cfg 透传给 async 版本，
+        consolidation 强制 enabled=False。
         """
         return asyncio.run(
             self.chat_consolidation(
                 messages=messages,
                 system=system,
                 max_tokens=max_tokens,
+                reasoning_cfg=reasoning_cfg,
             )
         )
 

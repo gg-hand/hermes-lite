@@ -154,3 +154,19 @@ web_search:
   baidu_api_key: BAIDU_API_KEY_PLACEHOLDER
 tasks: {}
 schedules: []
+reasoning:
+  main:
+    enabled: false
+    effort: medium
+    budget_tokens: null
+    preserve_history: true
+    display: true
+  consolidation:
+    enabled: false
+  cron:
+    enabled: false
+    effort: medium
+    budget_tokens: null
+    preserve_history: false
+    display: false
+  persist_thinking: false

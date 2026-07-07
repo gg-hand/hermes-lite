@@ -104,7 +104,7 @@ class MockStreamLLMClient:
         self._responses = list(responses)
         self._call_count = 0
 
-    async def chat_main_stream(self, messages=None, tools=None, system=None, max_tokens=None, cancel_event=None, stream_manager=None, session_id=None, activity_timeout=None):
+    async def chat_main_stream(self, messages=None, tools=None, system=None, max_tokens=None, cancel_event=None, stream_manager=None, session_id=None, activity_timeout=None, reasoning_cfg=None, is_cron=False):
         if self._call_count >= len(self._responses):
             raise RuntimeError(
                 f"MockStreamLLMClient: responses exhausted at call "
@@ -883,6 +883,147 @@ class TestMaxLoopsSummaryRunStream(unittest.TestCase):
         self.assertEqual(len(done_events), 1)
         # 降级返回 last_text（每轮文本为 "looping"）
         self.assertEqual(done_events[0]["response"], "looping")
+
+
+# ---------------------------------------------------------------------------
+# P0-1/P0-2 验证：_build_done_event 工厂 + stream_manager 透传
+# ---------------------------------------------------------------------------
+
+class TestBuildDoneEventFields(unittest.IsolatedAsyncioTestCase):
+    """_build_done_event 工厂方法字段完整性测试（spec SubTask 22.11/22.32）。
+
+    验证所有 done 事件 yield 点通过工厂构造后，必含 5 键：
+    usage/content_blocks/stop_reason/is_complete/termination_reason。
+    """
+
+    def _make_react_loop(self):
+        """构造最小可用的 ReactLoop 实例。"""
+        llm = MockStreamLLMClient([[]])
+        return ReactLoop(llm_client=llm, tool_registry=MagicMock())
+
+    async def test_natural_end_done_event_has_all_fields(self):
+        """自然结束 done 事件含全部 5 键。"""
+        loop = self._make_react_loop()
+        evt = loop._build_done_event(
+            response="test",
+            messages=[],
+            is_complete=True,
+            termination_reason="normal",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            content_blocks=[{"type": "text", "text": "test"}],
+            stop_reason="end_turn",
+        )
+        for key in ("usage", "content_blocks", "stop_reason", "is_complete", "termination_reason"):
+            self.assertIn(key, evt, f"done 事件缺少 {key}")
+        self.assertEqual(evt["usage"]["input_tokens"], 10)
+        self.assertEqual(evt["content_blocks"][0]["text"], "test")
+        self.assertEqual(evt["stop_reason"], "end_turn")
+
+    async def test_interrupt_done_event_usage_defaults_empty_dict(self):
+        """中断场景 usage=None 时兜底为 {}。"""
+        loop = self._make_react_loop()
+        evt = loop._build_done_event(
+            response="",
+            messages=[],
+            is_complete=False,
+            termination_reason="user_cancel",
+        )
+        self.assertEqual(evt["usage"], {})
+        self.assertEqual(evt["content_blocks"], [])
+        self.assertEqual(evt["stop_reason"], "end_turn")
+
+    async def test_interrupt_done_event_content_blocks_from_text(self):
+        """中断场景 content_blocks=None 时从 current_round_text 重建。"""
+        loop = self._make_react_loop()
+        evt = loop._build_done_event(
+            response="partial",
+            messages=[],
+            is_complete=False,
+            termination_reason="user_cancel",
+            current_round_text="partial text",
+        )
+        self.assertEqual(len(evt["content_blocks"]), 1)
+        self.assertEqual(evt["content_blocks"][0]["type"], "text")
+        self.assertEqual(evt["content_blocks"][0]["text"], "partial text")
+
+    async def test_done_event_includes_reasoning_stats(self):
+        """reasoning 开启时 done 事件含 reasoning_stats。"""
+        from src.llm.reasoning_profiles import ReasoningConfig
+        loop = self._make_react_loop()
+        cfg = ReasoningConfig(enabled=True, effort="medium", budget_tokens=8000)
+        evt = loop._build_done_event(
+            response="test",
+            messages=[],
+            is_complete=True,
+            termination_reason="normal",
+            usage={"reasoning_tokens": 120},
+            reasoning_cfg=cfg,
+        )
+        self.assertIsNotNone(evt["reasoning_stats"])
+        self.assertEqual(evt["reasoning_stats"]["effort"], "medium")
+        self.assertEqual(evt["reasoning_stats"]["reasoning_tokens"], 120)
+
+    async def test_done_event_reasoning_stats_none_when_disabled(self):
+        """reasoning 未开启时 reasoning_stats=None。"""
+        loop = self._make_react_loop()
+        evt = loop._build_done_event(
+            response="test",
+            messages=[],
+            is_complete=True,
+            termination_reason="normal",
+        )
+        self.assertIsNone(evt["reasoning_stats"])
+
+
+class TestStreamManagerPassthrough(unittest.IsolatedAsyncioTestCase):
+    """stream_manager 透传测试（spec SubTask 22.33）。
+
+    验证 run_stream 将 stream_manager 参数透传给 chat_main_stream。
+    """
+
+    async def test_stream_manager_passed_to_chat_main_stream(self):
+        """run_stream 传入的 stream_manager 被透传到 chat_main_stream。"""
+        captured_kwargs = {}
+
+        class CapturingClient:
+            def __init__(self):
+                self._call_count = 0
+
+            async def chat_main_stream(self, messages=None, tools=None, system=None,
+                max_tokens=None, cancel_event=None, stream_manager=None,
+                session_id=None, activity_timeout=None,
+                reasoning_cfg=None, is_cron=False):
+                captured_kwargs["stream_manager"] = stream_manager
+                captured_kwargs["reasoning_cfg"] = reasoning_cfg
+                captured_kwargs["is_cron"] = is_cron
+                yield _done_event(text="test", stop_reason="end_turn")
+
+        loop = ReactLoop(llm_client=CapturingClient(), tool_registry=MagicMock())
+        sentinel = object()  # 哨兵对象，用于验证引用一致性
+        events = []
+        async for evt in loop.run_stream(
+            user_input="test",
+            stream_manager=sentinel,
+        ):
+            events.append(evt)
+
+        self.assertEqual(captured_kwargs["stream_manager"], sentinel)
+        # done 事件存在
+        done_evts = [e for e in events if e.get("type") == "done"]
+        self.assertEqual(len(done_evts), 1)
+
+    async def test_stream_manager_defaults_none(self):
+        """不传 stream_manager 时默认 None，不报错。"""
+        class MinimalClient:
+            async def chat_main_stream(self, **kwargs):
+                yield _done_event(text="test", stop_reason="end_turn")
+
+        loop = ReactLoop(llm_client=MinimalClient(), tool_registry=MagicMock())
+        events = []
+        async for evt in loop.run_stream(user_input="test"):
+            events.append(evt)
+        done_evts = [e for e in events if e.get("type") == "done"]
+        self.assertEqual(len(done_evts), 1)
 
 
 if __name__ == "__main__":

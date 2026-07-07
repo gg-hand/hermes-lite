@@ -25,6 +25,7 @@ try:
     from .config import load_config
     from .llm.client import LLMClient
     from .llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT
+    from .llm.reasoning_profiles import ReasoningConfig
     from .agent.react_loop import ReactLoop
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from config import load_config  # type: ignore
     from llm.client import LLMClient  # type: ignore
     from llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT  # type: ignore
+    from llm.reasoning_profiles import ReasoningConfig  # type: ignore
     from agent.react_loop import ReactLoop  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
@@ -122,12 +124,14 @@ if TYPE_CHECKING:
         from .agent.policy import PolicyEngine
         from .agent.approval import ApprovalManager
         from .guardrails import GuardrailEngine
+        from .llm.reasoning_profiles import ReasoningConfig
     except ImportError:
         from monitoring.metrics import MetricsCollector  # type: ignore
         from agent.audit import AuditLogger  # type: ignore
         from agent.policy import PolicyEngine  # type: ignore
         from agent.approval import ApprovalManager  # type: ignore
         from guardrails import GuardrailEngine  # type: ignore
+        from llm.reasoning_profiles import ReasoningConfig  # type: ignore
 
 # Phase 5: 安全策略与审批模块（运行时导入，与 monitoring 模块同样降级为 None）
 try:
@@ -763,7 +767,9 @@ class Orchestrator:
         return _archive_evicted_message
 
     async def chat(self, session_id: str, user_input: str,
-             cancel_event: Optional[threading.Event] = None) -> str:
+             cancel_event: Optional[threading.Event] = None,
+             reasoning_cfg: Optional["ReasoningConfig"] = None,
+             is_cron: bool = False) -> str:
         """主对话入口。
 
         流程:
@@ -905,6 +911,8 @@ class Orchestrator:
                 session_id=session_id,
                 tools_override=tools_override,
                 cancel_event=cancel_event,
+                reasoning_cfg=reasoning_cfg,
+                is_cron=is_cron,
             )
             # 反馈监控：上报终止原因（每次 run() 调用都计数，反映循环级分布）
             if self.metrics is not None:
@@ -1042,6 +1050,9 @@ class Orchestrator:
         session_id: str,
         user_input: str,
         cancel_event: Optional[threading.Event] = None,
+        reasoning_cfg: Optional["ReasoningConfig"] = None,
+        is_cron: bool = False,
+        stream_manager: Optional[Any] = None,
     ):
         """流式主对话入口，异步生成器逐个 yield 事件 dict。
 
@@ -1066,6 +1077,8 @@ class Orchestrator:
         事件格式（与 ``ReactLoop.run_stream`` 一致，并扩展 todo 事件）：
             - ``{"type": "round_start", "loop_idx": int}``：新一轮循环开始。
             - ``{"type": "text", "text": str}``：LLM 输出的文本增量。
+            - ``{"type": "reasoning", "text": str, "signature": str|None}``：
+              推理增量（reasoning 模式开启时）。
             - ``{"type": "tool", "name": str, "input": dict, "result": str,
               "is_error": bool, "session_id": str|None}``：工具调用事件。
             - ``{"type": "todo_init", "session_id": str, "todo": dict}``：
@@ -1167,12 +1180,12 @@ class Orchestrator:
                     "reason": guardrail_result.reason,
                 }
                 # 直接 yield done 事件，保证前端流正常结束
-                yield {
-                    "type": "done",
-                    "response": "检测到潜在的安全风险，请重新表述您的请求。",
-                    "messages": [],
-                    "is_complete": True,
-                }
+                yield self.react_loop._build_done_event(
+                    response="检测到潜在的安全风险，请重新表述您的请求。",
+                    messages=[],
+                    is_complete=True,
+                    termination_reason="error",
+                )
                 return
             # suspicious 或 allow 时放行；suspicious 记录审计（中等风险）
             if (
@@ -1217,12 +1230,12 @@ class Orchestrator:
                 "type": "error",
                 "message": "抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。",
             }
-            yield {
-                "type": "done",
-                "response": "抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。",
-                "messages": [],
-                "is_complete": True,
-            }
+            yield self.react_loop._build_done_event(
+                response="抱歉，连续两次未能生成回复，可能是模型异常或上下文冲突。请重试或换种问法。",
+                messages=[],
+                is_complete=True,
+                termination_reason="error",
+            )
             return
         if empty_count == 1:
             system_text = (system_text or "") + (
@@ -1241,6 +1254,9 @@ class Orchestrator:
                 session_id=session_id,
                 tools_override=tools_override,
                 cancel_event=cancel_event,
+                reasoning_cfg=reasoning_cfg,
+                is_cron=is_cron,
+                stream_manager=stream_manager,
             ):
                 etype = event.get("type")
 
@@ -1577,7 +1593,8 @@ class Orchestrator:
             try:
                 response = await asyncio.wait_for(
                     self.llm_client.chat_consolidation(
-                        messages=messages, system=None, max_tokens=50
+                        messages=messages, system=None, max_tokens=50,
+                        reasoning_cfg=ReasoningConfig(enabled=False),
                     ),
                     timeout=15.0,
                 )

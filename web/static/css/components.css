@@ -994,6 +994,68 @@ pre:hover .copy-btn { opacity: 1; }
   outline-offset: 2px;
 }
 
+/* ---------- 思考区（Reasoning Block）---------- */
+/* spec integrate-llm-reasoning-mode Task 19.2 */
+.reasoning-block {
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-primary, rgba(0,0,0,0.03));
+  overflow: hidden;
+  font-size: 13px;
+}
+.reasoning-block.collapsed .reasoning-content {
+  display: none;
+}
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary, #888);
+  transition: background 0.15s;
+}
+.reasoning-header:hover {
+  background: var(--bg-hover, rgba(0,0,0,0.04));
+}
+.reasoning-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.reasoning-title {
+  flex: 1;
+  font-weight: 500;
+  color: var(--text-secondary, #888);
+}
+.reasoning-toggle {
+  font-size: 11px;
+  color: var(--text-tertiary, #aaa);
+  transition: transform 0.2s;
+}
+.reasoning-content {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary, #888);
+  line-height: 1.6;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.reasoning-content p {
+  margin: 4px 0;
+}
+.reasoning-content pre {
+  background: var(--bg-code, rgba(0,0,0,0.06));
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.reasoning-content code {
+  font-size: 12px;
+}
+
 /* ---------- 响应式：手机端全屏模态框 + 表单纵向 ---------- */
 @media (max-width: 768px) {
   /* 模态框遮罩去掉 padding，让 modal 撑满 */

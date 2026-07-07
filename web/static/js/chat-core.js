@@ -198,6 +198,85 @@ function _pauseDots(rounds, roundIdx) {
   if (cur && cur.el) cur.el.classList.remove('is-streaming');
 }
 
+// ========== 思考区（Reasoning Block）==========
+// spec integrate-llm-reasoning-mode Task 17：LLM 推理模式思考内容展示
+
+// localStorage 折叠状态 key（全局，非 per-session）
+const _REASONING_COLLAPSED_KEY = 'hermes_reasoning_collapsed';
+
+function _isReasoningCollapsed() {
+  try {
+    return localStorage.getItem(_REASONING_COLLAPSED_KEY) === '1';
+  } catch { return false; }
+}
+
+function _setReasoningCollapsed(collapsed) {
+  try {
+    localStorage.setItem(_REASONING_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {}
+}
+
+// 构建思考区容器（每轮独立，插入到气泡之前）
+function _buildReasoningBlock() {
+  const block = document.createElement('div');
+  block.className = 'reasoning-block collapsed';
+  const header = document.createElement('div');
+  header.className = 'reasoning-header';
+  header.innerHTML = '<span class="reasoning-icon">💡</span>' +
+    '<span class="reasoning-title">思考中...</span>' +
+    '<span class="reasoning-toggle">▸</span>';
+  const content = document.createElement('div');
+  content.className = 'reasoning-content';
+  content.style.display = 'none';
+  block.appendChild(header);
+  block.appendChild(content);
+  // 点击头部展开/折叠
+  header.addEventListener('click', () => {
+    const isCollapsed = block.classList.toggle('collapsed');
+    content.style.display = isCollapsed ? 'none' : '';
+    header.querySelector('.reasoning-toggle').textContent = isCollapsed ? '▸' : '▾';
+    _setReasoningCollapsed(isCollapsed);
+  });
+  // 应用全局折叠状态
+  if (!_isReasoningCollapsed()) {
+    block.classList.remove('collapsed');
+    content.style.display = '';
+    header.querySelector('.reasoning-toggle').textContent = '▾';
+  }
+  return block;
+}
+
+// 更新思考区内容（带 requestAnimationFrame 批量更新，SubTask 17.10）
+const _reasoningRafPending = new WeakMap();
+function updateReasoningBubble(round) {
+  if (!round.reasoning_el) return;
+  // 防抖：同一轮的多次 reasoning delta 合并到单个 rAF
+  if (_reasoningRafPending.has(round.reasoning_el)) return;
+  _reasoningRafPending.set(round.reasoning_el, true);
+  requestAnimationFrame(() => {
+    _reasoningRafPending.delete(round.reasoning_el);
+    if (!round.reasoning_el) return;
+    const content = round.reasoning_el.querySelector('.reasoning-content');
+    if (content && round.reasoning) {
+      content.innerHTML = renderMarkdown(round.reasoning);
+    }
+    scrollMessagesToBottom();
+  });
+}
+
+// 思考完成：更新头部文案为 "✅ 思考完成（N tokens）"
+function finalizeReasoningBlock(round, reasoningTokens) {
+  if (!round.reasoning_el) return;
+  const header = round.reasoning_el.querySelector('.reasoning-header');
+  if (!header) return;
+  const title = header.querySelector('.reasoning-title');
+  if (!title) return;
+  const tokStr = reasoningTokens ? `（${reasoningTokens} tokens）` : '';
+  title.textContent = `思考完成${tokStr}`;
+  const icon = header.querySelector('.reasoning-icon');
+  if (icon) icon.textContent = '✅';
+}
+
 function createStreamMessage() {
   welcomeScreenEl.style.display = 'none';
   const msg = document.createElement('div');
@@ -220,15 +299,17 @@ function _cleanupStreamRounds(rounds, streamMsg) {
     r.el.querySelectorAll('.streaming-dots, .bubble-status').forEach(d => d.remove());
   });
   rounds.forEach(r => {
-    if (!r.text.trim() && r.el && r.el.parentNode === streamMsg) {
+    // 清理空气泡：仅当无文本且无 reasoning 时移除（有 reasoning 的轮次保留思考区）
+    if (!r.text.trim() && !(r.reasoning && r.reasoning.trim()) && r.el && r.el.parentNode === streamMsg) {
       const prevEl = r.el.previousElementSibling;
       if (prevEl && prevEl.classList.contains('round-separator')) prevEl.remove();
       r.el.remove();
     }
   });
   const hasText = rounds.some(r => r.text.trim());
+  const hasReasoning = rounds.some(r => r.reasoning && r.reasoning.trim());
   const hasCards = streamMsg && streamMsg.querySelector('.tool-card, .todo-card, .approval-card');
-  if (!hasText && !hasCards && streamMsg && streamMsg.parentNode) streamMsg.remove();
+  if (!hasText && !hasReasoning && !hasCards && streamMsg && streamMsg.parentNode) streamMsg.remove();
 }
 
 function _hideEmptyRoundBubble(rounds, roundIdx) {
@@ -964,7 +1045,7 @@ async function sendMessage(textOverride) {
   updateSendBtnToStopBtn(false);
 
   let { msg: streamMsg, bubble: streamBubble } = createStreamMessage();
-  let rounds = [{ el: streamBubble, text: '' }];
+  let rounds = [{ el: streamBubble, text: '', reasoning: '', reasoning_el: null }];
   let roundIdx = 0;
 
   try {
@@ -1005,6 +1086,24 @@ async function sendMessage(textOverride) {
           }
           break;
         }
+        case 'reasoning': {
+          // SubTask 17.1：累加 reasoning delta 到当前轮，创建/更新思考区
+          const r = rounds[roundIdx];
+          if (r) {
+            r.reasoning = (r.reasoning || '') + (evt.text || '');
+            // 首次 reasoning 事件创建思考区容器，插入到气泡之前
+            if (!r.reasoning_el) {
+              r.reasoning_el = _buildReasoningBlock();
+              if (r.el && r.el.parentNode) {
+                r.el.parentNode.insertBefore(r.reasoning_el, r.el);
+              } else {
+                streamMsg.appendChild(r.reasoning_el);
+              }
+            }
+            updateReasoningBubble(r);
+          }
+          break;
+        }
         case 'round_start':
           if (evt.loop_idx === 0) break;
           {
@@ -1018,7 +1117,7 @@ async function sendMessage(textOverride) {
             }
             const nb = _buildStreamBubble();
             streamMsg.appendChild(nb);
-            rounds.push({ el: nb, text: '' });
+            rounds.push({ el: nb, text: '', reasoning: '', reasoning_el: null });
             roundIdx = rounds.length - 1;
           }
           break;
@@ -1072,6 +1171,18 @@ async function sendMessage(textOverride) {
           break;
         case 'done':
           _cleanupStreamRounds(rounds, streamMsg);
+          // SubTask 17.2/17.3/17.6：reasoning 最终化 —— 更新最后一轮思考区头部
+          // reasoning_tokens 容错：usage?.reasoning_tokens ?? reasoning_stats?.reasoning_tokens ?? 0
+          {
+            const lastRound = rounds[rounds.length - 1];
+            if (lastRound && lastRound.reasoning_el) {
+              const rStats = evt.reasoning_stats || {};
+              const rTokens = (evt.usage && evt.usage.reasoning_tokens)
+                ? evt.usage.reasoning_tokens
+                : (rStats.reasoning_tokens || 0);
+              finalizeReasoningBlock(lastRound, rTokens);
+            }
+          }
           // 渲染 done.response —— 仅当它是"未流式传输过的新内容"时才追加
           // 正常 end_turn：text 事件已渲染全文，done.response 与之相同，追加会重复，需跳过
           // max_loops 总结 / stuck 终止 / 异常兜底：response 是未流式的新内容，需渲染
@@ -1081,7 +1192,7 @@ async function sendMessage(textOverride) {
               const nb = document.createElement('div');
               nb.className = 'message-bubble markdown';
               streamMsg.appendChild(nb);
-              rounds.push({ el: nb, text: '' });
+              rounds.push({ el: nb, text: '', reasoning: '', reasoning_el: null });
               target = rounds[rounds.length - 1];
             }
             const norm = (s) => (s || '').trim().replace(/\s+/g, ' ');

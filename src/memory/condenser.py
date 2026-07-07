@@ -24,6 +24,12 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 if TYPE_CHECKING:
     from ..llm.client import LLMClient
 
+# ReasoningConfig 运行时需要使用（condense 调用 consolidation LLM 时显式禁用 reasoning）
+try:
+    from ..llm.reasoning_profiles import ReasoningConfig
+except ImportError:  # pragma: no cover - 直接运行模块时回退
+    from llm.reasoning_profiles import ReasoningConfig  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -278,6 +284,7 @@ class LLMSummarizingCondenser(Condenser):
         response = self.llm_client.chat_consolidation_sync(
             [{"role": "user", "content": prompt}],
             system="你是一个对话历史摘要助手。",
+            reasoning_cfg=ReasoningConfig(enabled=False),
         )
         # 提取文本（兼容 response.content 为 dict 列表或对象列表）
         parts: List[str] = []
@@ -427,7 +434,7 @@ if __name__ == "__main__":
     calls = []
 
     class FakeLLM:
-        def chat_consolidation_sync(self, messages, system=None):
+        def chat_consolidation_sync(self, messages, system=None, reasoning_cfg=None):
             calls.append(messages)
             class R:
                 content = [{"type": "text", "text": "摘要内容"}]
@@ -458,7 +465,7 @@ if __name__ == "__main__":
 
     # 6. LLM 摘要失败降级
     class FailLLM:
-        def chat_consolidation_sync(self, messages, system=None):
+        def chat_consolidation_sync(self, messages, system=None, reasoning_cfg=None):
             raise RuntimeError("LLM 故障")
 
     llm_sc3 = LLMSummarizingCondenser(

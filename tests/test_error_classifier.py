@@ -251,11 +251,12 @@ class TestInterfaceContract(unittest.TestCase):
         self.assertIsInstance(reason, str)
 
     def test_all_error_classes_defined(self):
-        """确保 11 种 ErrorClass 全部定义（6 旧 + 5 新 Phase D）。"""
+        """确保 12 种 ErrorClass 全部定义（6 旧 + 5 新 Phase D + 1 reasoning Task 16）。"""
         expected = {
             "SUCCESS", "TRANSIENT", "ANTI_CRAWLER", "PERMANENT",
             "AUTH_REQUIRED", "UNKNOWN",
             "PARAM_ERROR", "NOT_FOUND", "PERMISSION", "TIMEOUT", "INTERNAL_ERROR",
+            "REASONING_CONFIG_INVALID",
         }
         self.assertEqual({e.name for e in ErrorClass}, expected)
 

@@ -248,10 +248,12 @@
     const tokOut = m.llm_tokens_output_total || 0;
     const cacheRead = m.llm_cache_read_tokens_total || 0;
     const cacheCreate = m.llm_cache_creation_tokens_total || 0;
+    const tokReasoning = m.llm_reasoning_tokens_total || 0;
     $('tokensInput').textContent = fmtNum(tokIn);
     $('tokensOutput').textContent = fmtNum(tokOut);
     $('tokensInputSub').textContent = `cache_read ${fmtNum(cacheRead)}`;
-    $('tokensOutputSub').textContent = `cache_create ${fmtNum(cacheCreate)}`;
+    // SubTask 20.1：reasoning tokens 副标展示（无 reasoning 时仅显示 cache_create）
+    $('tokensOutputSub').textContent = `cache_create ${fmtNum(cacheCreate)}` + (tokReasoning ? ` · reasoning ${fmtNum(tokReasoning)}` : '');
 
     // 缓存命中率
     const cacheRate = tokIn > 0 ? cacheRead / tokIn : null;
@@ -1008,9 +1010,11 @@
     $('btnReset').addEventListener('click', async () => {
       if (!confirm('确认重置所有指标计数器与直方图？此操作不可撤销。')) return;
       try {
-        await fetch('/metrics/reset', { method: 'POST' });
+        const resp = await fetch('/metrics/reset', { method: 'POST' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         showToast('指标已重置', 'success');
         await refreshAll();
+        await loadHistory();
       } catch (e) {
         showToast('重置失败: ' + e.message, 'error');
       }
