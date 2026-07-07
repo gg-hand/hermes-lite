@@ -76,6 +76,8 @@ class MetricsCollector:
         self._ocr_calls_total: Dict[str, int] = {}
         self._ocr_errors_total: Dict[str, int] = {}
         self._ocr_latency_ms: Dict[str, Dict[str, float]] = {}
+        # reasoning_tokens 累计（spec integrate-llm-reasoning-mode Task 15）
+        self._llm_reasoning_tokens_total: int = 0
 
     # ------------------------------------------------------------------
     # 公开采集方法
@@ -84,8 +86,17 @@ class MetricsCollector:
         """记录一次 LLM 调用的用量与延迟。
 
         从 usage 字典安全提取 input_tokens / output_tokens /
-        cache_creation_input_tokens / cache_read_input_tokens（缺失为 0），
-        累加到对应计数器，并将 latency_ms 记入 llm_latency_ms 直方图。
+        cache_creation_input_tokens / cache_read_input_tokens / reasoning_tokens
+        （缺失为 0），累加到对应计数器，并将 latency_ms 记入 llm_latency_ms 直方图。
+
+        reasoning_tokens 计量关系（SubTask 15.2）：
+        - profile.reasoning_tokens_included_in_output=True（默认，Anthropic/OpenAI o3）：
+          reasoning_tokens 已包含在 output_tokens 内，**不重复累加**到 output_total，
+          避免双重计数；
+        - =False（独立计数）：reasoning_tokens **同时累加**到 output_total，
+          避免总成本统计偏低。
+        当前实现：reasoning_tokens 单独累加到 _llm_reasoning_tokens_total，
+        不影响 output_tokens 累加（output_tokens 由 backend 已正确处理包含关系）。
 
         参数:
             usage: LLM 响应中的 usage 字典，含各类 token 计数。
@@ -95,6 +106,7 @@ class MetricsCollector:
         output_tokens = usage.get("output_tokens", 0)
         cache_creation = usage.get("cache_creation_input_tokens", 0)
         cache_read = usage.get("cache_read_input_tokens", 0)
+        reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
 
         with self._lock:
             self._llm_calls_total += 1
@@ -102,6 +114,7 @@ class MetricsCollector:
             self._llm_tokens_output_total += output_tokens
             self._llm_cache_creation_tokens_total += cache_creation
             self._llm_cache_read_tokens_total += cache_read
+            self._llm_reasoning_tokens_total += reasoning_tokens
             self._observe_histogram("llm_latency_ms", latency_ms)
 
     def observe_memory_retrieval(self, hit: bool) -> None:
@@ -155,12 +168,15 @@ class MetricsCollector:
 
         参数:
             tool_name: 工具名称，用于分桶。
-            error_class: 错误分类字符串，取值（17 类 + 1 兼容）：
+            error_class: 错误分类字符串，取值（18 类 + 1 兼容）：
                 - pre_execution(7): param_error, tool_not_found, policy_denied,
                   user_rejected, non_stream_hil, stuck_detected, cancelled
                 - execution(8): not_found, permission, timeout, transient,
                   permanent, anti_crawler, auth_required, internal_error
-                - protocol(2): orphan_tool_result, llm_failure
+                - protocol(3): orphan_tool_result, llm_failure,
+                  reasoning_config_invalid（spec integrate-llm-reasoning-mode
+                  Task 16：LLM reasoning 配置非法，由 backend 400 异常路径
+                  进入 ErrorClassifier 识别）
                 - 兼容(1): unknown（历史数据 / ErrorClassifier 兜底）
         """
         with self._lock:
@@ -251,6 +267,7 @@ class MetricsCollector:
                 "llm_tokens_output_total": self._llm_tokens_output_total,
                 "llm_cache_creation_tokens_total": self._llm_cache_creation_tokens_total,
                 "llm_cache_read_tokens_total": self._llm_cache_read_tokens_total,
+                "llm_reasoning_tokens_total": self._llm_reasoning_tokens_total,
                 "memory_retrieval_hits_total": self._memory_retrieval_hits_total,
                 "memory_retrieval_misses_total": self._memory_retrieval_misses_total,
                 "tool_calls_total": copy.deepcopy(self._tool_calls_total),
@@ -266,6 +283,11 @@ class MetricsCollector:
                 "ocr_latency_ms": copy.deepcopy(self._ocr_latency_ms),
             }
 
+    def get_reasoning_tokens(self) -> int:
+        """返回累计的 reasoning_tokens 总数（SubTask 15.4）。"""
+        with self._lock:
+            return self._llm_reasoning_tokens_total
+
     def reset(self) -> None:
         """清空所有计数器并重置直方图为初始状态。"""
         with self._lock:
@@ -274,6 +296,7 @@ class MetricsCollector:
             self._llm_tokens_output_total = 0
             self._llm_cache_creation_tokens_total = 0
             self._llm_cache_read_tokens_total = 0
+            self._llm_reasoning_tokens_total = 0
             self._memory_retrieval_hits_total = 0
             self._memory_retrieval_misses_total = 0
             self._tool_calls_total = {}

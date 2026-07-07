@@ -23,11 +23,18 @@ class LLMResponse:
         stop_reason: str,
         usage: Optional[Dict[str, Any]] = None,
         raw: Optional[Any] = None,
+        reasoning_content: Optional[str] = None,
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.content: List[Dict[str, Any]] = content
         self.stop_reason: str = stop_reason
         self.usage: Optional[Dict[str, Any]] = usage
         self.raw: Optional[Any] = raw
+        # spec integrate-llm-reasoning-mode Task 21：reasoning 扩展字段
+        # reasoning_content: DeepSeek/Qwen/GLM 风格的推理文本
+        # thinking_blocks: Anthropic 风格的 thinking block 列表（含 signature）
+        self.reasoning_content: Optional[str] = reasoning_content
+        self.thinking_blocks: Optional[List[Dict[str, Any]]] = thinking_blocks
 
 
 class MockBackend:
@@ -150,6 +157,35 @@ class MockBackend:
                 usage={"input_tokens": 100, "output_tokens": 30},
             )
 
+        elif self.scenario == "reasoning":
+            # spec Task 21.1/21.2：reasoning 事件流 + signature 模拟
+            return LLMResponse(
+                content=[{"type": "text", "text": "这是经过深度思考后的回答。"}],
+                stop_reason="end_turn",
+                usage={"input_tokens": 50, "output_tokens": 20, "reasoning_tokens": 100},
+                reasoning_content="让我分析一下这个问题...\n首先考虑...\n然后...\n最终结论是...",
+                thinking_blocks=[
+                    {
+                        "type": "thinking",
+                        "thinking": "让我分析一下这个问题...",
+                        "signature": "mock_sig_" + str(self.call_count),
+                    }
+                ],
+            )
+
+        elif self.scenario == "interleaved_thinking":
+            # spec Task 21.3：interleaved thinking 多 block
+            return LLMResponse(
+                content=[
+                    {"type": "thinking", "thinking": "第一步思考...", "signature": "sig_a"},
+                    {"type": "text", "text": "中间文本。"},
+                    {"type": "thinking", "thinking": "第二步思考...", "signature": "sig_b"},
+                    {"type": "text", "text": "最终回答。"},
+                ],
+                stop_reason="end_turn",
+                usage={"input_tokens": 80, "output_tokens": 40, "reasoning_tokens": 150},
+            )
+
         else:
             return LLMResponse(
                 content=[{"type": "text", "text": "Default mock response."}],
@@ -162,6 +198,7 @@ class MockBackend:
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[Any] = None,
     ) -> LLMResponse:
         """Synchronous mock chat."""
         self._simulate_latency()
@@ -173,20 +210,48 @@ class MockBackend:
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
+        activity_timeout: float = 60.0,
+        stream_manager: Optional[Any] = None,
+        session_id: Optional[str] = None,
+        reasoning_cfg: Optional[Any] = None,
     ) -> Generator[Dict[str, Any], None, None]:
-        """Streaming mock chat - yields text chunks then done event."""
+        """Streaming mock chat - yields reasoning + text chunks then done event.
+
+        spec Task 21.1：支持注入 reasoning 事件流（在 text 事件之前 yield）。
+        spec Task 21.2：thinking block 含 signature（Anthropic 模拟）。
+        spec Task 21.3：interleaved thinking 按 content 顺序 yield。
+        """
         response = self._get_next_response()
 
-        # Yield text chunks for text blocks
+        # Yield reasoning events first（DeepSeek 风格 reasoning_content）
+        if response.reasoning_content:
+            reasoning_text = response.reasoning_content
+            chunk_size = max(1, len(reasoning_text) // 4)
+            for i in range(0, len(reasoning_text), chunk_size):
+                if self.stream_chunk_interval_ms > 0:
+                    time.sleep(self.stream_chunk_interval_ms / 1000.0)
+                yield {"type": "reasoning", "text": reasoning_text[i : i + chunk_size], "signature": None}
+
+        # Yield text/thinking chunks for content blocks（含 interleaved thinking）
         for block in response.content:
-            if block.get("type") == "text":
+            btype = block.get("type")
+            if btype == "text":
                 text = block.get("text", "")
-                # Yield in small chunks
                 chunk_size = max(1, len(text) // 3)
                 for i in range(0, len(text), chunk_size):
                     if self.stream_chunk_interval_ms > 0:
                         time.sleep(self.stream_chunk_interval_ms / 1000.0)
                     yield {"type": "text", "text": text[i : i + chunk_size]}
+            elif btype == "thinking":
+                # Anthropic 风格 thinking delta（含 signature 在 done 事件的 content_blocks 中）
+                thinking_text = block.get("thinking", "")
+                if thinking_text:
+                    chunk_size = max(1, len(thinking_text) // 3)
+                    for i in range(0, len(thinking_text), chunk_size):
+                        if self.stream_chunk_interval_ms > 0:
+                            time.sleep(self.stream_chunk_interval_ms / 1000.0)
+                        yield {"type": "reasoning", "text": thinking_text[i : i + chunk_size], "signature": None}
 
         # Yield done event
         yield {
@@ -245,8 +310,10 @@ class MockLLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        reasoning_cfg: Optional[Any] = None,
+        is_cron: bool = False,
     ) -> LLMResponse:
-        return self._main.chat(messages, tools, system, max_tokens)
+        return self._main.chat(messages, tools, system, max_tokens, reasoning_cfg=reasoning_cfg)
 
     def chat_main_stream(
         self,
@@ -255,8 +322,16 @@ class MockLLMClient:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         cancel_event: Optional[threading.Event] = None,
+        session_id: Optional[str] = None,
+        reasoning_cfg: Optional[Any] = None,
+        is_cron: bool = False,
     ) -> Generator[Dict[str, Any], None, None]:
-        yield from self._main.chat_stream(messages, tools, system, max_tokens, cancel_event=cancel_event)
+        yield from self._main.chat_stream(
+            messages, tools, system, max_tokens,
+            cancel_event=cancel_event,
+            session_id=session_id,
+            reasoning_cfg=reasoning_cfg,
+        )
 
     def chat_consolidation(
         self,

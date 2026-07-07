@@ -647,5 +647,165 @@ class TestBackendChatStreamRetryIntegration(unittest.IsolatedAsyncioTestCase):
         )
 
 
+# ======================================================================
+# spec integrate-llm-reasoning-mode Task 22
+# P0-5: _strip_thinking_blocks 测试 + Task 16: REASONING_CONFIG_INVALID 测试
+# ======================================================================
+
+class TestStripThinkingBlocks(unittest.TestCase):
+    """P0-5: AsyncAnthropicBackend._strip_thinking_blocks 测试。
+
+    验证 reasoning 未启用时清理 thinking block，避免 Anthropic 400 错误。
+    """
+
+    def test_removes_thinking_blocks_from_content(self):
+        """thinking block 从 content 列表中移除。"""
+        from llm.client import AsyncAnthropicBackend
+        msgs = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "secret", "signature": "sig123"},
+                {"type": "text", "text": "hello"},
+            ],
+        }]
+        result = AsyncAnthropicBackend._strip_thinking_blocks(msgs)
+        types = [b.get("type") for b in result[0]["content"]]
+        self.assertNotIn("thinking", types)
+        self.assertIn("text", types)
+
+    def test_removes_reasoning_content_field(self):
+        """reasoning_content 字段从消息中移除。"""
+        from llm.client import AsyncAnthropicBackend
+        msgs = [{
+            "role": "assistant",
+            "content": "hello",
+            "reasoning_content": "secret reasoning",
+        }]
+        result = AsyncAnthropicBackend._strip_thinking_blocks(msgs)
+        self.assertNotIn("reasoning_content", result[0])
+
+    def test_preserves_string_content(self):
+        """字符串 content 原样保留。"""
+        from llm.client import AsyncAnthropicBackend
+        msgs = [{"role": "user", "content": "hello world"}]
+        result = AsyncAnthropicBackend._strip_thinking_blocks(msgs)
+        self.assertEqual(result[0]["content"], "hello world")
+
+    def test_preserves_tool_use_blocks(self):
+        """tool_use block 保留。"""
+        from llm.client import AsyncAnthropicBackend
+        msgs = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "think", "signature": "sig"},
+                {"type": "tool_use", "id": "tu1", "name": "file_read", "input": {}},
+            ],
+        }]
+        result = AsyncAnthropicBackend._strip_thinking_blocks(msgs)
+        types = [b.get("type") for b in result[0]["content"]]
+        self.assertNotIn("thinking", types)
+        self.assertIn("tool_use", types)
+
+    def test_does_not_modify_input(self):
+        """不修改入参（返回新列表）。"""
+        from llm.client import AsyncAnthropicBackend
+        original = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "secret", "signature": "sig"},
+            ],
+        }]
+        AsyncAnthropicBackend._strip_thinking_blocks(original)
+        # 原始列表未被修改
+        self.assertEqual(len(original[0]["content"]), 1)
+        self.assertEqual(original[0]["content"][0]["type"], "thinking")
+
+
+class TestReasoningConfigInvalidClassification(unittest.TestCase):
+    """Task 16: REASONING_CONFIG_INVALID 错误分类测试。"""
+
+    def test_budget_tokens_error(self):
+        """budget_tokens 关键词识别。"""
+        from agent.error_classifier import ErrorClassifier, ErrorClass
+        ec, _ = ErrorClassifier.classify(
+            "llm_call", {},
+            "Error: thinking budget_tokens must be at least 1024"
+        )
+        self.assertEqual(ec, ErrorClass.REASONING_CONFIG_INVALID)
+
+    def test_max_tokens_budget_error(self):
+        """max_tokens < budget 错误识别。"""
+        from agent.error_classifier import ErrorClassifier, ErrorClass
+        ec, _ = ErrorClassifier.classify(
+            "llm_call", {},
+            "max_tokens must be greater than budget_tokens"
+        )
+        self.assertEqual(ec, ErrorClass.REASONING_CONFIG_INVALID)
+
+    def test_thinking_type_enabled_error(self):
+        """thinking type enabled 错误识别。"""
+        from agent.error_classifier import ErrorClassifier, ErrorClass
+        ec, _ = ErrorClassifier.classify(
+            "llm_call", {},
+            "thinking.type must be 'enabled' or 'disabled'"
+        )
+        self.assertEqual(ec, ErrorClass.REASONING_CONFIG_INVALID)
+
+    def test_reasoning_effort_error(self):
+        """reasoning effort 错误识别。"""
+        from agent.error_classifier import ErrorClassifier, ErrorClass
+        ec, _ = ErrorClassifier.classify(
+            "llm_call", {},
+            "invalid reasoning effort 'ultra'"
+        )
+        self.assertEqual(ec, ErrorClass.REASONING_CONFIG_INVALID)
+
+    def test_normal_error_not_misclassified(self):
+        """普通错误不被误分类为 REASONING_CONFIG_INVALID。"""
+        from agent.error_classifier import ErrorClassifier, ErrorClass
+        ec, _ = ErrorClassifier.classify(
+            "bash_exec", {},
+            "文件不存在: /tmp/test.txt"
+        )
+        self.assertNotEqual(ec, ErrorClass.REASONING_CONFIG_INVALID)
+
+
+class TestChatConsolidationNoSideEffect(unittest.IsolatedAsyncioTestCase):
+    """P0-4: chat_consolidation 不修改入参 reasoning_cfg 对象。
+
+    验证 dataclasses.replace 创建新对象，原入参 enabled 不被污染。
+    """
+
+    async def test_original_reasoning_cfg_not_modified(self):
+        """传入的 reasoning_cfg.enabled 在调用后保持原值。"""
+        from src.llm.reasoning_profiles import ReasoningConfig
+        from src.llm.client import LLMClient
+        from unittest.mock import MagicMock, AsyncMock
+
+        original_cfg = ReasoningConfig(enabled=True, effort="high", budget_tokens=10000)
+        mock_backend = MagicMock()
+        mock_backend.chat = AsyncMock(return_value=MagicMock())
+
+        # 直接构造实例，不走 __init__（避免依赖外部配置）
+        client = LLMClient.__new__(LLMClient)
+        client._consolidation_backend = mock_backend
+        client._consolidation_reasoning_cfg = ReasoningConfig(enabled=False)
+
+        await client.chat_consolidation(
+            messages=[{"role": "user", "content": "test"}],
+            reasoning_cfg=original_cfg,
+        )
+
+        # 原入参对象未被修改
+        self.assertTrue(original_cfg.enabled, "原 reasoning_cfg.enabled 应保持 True")
+        self.assertEqual(original_cfg.effort, "high")
+        self.assertEqual(original_cfg.budget_tokens, 10000)
+        # 传给 backend 的 reasoning_cfg.enabled 应为 False
+        actual_cfg = mock_backend.chat.call_args.kwargs.get("reasoning_cfg")
+        self.assertFalse(actual_cfg.enabled)
+        # 且是新对象（非同一引用）
+        self.assertIsNot(actual_cfg, original_cfg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环依赖
     from ..llm.client import LLMClient
+    from ..llm.reasoning_profiles import ReasoningConfig
 
 try:
     from ..stream_manager import StreamCancelled
@@ -643,6 +644,8 @@ class ReactLoop:
         session_id: Optional[str] = None,
         tools_override: Optional[List[Dict[str, Any]]] = None,
         cancel_event: Optional[threading.Event] = None,
+        reasoning_cfg: Optional["ReasoningConfig"] = None,
+        is_cron: bool = False,
     ) -> Tuple[str, List[Dict[str, Any]], bool, str]:
         """执行 React 循环。
 
@@ -660,6 +663,9 @@ class ReactLoop:
             cancel_event: Phase 9+ 可选取消事件（threading.Event），由
                      Orchestrator/StreamManager 透传。被 set 时在循环的三个
                      检测点终止执行，返回 is_complete=False。
+            reasoning_cfg: 可选 ReasoningConfig，None 时由 LLMClient 按
+                     ``is_cron`` 选择默认配置。
+            is_cron: 标记是否为 cron 会话，影响 reasoning_cfg 默认选择。
 
         返回:
             (final_response, messages_used, is_complete, termination_reason):
@@ -721,6 +727,8 @@ class ReactLoop:
                     messages=messages,
                     tools=tools,
                     system=system,
+                    reasoning_cfg=reasoning_cfg,
+                    is_cron=is_cron,
                 )
             except Exception as e:
                 logger.error("LLM 调用失败 (loop=%d): %s", loop_idx, e)
@@ -1066,6 +1074,9 @@ class ReactLoop:
         session_id: Optional[str] = None,
         tools_override: Optional[List[Dict[str, Any]]] = None,
         cancel_event: Optional[threading.Event] = None,
+        reasoning_cfg: Optional["ReasoningConfig"] = None,
+        is_cron: bool = False,
+        stream_manager: Optional[Any] = None,
     ):
         """流式执行 React 循环，异步生成器逐个 yield 事件 dict。
 
@@ -1079,6 +1090,8 @@ class ReactLoop:
               第 1 轮 loop_idx=0，第 2 轮 loop_idx=1，以此类推。
             - ``{"type": "text", "text": "<增量文本>"}``：
               LLM 输出的文本增量，调用方应在当前轮的 streamMsg 中累加显示。
+            - ``{"type": "reasoning", "text": "<增量思考>", "signature": str|None}``：
+              推理增量（reasoning 模式开启时），调用方应累加到思考区。
             - ``{"type": "tool", "name": str, "input": dict, "result": str,
               "is_error": bool, "session_id": str|None}``：
               工具调用事件，单次工具执行完成后发出（不流式）。
@@ -1101,6 +1114,9 @@ class ReactLoop:
 
         参数与 :meth:`run` 一致（含 Phase 8 Task 5.7 ``tools_override``）；
         ``session_id`` 用于在 tool 事件中透传会话 ID。
+        ``reasoning_cfg`` 可选 ReasoningConfig，None 时由 LLMClient 按
+        ``is_cron`` 选择默认配置。
+        ``is_cron`` 标记是否为 cron 会话，影响 reasoning_cfg 默认选择。
         """
         # 1. 构建 messages = history + [user_input]
         messages: List[Dict[str, Any]] = []
@@ -1129,17 +1145,19 @@ class ReactLoop:
         # 卡死检测软警告状态机：首次命中重复 → warn（tool_result 返回警告，
         # 不执行工具，继续循环给 LLM 自我纠正机会）；二次命中 → stop（硬终止）。
         warned_pairs: set = set()
+        # reasoning-only 回复全局重试预算（跨轮累计，上限 3 次，Task 12）
+        reasoning_only_retry_count: int = 0
 
         for loop_idx in range(self.max_loops):
             # 🔴 检测点 1：每轮循环开始前检测中断
             if cancel_event and cancel_event.is_set():
-                yield {
-                    "type": "done",
-                    "response": last_text,
-                    "messages": messages,
-                    "is_complete": False,
-                    "termination_reason": "user_cancel",
-                }
+                yield self._build_done_event(
+                    response=last_text,
+                    messages=messages,
+                    is_complete=False,
+                    termination_reason="user_cancel",
+                    reasoning_cfg=reasoning_cfg,
+                )
                 return
 
             # 每轮循环开始：发出 round_start 事件，前端据此创建独立的
@@ -1154,27 +1172,41 @@ class ReactLoop:
             content_blocks: List[Dict[str, Any]] = []
             stop_reason: str = "end_turn"
             current_round_text: str = ""  # ← 追踪本轮累积文本
+            # 本轮 reasoning 增量累积（用于前端展示，不进入持久化 messages）
+            current_round_reasoning: str = ""
+            # 本轮 usage（从 backend done 事件提取，用于 done 事件 enrich）
+            current_round_usage: Optional[Dict[str, Any]] = None
             try:
                 async for event in self.llm_client.chat_main_stream(
                     messages=messages,
                     tools=tools,
                     system=system,
                     cancel_event=cancel_event,  # ← 透传 cancel_event
+                    session_id=session_id,
+                    reasoning_cfg=reasoning_cfg,
+                    is_cron=is_cron,
+                    stream_manager=stream_manager,
                 ):
                     # 🔴 检测点 2：每 token 检测中断（立即停止 LLM 流）
                     if cancel_event and cancel_event.is_set():
                         # 将 partial 内容纳入 messages，确保持久化不丢失
+                        # 注：半截 thinking block（无 signature）不放入 messages，
+                        # 避免 Anthropic 因 signature 缺失返回 400（SubTask 11.3/11.4）
+                        partial_blocks: List[Dict[str, Any]] = []
                         if current_round_text:
-                            messages.append(
-                                {"role": "assistant", "content": current_round_text}
-                            )
-                        yield {
-                            "type": "done",
-                            "response": current_round_text or last_text,
-                            "messages": messages,
-                            "is_complete": False,
-                            "termination_reason": "user_cancel",
-                        }
+                            partial_blocks.append({"type": "text", "text": current_round_text})
+                        if partial_blocks:
+                            messages.append({"role": "assistant", "content": partial_blocks})
+                        yield self._build_done_event(
+                            response=current_round_text or last_text,
+                            messages=messages,
+                            is_complete=False,
+                            termination_reason="user_cancel",
+                            usage=current_round_usage,
+                            reasoning_cfg=reasoning_cfg,
+                            current_round_text=current_round_text,
+                            current_round_reasoning=current_round_reasoning,
+                        )
                         return
 
                     etype = event.get("type")
@@ -1182,39 +1214,54 @@ class ReactLoop:
                         current_round_text += event.get("text", "")  # ← 累积
                         # 透传文本增量
                         yield event
+                    elif etype == "reasoning":
+                        # 推理增量累积 + 透传给前端
+                        current_round_reasoning += event.get("text", "")
+                        yield event
                     elif etype == "done":
                         stop_reason = event.get("stop_reason", "end_turn") or "end_turn"
                         content_blocks = event.get("content_blocks", []) or []
+                        # 提取 usage（SubTask 10.4）
+                        current_round_usage = event.get("usage")
             except StreamCancelled:
                 # 后端 SDK 检测到中断后抛出的异常
+                # 注：半截 thinking block（无 signature）不放入 messages（SubTask 11.3/11.4）
+                partial_blocks_sc: List[Dict[str, Any]] = []
                 if current_round_text:
-                    messages.append(
-                        {"role": "assistant", "content": current_round_text}
-                    )
-                yield {
-                    "type": "done",
-                    "response": current_round_text or last_text,
-                    "messages": messages,
-                    "is_complete": False,
-                    "termination_reason": "user_cancel",
-                }
+                    partial_blocks_sc.append({"type": "text", "text": current_round_text})
+                if partial_blocks_sc:
+                    messages.append({"role": "assistant", "content": partial_blocks_sc})
+                yield self._build_done_event(
+                    response=current_round_text or last_text,
+                    messages=messages,
+                    is_complete=False,
+                    termination_reason="user_cancel",
+                    usage=current_round_usage,
+                    reasoning_cfg=reasoning_cfg,
+                    current_round_text=current_round_text,
+                    current_round_reasoning=current_round_reasoning,
+                )
                 return
             except Exception as e:
                 logger.error("LLM 流式调用失败 (loop=%d): %s", loop_idx, e)
                 if last_text:
-                    yield {
-                        "type": "done",
-                        "response": last_text,
-                        "messages": messages,
-                        "is_complete": False,
-                        "termination_reason": "normal",
-                    }
+                    yield self._build_done_event(
+                        response=last_text,
+                        messages=messages,
+                        is_complete=False,
+                        termination_reason="normal",
+                        usage=current_round_usage,
+                        reasoning_cfg=reasoning_cfg,
+                        current_round_text=current_round_text,
+                        current_round_reasoning=current_round_reasoning,
+                    )
                     return
                 raise
 
-            # 解析 content_blocks
+            # 解析 content_blocks（SubTask 10.3: 新增 thinking_blocks 提取）
             text_parts: List[str] = []
             tool_use_blocks: List[Dict[str, Any]] = []
+            thinking_blocks: List[Dict[str, Any]] = []
             for block in content_blocks:
                 btype = block.get("type")
                 if btype == "text":
@@ -1223,26 +1270,71 @@ class ReactLoop:
                         text_parts.append(text)
                 elif btype == "tool_use":
                     tool_use_blocks.append(block)
+                elif btype == "thinking":
+                    thinking_blocks.append(block)
 
             # assistant 响应计入信息计数器
             self._info_count += 1
 
-            # 将 assistant 完整响应加入 messages
+            # 将 assistant 完整响应加入 messages（content_blocks 含 thinking block）
             messages.append({"role": "assistant", "content": content_blocks})
 
             if text_parts:
                 last_text = "".join(text_parts)
 
-            # 4. 判断是否需要工具调用
+            # 4. reasoning-only 回复检测（Task 12）
+            # 检测条件：无 text 无 tool_use 但有 thinking block
+            # 这种情况 LLM 只输出了思考没有回复，需要重试让 LLM 基于思考生成回复
+            if not text_parts and not tool_use_blocks and thinking_blocks:
+                # 全局重试预算 3 次（跨轮累计）
+                if reasoning_only_retry_count < 3:
+                    reasoning_only_retry_count += 1
+                    logger.info(
+                        "检测到 reasoning-only 回复 (loop=%d, retry=%d/3)，"
+                        "注入 system message 重试",
+                        loop_idx, reasoning_only_retry_count,
+                    )
+                    # 注入 system message 引导 LLM 基于思考给出回答
+                    # 注：不持久化到 history_buffer（SubTask 12.3），仅本轮内存有效
+                    messages.append({
+                        "role": "user",
+                        "content": "[系统提示] 请基于你的思考给出具体回答，不要只输出思考内容。",
+                    })
+                    # 清理本轮累积，进入下一轮循环
+                    current_round_text = ""
+                    current_round_reasoning = ""
+                    continue
+                else:
+                    # 达到全局预算，不再重试，yield error
+                    logger.warning(
+                        "reasoning-only 回复重试达到全局预算 3 次 (loop=%d)，终止",
+                        loop_idx,
+                    )
+                    yield self._build_done_event(
+                        response=last_text,
+                        messages=messages,
+                        is_complete=False,
+                        termination_reason="normal",
+                        usage=current_round_usage,
+                        content_blocks=content_blocks,
+                        stop_reason=stop_reason,
+                        reasoning_cfg=reasoning_cfg,
+                    )
+                    return
+
+            # 5. 判断是否需要工具调用
             if stop_reason != "tool_use" or not tool_use_blocks:
                 # 自然结束（end_turn）→ is_complete=True
-                yield {
-                    "type": "done",
-                    "response": last_text,
-                    "messages": messages,
-                    "is_complete": True,
-                    "termination_reason": "normal",
-                }
+                yield self._build_done_event(
+                    response=last_text,
+                    messages=messages,
+                    is_complete=True,
+                    termination_reason="normal",
+                    usage=current_round_usage,
+                    content_blocks=content_blocks,
+                    stop_reason=stop_reason,
+                    reasoning_cfg=reasoning_cfg,
+                )
                 return
 
             # 响应包含 tool_use，但未提供 tool_registry：终止循环
@@ -1252,26 +1344,32 @@ class ReactLoop:
                 )
                 # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
                 messages = self._drop_trailing_orphan_tool_calls(messages)
-                yield {
-                    "type": "done",
-                    "response": last_text,
-                    "messages": messages,
-                    "is_complete": False,
-                    "termination_reason": "normal",
-                }
+                yield self._build_done_event(
+                    response=last_text,
+                    messages=messages,
+                    is_complete=False,
+                    termination_reason="normal",
+                    usage=current_round_usage,
+                    content_blocks=content_blocks,
+                    stop_reason=stop_reason,
+                    reasoning_cfg=reasoning_cfg,
+                )
                 return
 
             # 🔴 检测点 3：工具执行前检测中断
             # 注：已开始的工具会执行完毕（原子性），不半途取消
             if cancel_event and cancel_event.is_set():
                 messages = self._drop_trailing_orphan_tool_calls(messages)
-                yield {
-                    "type": "done",
-                    "response": last_text,
-                    "messages": messages,
-                    "is_complete": False,
-                    "termination_reason": "user_cancel",
-                }
+                yield self._build_done_event(
+                    response=last_text,
+                    messages=messages,
+                    is_complete=False,
+                    termination_reason="user_cancel",
+                    usage=current_round_usage,
+                    content_blocks=content_blocks,
+                    stop_reason=stop_reason,
+                    reasoning_cfg=reasoning_cfg,
+                )
                 return
 
             # 5. 执行工具调用，发出 tool 事件，并将 tool_result 回传
@@ -1310,13 +1408,16 @@ class ReactLoop:
                                 self.metrics.observe_tool_error_class(tool_name, "stuck_detected")
                         # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
                         messages = self._drop_trailing_orphan_tool_calls(messages)
-                        yield {
-                            "type": "done",
-                            "response": self._build_stuck_message(tool_name, stuck_reason),
-                            "messages": messages,
-                            "is_complete": False,
-                            "termination_reason": "tool_permanent_fail",
-                        }
+                        yield self._build_done_event(
+                            response=self._build_stuck_message(tool_name, stuck_reason),
+                            messages=messages,
+                            is_complete=False,
+                            termination_reason="tool_permanent_fail",
+                            usage=current_round_usage,
+                            content_blocks=content_blocks,
+                            stop_reason=stop_reason,
+                            reasoning_cfg=reasoning_cfg,
+                        )
                         return
                     # 首次命中 → 软警告：把警告作为 tool_result 返回，不执行工具，
                     # 让 LLM 看到反馈后换参数；若仍重复同参数则升级为硬终止。
@@ -1717,13 +1818,16 @@ class ReactLoop:
 
             # 检测点 4：工具执行后检查 cancel_event（run_stream 专用）
             if cancel_event and cancel_event.is_set():
-                yield {
-                    "type": "done",
-                    "response": last_text,
-                    "messages": messages,
-                    "is_complete": False,
-                    "termination_reason": "user_cancel",
-                }
+                yield self._build_done_event(
+                    response=last_text,
+                    messages=messages,
+                    is_complete=False,
+                    termination_reason="user_cancel",
+                    usage=current_round_usage,
+                    content_blocks=content_blocks,
+                    stop_reason=stop_reason,
+                    reasoning_cfg=reasoning_cfg,
+                )
                 return
 
             messages.append({"role": "user", "content": tool_results})
@@ -1739,13 +1843,13 @@ class ReactLoop:
             messages, last_text, session_id
         )
         # max_loops 耗尽 → is_complete=False
-        yield {
-            "type": "done",
-            "response": summary_text,
-            "messages": messages,
-            "is_complete": False,
-            "termination_reason": "max_loops",
-        }
+        yield self._build_done_event(
+            response=summary_text,
+            messages=messages,
+            is_complete=False,
+            termination_reason="max_loops",
+            reasoning_cfg=reasoning_cfg,
+        )
 
     async def _generate_max_loops_summary(
         self,
@@ -1829,5 +1933,83 @@ class ReactLoop:
                 "name": getattr(block, "name", ""),
                 "input": getattr(block, "input", {}) or {},
             }
+        if block_type == "thinking":
+            # thinking block 完整保留 text + signature（Anthropic extended thinking）
+            return {
+                "type": "thinking",
+                "thinking": getattr(block, "thinking", ""),
+                "signature": getattr(block, "signature", ""),
+            }
         # 未知 block 类型，尽量保留可访问字段
         return {"type": block_type or "unknown"}
+
+    def _build_done_event(
+        self,
+        *,
+        response: str,
+        messages: List[Dict[str, Any]],
+        is_complete: bool,
+        termination_reason: str,
+        usage: Optional[Dict[str, Any]] = None,
+        content_blocks: Optional[List[Dict[str, Any]]] = None,
+        stop_reason: Optional[str] = None,
+        reasoning_cfg: Optional["ReasoningConfig"] = None,
+        current_round_text: str = "",
+        current_round_reasoning: str = "",
+    ) -> Dict[str, Any]:
+        """统一构造 done 事件，保证字段完整性（spec SubTask 10.5/22.11/22.32）。
+
+        所有 done 事件 yield 点必须调用此工厂，禁止手写 dict。
+        字段兜底：usage=None→{}，content_blocks=None→从 current_round_text 重建，
+        stop_reason=None→"end_turn"，reasoning_stats 调用 _build_reasoning_stats。
+        """
+        final_usage = usage if usage is not None else {}
+        if content_blocks is None:
+            content_blocks = []
+            if current_round_text:
+                content_blocks.append({"type": "text", "text": current_round_text})
+        final_stop_reason = stop_reason if stop_reason is not None else "end_turn"
+        reasoning_stats = self._build_reasoning_stats(
+            reasoning_cfg, final_usage if final_usage else None
+        )
+        return {
+            "type": "done",
+            "response": response,
+            "messages": messages,
+            "is_complete": is_complete,
+            "termination_reason": termination_reason,
+            "usage": final_usage,
+            "content_blocks": content_blocks,
+            "stop_reason": final_stop_reason,
+            "reasoning_stats": reasoning_stats,
+        }
+
+    @staticmethod
+    def _build_reasoning_stats(
+        reasoning_cfg: Optional["ReasoningConfig"],
+        usage: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """构造 done 事件的 reasoning_stats 字段（SubTask 10.8）。
+
+        合并 effort/budget/reasoning_tokens 到单个 dict，避免与
+        ``done.usage.reasoning_tokens`` 重复且消除"done 后再更新思考区头部"
+        的闪烁。
+
+        参数:
+            reasoning_cfg: 本轮使用的 ReasoningConfig（可能为 None）。
+            usage: backend done 事件提取的 usage dict（含 reasoning_tokens）。
+
+        返回:
+            ``{"effort": str, "budget_tokens": int|None, "reasoning_tokens": int}``
+            或 None（reasoning 未开启时）。
+        """
+        if reasoning_cfg is None or not reasoning_cfg.enabled:
+            return None
+        reasoning_tokens = 0
+        if usage and isinstance(usage, dict):
+            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
+        return {
+            "effort": reasoning_cfg.effort,
+            "budget_tokens": reasoning_cfg.budget_tokens,
+            "reasoning_tokens": reasoning_tokens,
+        }

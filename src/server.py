@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -329,6 +329,8 @@ session_logger: Optional[SessionLogger] = None
 metrics_collector: Optional[MetricsCollector] = None
 metrics_store: Optional["MetricsStore"] = None
 metrics_persist_task: Optional[asyncio.Task] = None
+# /metrics/reset 触发后置 True，metrics_persist_loop 检查后重置 baseline 并清零
+_metrics_baseline_reset: bool = False
 audit_logger: Optional[AuditLogger] = None
 approval_manager: Optional[ApprovalManager] = None
 # Phase 4: Skill/MCP 扩展组件（lifespan 中按需初始化）
@@ -740,33 +742,53 @@ async def metrics_persist_loop() -> None:
     - 每隔 flush_interval_minutes 计算一次 delta（当前 - baseline），upsert 到当天记录
     - 午夜额外触发：将跨天前的 delta 归入旧日期
     - 重启后 baseline = 全零，首次 delta = 重启后全部活动，自动合并到当天已有记录
+    - 启动后首次 flush 仅延迟 INITIAL_FLUSH_DELAY 秒，避免短时运行的服务无数据
+    - 每轮循环重读 flush_interval_minutes，支持配置热更新
+    - /metrics/reset 触发后重置 baseline，避免重置后 delta 丢失
     - 所有 SQLite 调用通过 asyncio.to_thread 包装，避免阻塞事件循环
     """
-    global metrics_store
+    global metrics_store, _metrics_baseline_reset
     if metrics_collector is None or metrics_store is None:
         return
 
-    try:
-        config = load_config(CONFIG_PATH)
-    except Exception as e:
-        logger.warning("metrics_persist_loop 读取配置失败: %s", e)
-        return
-
-    monitoring_cfg = config.get("monitoring", {})
-    flush_interval = int(monitoring_cfg.get("flush_interval_minutes", 60))
-    if flush_interval <= 0:
-        flush_interval = 60
+    # 启动后首次 flush 的延迟（秒）：足够让 lifespan 完成初始化，又不会让当天记录迟迟不创建
+    INITIAL_FLUSH_DELAY = 10
 
     baseline = metrics_collector.snapshot()
     current_date = datetime.now().date()
+    is_first_flush = True
 
     while True:
         try:
+            # 每轮循环重读配置，支持 flush_interval_minutes 热更新
+            try:
+                config = load_config(CONFIG_PATH)
+                monitoring_cfg = config.get("monitoring", {})
+                flush_interval = int(monitoring_cfg.get("flush_interval_minutes", 60))
+            except Exception as e:
+                logger.warning("metrics_persist_loop 读取配置失败，使用默认 60min: %s", e)
+                flush_interval = 60
+            if flush_interval <= 0:
+                flush_interval = 60
+
             now = datetime.now()
-            next_flush = now + timedelta(minutes=flush_interval)
-            next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
-            sleep_until = min(next_flush, next_midnight)
-            await asyncio.sleep((sleep_until - now).total_seconds())
+            if is_first_flush:
+                # 首次 flush：短延迟后立即执行，确保当天记录尽早创建
+                sleep_seconds = INITIAL_FLUSH_DELAY
+            else:
+                next_flush = now + timedelta(minutes=flush_interval)
+                next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
+                sleep_until = min(next_flush, next_midnight)
+                sleep_seconds = (sleep_until - now).total_seconds()
+            logger.info("metrics_persist_loop: 准备 sleep %.1f 秒 (is_first=%s)", sleep_seconds, is_first_flush)
+            await asyncio.sleep(sleep_seconds)
+            logger.info("metrics_persist_loop: sleep 返回，开始执行 flush")
+
+            # 检查 baseline 重置请求（/metrics/reset 触发）
+            if _metrics_baseline_reset:
+                baseline = metrics_collector.snapshot()
+                _metrics_baseline_reset = False
+                logger.info("metrics baseline 已重置（reset 接口触发）")
 
             current_snap = metrics_collector.snapshot()
             delta = compute_delta(current_snap, baseline)
@@ -781,11 +803,15 @@ async def metrics_persist_loop() -> None:
 
             await asyncio.to_thread(metrics_store.upsert_daily, target_date, delta)
             baseline = current_snap
+            logger.info("metrics flush 完成: date=%s, delta_llm_calls=%d, is_first=%s",
+                        target_date, delta.get("llm_calls_total", 0), is_first_flush)
+            is_first_flush = False
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error("监控指标持久化失败: %s", e)
             # 失败时不重置 baseline，下次重试
+            is_first_flush = False
 
 
 @asynccontextmanager
@@ -795,6 +821,7 @@ async def lifespan(app: FastAPI):
     使用 lifespan（而非已废弃的 on_event），由 FastAPI 在应用启停时调用。
     """
     global orchestrator, session_logger, metrics_collector, audit_logger
+    global metrics_store
     global skill_loader, mcp_manager
     global approval_manager
     global task_manager, cron_scheduler
@@ -802,10 +829,14 @@ async def lifespan(app: FastAPI):
     global cron_tool_registry
     global skill_tools_registered
     global upload_manager, etl_engine, file_context_injector
+    global metrics_persist_task, file_cleanup_task, cleanup_task
 
     # Phase 6: cron_task 在 startup 段赋值，shutdown 段引用；
     # 预初始化为 None 避免 CronScheduler 启动失败时 shutdown 抛 NameError
     cron_task = None
+    metrics_persist_task = None
+    file_cleanup_task = None
+    cleanup_task = None
 
     logger.info("正在加载配置: %s", CONFIG_PATH)
     config = load_config(CONFIG_PATH)
@@ -1119,7 +1150,14 @@ async def lifespan(app: FastAPI):
 
     # 启动监控指标按天持久化后台任务
     if metrics_store is not None and metrics_collector is not None:
+        def _log_persist_task_exception(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error("metrics_persist_task 异常退出: %r", exc, exc_info=exc)
         metrics_persist_task = asyncio.create_task(metrics_persist_loop())
+        metrics_persist_task.add_done_callback(_log_persist_task_exception)
         logger.info("监控指标持久化任务已启动")
 
     # Phase 6: 启动 CronScheduler 后台调度循环
@@ -1252,6 +1290,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("HealthChecker 初始化失败，健康检查降级: %s", e)
         health_checker = None
+
+    # 启动期安全告警：/reasoning/toggle 路由无鉴权风险检测（SubTask 14.5）
+    # security.api_key 未配置时，服务监听 0.0.0.0 存在远程调用风险
+    _security_cfg = config.get("security", {}) or {}
+    _api_key = _security_cfg.get("api_key", "")
+    if not _api_key:
+        logger.warning(
+            "[security] /reasoning/toggle 路由无鉴权，服务监听 %s 时存在远程调用风险，"
+            "建议配置 security.api_key",
+            host,
+        )
 
     try:
         yield
@@ -1609,6 +1658,8 @@ def chat_stream(req: ChatRequest):
                     session_id,
                     req.message,
                     cancel_event=cancel_event,
+                    is_cron=False,
+                    stream_manager=stream_manager,
                 ).__aiter__()
                 while True:
                     try:
@@ -1647,12 +1698,35 @@ def chat_stream(req: ChatRequest):
                         return
 
                     if etype == "done":
-                        # done 事件补充 timestamp，不透传 messages（体积大）
-                        yield _sse_event({
+                        # done 事件补充 timestamp，透传 usage/reasoning_stats 等
+                        # 白名单字段，不透传 messages（体积大）
+                        done_evt = {
                             "type": "done",
                             "response": event.get("response", ""),
                             "timestamp": _now_iso(),
-                        })
+                            "is_complete": event.get("is_complete", True),
+                            "termination_reason": event.get("termination_reason", "normal"),
+                        }
+                        # usage 字段透传（含 reasoning_tokens）
+                        usage = event.get("usage")
+                        if usage is not None:
+                            done_evt["usage"] = usage
+                        # reasoning_stats 字段透传（effort/budget/reasoning_tokens）
+                        reasoning_stats = event.get("reasoning_stats")
+                        if reasoning_stats is not None:
+                            done_evt["reasoning_stats"] = reasoning_stats
+                        # content_blocks 字段透传（含 thinking block，保留原始顺序）
+                        content_blocks = event.get("content_blocks")
+                        if content_blocks is not None:
+                            done_evt["content_blocks"] = content_blocks
+                        # stop_reason 字段透传
+                        stop_reason = event.get("stop_reason")
+                        if stop_reason is not None:
+                            done_evt["stop_reason"] = stop_reason
+                        yield _sse_event(done_evt)
+                    elif etype == "reasoning":
+                        # reasoning 增量事件原样透传（含 text/signature）
+                        yield _sse_event(event)
                     else:
                         # text / tool / approval_request / approval_resolved /
                         # round_start / todo_init / todo_update / todo_complete
@@ -1800,6 +1874,76 @@ def flush_consolidation(background_tasks: BackgroundTasks):
     )
 
 
+@app.post("/reasoning/toggle")
+def reasoning_toggle(req: dict = Body(...)):
+    """切换 reasoning 模式开关（热更新，即时生效）。
+
+    body: ``{"enabled": bool, "session_id": Optional[str]}``
+    - ``enabled``: True 开启 / False 关闭
+    - ``session_id``: 可选，当前单用户模式忽略（预留多用户扩展）
+
+    鉴权预留：当前单用户模式不实装鉴权，未来注入 auth_hook 即可生效。
+    启动期安全告警：若 security.api_key 未配置，启动时打印 WARNING。
+    """
+    global orchestrator
+    if orchestrator is None or orchestrator.llm_client is None:
+        return JSONResponse(
+            content={"error": "LLMClient 尚未初始化"},
+            status_code=503,
+        )
+    enabled = bool(req.get("enabled", False))
+    # session_id 当前忽略（单用户模式），未来 per-session override 启用时使用
+    # session_id = req.get("session_id")
+    orchestrator.llm_client.main_reasoning_enabled = enabled
+    logger.info(
+        "reasoning 模式已切换: enabled=%s (main_reasoning_enabled)",
+        enabled,
+    )
+    return {
+        "enabled": enabled,
+        "main": {
+            "enabled": orchestrator.llm_client.main_reasoning_enabled,
+            "effort": orchestrator.llm_client.main_reasoning_effort,
+            "budget_tokens": orchestrator.llm_client.main_reasoning_budget_tokens,
+        },
+        "cron": {
+            "enabled": orchestrator.llm_client.cron_reasoning_enabled,
+            "effort": orchestrator.llm_client.cron_reasoning_effort,
+        },
+        "persist_thinking": orchestrator.llm_client.persist_thinking,
+    }
+
+
+@app.get("/reasoning/status")
+def reasoning_status():
+    """查询当前 reasoning 配置状态。
+
+    返回 main/consolidation/cron 配置 + persist_thinking 值。
+    鉴权预留：当前单用户模式不实装鉴权。
+    """
+    global orchestrator
+    if orchestrator is None or orchestrator.llm_client is None:
+        return JSONResponse(
+            content={"error": "LLMClient 尚未初始化"},
+            status_code=503,
+        )
+    return {
+        "main": {
+            "enabled": orchestrator.llm_client.main_reasoning_enabled,
+            "effort": orchestrator.llm_client.main_reasoning_effort,
+            "budget_tokens": orchestrator.llm_client.main_reasoning_budget_tokens,
+        },
+        "consolidation": {
+            "enabled": False,  # 强制关闭，避免成本浪费
+        },
+        "cron": {
+            "enabled": orchestrator.llm_client.cron_reasoning_enabled,
+            "effort": orchestrator.llm_client.cron_reasoning_effort,
+        },
+        "persist_thinking": orchestrator.llm_client.persist_thinking,
+    }
+
+
 @app.get("/health")
 def deep_health():
     """深度健康检查，逐层检测所有子系统组件。
@@ -1863,6 +2007,24 @@ def get_metrics_history(days: int = Query(default=30, ge=1, le=90)):
     except Exception as e:
         logger.error("查询监控历史失败: %s", e)
         return JSONResponse([], status_code=500)
+
+
+@app.post("/metrics/reset")
+def reset_metrics():
+    """重置所有指标计数器与直方图，并同步重置持久化 baseline。
+
+    前端监控面板"重置指标"按钮调用。重置后：
+    - metrics_collector 的所有计数器清零
+    - metrics_persist_loop 的 baseline 同步重置，避免重置后 delta 丢失
+    - 已持久化的历史数据不受影响
+    """
+    global _metrics_baseline_reset
+    if metrics_collector is None:
+        return JSONResponse({"ok": False, "error": "监控未启用"}, status_code=400)
+    metrics_collector.reset()
+    _metrics_baseline_reset = True
+    logger.info("监控指标已重置（metrics_collector + baseline）")
+    return JSONResponse({"ok": True})
 
 
 @app.get("/metrics/signals")
@@ -3535,6 +3697,9 @@ _RESTART_REQUIRED_KEYS = {
     "files.ocr.vision_llm.model",
     "files.ocr.vision_llm.api_key",
     "files.ocr.vision_llm.base_url",
+    # reasoning.main.provider/model 涉及 reasoning backend 客户端重建，需重启
+    "reasoning.main.provider",
+    "reasoning.main.model",
 }
 
 # 配置取值哨兵：用于区分「配置项缺失」与「配置项值为 None / 空容器」
@@ -3568,6 +3733,16 @@ _RUNTIME_HOTUPDATE_MAP = {
     "guardrails.input_scan.enabled": ("guardrail_engine.input_scan_enabled", bool),
     "guardrails.sanitizer.enabled": ("guardrail_engine.sanitizer_enabled", bool),
     "guardrails.output_filter.enabled": ("guardrail_engine.output_filter_enabled", bool),
+    # Reasoning 模式热更新：通过 LLMClient property setter 转发到
+    # _main_backend.reasoning_profile 或 history_buffer.persist_thinking。
+    # property setter 在 LLMClient 层实现（Task 7），此处仅注册条目。
+    # 禁止直接访问私有属性（如 llm_client._main_backend.reasoning_profile）。
+    "reasoning.main.enabled": ("llm_client.main_reasoning_enabled", bool),
+    "reasoning.main.effort": ("llm_client.main_reasoning_effort", str),
+    "reasoning.main.budget_tokens": ("llm_client.main_reasoning_budget_tokens", int),
+    "reasoning.cron.enabled": ("llm_client.cron_reasoning_enabled", bool),
+    "reasoning.cron.effort": ("llm_client.cron_reasoning_effort", str),
+    "reasoning.persist_thinking": ("history_buffer.persist_thinking", bool),
 }
 
 

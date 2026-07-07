@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 # CONSOLIDATION_PROMPT 运行时需要使用，必须真实导入；兼容相对导入与直接运行两种方式
 try:
     from ..llm.prompts import CONSOLIDATION_PROMPT
+    from ..llm.reasoning_profiles import ReasoningConfig
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
     from pathlib import Path
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     if _SRC_DIR not in sys.path:
         sys.path.insert(0, _SRC_DIR)
     from llm.prompts import CONSOLIDATION_PROMPT  # type: ignore
+    from llm.reasoning_profiles import ReasoningConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +307,8 @@ class ConsolidationEngine:
 
         try:
             response = self.llm_client.chat_consolidation_sync(
-                messages, system=system_prompt
+                messages, system=system_prompt,
+                reasoning_cfg=ReasoningConfig(enabled=False),
             )
         except Exception as e:
             # LLM 调用失败（含 RuntimeError / ConnectionError / TimeoutError 等）：

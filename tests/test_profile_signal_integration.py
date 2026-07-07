@@ -82,7 +82,8 @@ class _MockLLMClient:
         self._facts = facts
 
     def chat_consolidation_sync(
-        self, messages: List[Dict[str, Any]], system: str = ""
+        self, messages: List[Dict[str, Any]], system: str = "",
+        reasoning_cfg: Any = None,
     ) -> _MockLLMResponse:
         """返回 JSON 格式的事实列表（包装为 _MockLLMResponse）。"""
         import json
@@ -360,17 +361,17 @@ class TestL1ThresholdTrigger(_IntegrationTestBase):
         self.assertEqual(status[0]["status"], "triggered")
 
     def test_emotion_boost_accelerates_threshold(self) -> None:
-        """情感增强器加速阈值达成：'我爱 Rust' 每次 +3（基础1 + 情感2）。"""
+        """情感增强器加速阈值达成：'我爱 Rust' 每次 +4（基础1 + 强情感3）。"""
         self._write_profile("")
         self.pool._profile_text_hash = None
 
-        # 3 次"我爱 Rust" → 每次 +3 → count=9 ≥ 7，触发
+        # 3 次"我爱 Rust" → 每次 +4 → count=12 ≥ 7，触发
         for _ in range(3):
             self.handler(action="add", section="技术栈", content="我爱 Rust")
         # 应已触发 enqueue
         self.assertEqual(len(self.consolidation.enqueued), 1)
         status = self.pool.get_status()
-        self.assertEqual(status[0]["count"], 9)
+        self.assertEqual(status[0]["count"], 12)
         self.assertEqual(status[0]["status"], "triggered")
 
 
@@ -466,7 +467,7 @@ class TestL3ConsolidationDispatch(_IntegrationTestBase):
         self.assertEqual(written_facts[0][0]["content"], "用户喜欢 Go 语言")
 
     def test_l3_emotion_boost_accelerates_threshold(self) -> None:
-        """L3 facts 含情感词时也走情感增强：'我爱 Rust' weight=2+2=4。"""
+        """L3 facts 含情感词时也走情感增强：'我爱 Rust' weight=2+3=5。"""
         facts = [{"type": "user_profile", "content": "我爱 Rust"}]
         pool = self._make_signal_pool()
         engine = self._make_consolidation_engine(facts, signal_pool=pool)
@@ -478,8 +479,8 @@ class TestL3ConsolidationDispatch(_IntegrationTestBase):
 
         status = pool.get_status()
         self.assertEqual(len(status), 1)
-        # weight=2 + emotion_boost=2 = 4
-        self.assertEqual(status[0]["count"], 4)
+        # weight=2 + emotion_boost=3（强情感"爱"）= 5
+        self.assertEqual(status[0]["count"], 5)
 
 
 # ---------------------------------------------------------------------------

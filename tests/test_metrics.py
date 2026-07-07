@@ -154,6 +154,65 @@ class TestMetricsCollector(unittest.TestCase):
         self.assertEqual(snap["llm_latency_ms"]["count"], 6)
         self.assertEqual(snap["llm_latency_ms"]["sum"], 30.0 + 80.0 + 150.0 + 350.0 + 800.0 + 50000.0)
 
+    # ==================================================================
+    # spec integrate-llm-reasoning-mode Task 22 SubTask 22.31
+    # reasoning_tokens 4 处同步单测（__init__/observe_llm_usage/snapshot/reset）
+    # ==================================================================
+
+    def test_reasoning_tokens_init_zero(self):
+        """__init__：reasoning_tokens 初始为 0。"""
+        collector = MetricsCollector()
+        self.assertEqual(collector.get_reasoning_tokens(), 0)
+
+    def test_reasoning_tokens_accumulate(self):
+        """observe_llm_usage：reasoning_tokens 正确累加。"""
+        collector = MetricsCollector()
+        collector.observe_llm_usage(
+            {"input_tokens": 100, "output_tokens": 50, "reasoning_tokens": 80}, 350.0
+        )
+        collector.observe_llm_usage(
+            {"input_tokens": 200, "output_tokens": 100, "reasoning_tokens": 120}, 500.0
+        )
+        self.assertEqual(collector.get_reasoning_tokens(), 200)
+
+    def test_reasoning_tokens_missing_defaults_zero(self):
+        """observe_llm_usage：reasoning_tokens 缺失时不报错，默认 0。"""
+        collector = MetricsCollector()
+        collector.observe_llm_usage(
+            {"input_tokens": 100, "output_tokens": 50}, 350.0
+        )
+        self.assertEqual(collector.get_reasoning_tokens(), 0)
+
+    def test_reasoning_tokens_in_snapshot(self):
+        """snapshot：包含 llm_reasoning_tokens_total 字段。"""
+        collector = MetricsCollector()
+        collector.observe_llm_usage(
+            {"input_tokens": 100, "output_tokens": 50, "reasoning_tokens": 150}, 350.0
+        )
+        snap = collector.snapshot()
+        self.assertIn("llm_reasoning_tokens_total", snap)
+        self.assertEqual(snap["llm_reasoning_tokens_total"], 150)
+
+    def test_reasoning_tokens_reset(self):
+        """reset：reasoning_tokens 清零。"""
+        collector = MetricsCollector()
+        collector.observe_llm_usage(
+            {"input_tokens": 100, "output_tokens": 50, "reasoning_tokens": 150}, 350.0
+        )
+        self.assertEqual(collector.get_reasoning_tokens(), 150)
+        collector.reset()
+        self.assertEqual(collector.get_reasoning_tokens(), 0)
+
+    def test_reasoning_tokens_snapshot_deepcopy(self):
+        """snapshot：返回深拷贝，修改不影响内部状态。"""
+        collector = MetricsCollector()
+        collector.observe_llm_usage(
+            {"input_tokens": 100, "output_tokens": 50, "reasoning_tokens": 150}, 350.0
+        )
+        snap = collector.snapshot()
+        snap["llm_reasoning_tokens_total"] = 99999
+        self.assertEqual(collector.get_reasoning_tokens(), 150)
+
 
 class TestFeedbackMetrics(unittest.TestCase):
     """Phase 1 反馈监控扩展：termination_reason / error_class / retry 计数器。"""

@@ -749,7 +749,7 @@ class TestSignalPoolV3DirectionProtection(_SignalPoolTestBase):
 
 
 class TestBackfillConsolidate(_SignalPoolTestBase):
-    """v1/v2 → v3 回填：加载旧数据时自动合并重复信号。"""
+    """v1/v2/v3/v4 → v5 回填：加载旧数据时自动拆分复合句 + 合并重复信号。"""
 
     def test_backfill_consolidates_v1_data(self) -> None:
         # 写入 v1 格式数据（version=1），含 4 条重复"用户讨厌emoji"信号
@@ -784,15 +784,15 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
         # 合并后的 count 应累加（2+2+1=5）
         merged = [s for s in status if "讨厌" in s["content"]][0]
         self.assertGreaterEqual(merged["count"], 5)
-        # flush 后 version 应升至 3
+        # flush 后 version 应升至 5
         pool2.flush()
         saved = json.loads(self.pool_path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 5)
 
     def test_backfill_idempotent(self) -> None:
-        # v3 数据不触发回填
+        # v5 数据不触发回填
         import json
-        v3_data = {
+        v5_data = {
             "signals": [
                 {"id": "sig_0001", "content": "用户讨厌emoji", "keywords": ["讨厌", "用户讨厌", "emoji"],
                  "count": 5, "sources": ["L1"], "first_seen": "2026-07-01T00:00:00",
@@ -801,15 +801,15 @@ class TestBackfillConsolidate(_SignalPoolTestBase):
                  "count": 2, "sources": ["L1"], "first_seen": "2026-07-01T00:00:00",
                  "last_seen": "2026-07-01T00:00:00", "status": "pending", "section": "沉淀笔记"},
             ],
-            "version": 3,
+            "version": 5,
         }
-        self.pool_path.write_text(json.dumps(v3_data, ensure_ascii=False), encoding="utf-8")
+        self.pool_path.write_text(json.dumps(v5_data, ensure_ascii=False), encoding="utf-8")
         pool2 = SignalPool(
             pool_path=self.pool_path,
             consolidation_engine=self.engine,
             profile_path=self.profile_path,
         )
-        # v3 数据不触发回填，2 条信号保持不变
+        # v5 数据不触发回填，2 条信号保持不变
         status = pool2.get_status()
         self.assertEqual(len(status), 2)
 

@@ -181,6 +181,13 @@ function renderSettingsForm(config) {
         </div>
         <label class="switch"><input type="checkbox" data-guardrail="guardrails.output_filter.enabled" ${outputFilterEnabled?'checked':''}><span class="slider"></span></label>
       </div>
+      <div class="switch-row">
+        <div>
+          <div class="switch-label">思考模式（LLM 推理增强）</div>
+          <div class="hint">开启后 LLM 在回复前进行深度思考，质量更高但耗时更长。下一条消息生效</div>
+        </div>
+        <label class="switch"><input type="checkbox" data-reasoning-toggle="main"><span class="slider"></span></label>
+      </div>
     </div>`;
 
   const secReadPaths = `
@@ -506,6 +513,8 @@ function renderSettingsForm(config) {
     </div>`;
 
   bindGuardrailToggles();
+  bindReasoningToggle();
+  syncReasoningStatus();
   bindSettingsNav();
 }
 
@@ -635,6 +644,63 @@ function bindGuardrailToggles() {
     el.addEventListener('change', () => onGuardrailToggle(el));
   });
 }
+
+// ========== 思考模式开关（spec integrate-llm-reasoning-mode Task 18）==========
+
+const _REASONING_TOGGLE_KEY = 'hermes_reasoning_enabled';
+
+// SubTask 18.6：页面加载/设置弹窗打开时调 GET /reasoning/status 同步开关状态
+async function syncReasoningStatus() {
+  try {
+    const data = await api('/reasoning/status');
+    const enabled = data && data.main && data.main.enabled === true;
+    const el = document.querySelector('[data-reasoning-toggle]');
+    if (el) el.checked = enabled;
+    try { localStorage.setItem(_REASONING_TOGGLE_KEY, enabled ? '1' : '0'); } catch {}
+  } catch {
+    // /reasoning/status 不可用时默认关闭
+    const el = document.querySelector('[data-reasoning-toggle]');
+    if (el) el.checked = false;
+  }
+}
+
+// SubTask 18.3/18.4：开关切换 → POST /reasoning/toggle，关闭时二次确认
+async function onReasoningToggle(el) {
+  const enabled = el.checked;
+  // SubTask 18.4：关闭时二次确认
+  if (!enabled && !confirm('关闭思考模式后，LLM 将不再进行深度推理，回复质量可能降低。确认关闭？')) {
+    el.checked = true;
+    return;
+  }
+  try {
+    await api('/reasoning/toggle', {
+      method: 'POST',
+      body: { enabled: enabled },
+    });
+    try { localStorage.setItem(_REASONING_TOGGLE_KEY, enabled ? '1' : '0'); } catch {}
+    showToast(`思考模式已${enabled ? '开启' : '关闭'}，下一条消息生效`, 'success');
+  } catch (e) {
+    el.checked = !enabled;
+    showToast('更新思考模式失败: ' + e.message, 'error');
+  }
+}
+
+// 绑定 [data-reasoning-toggle] 开关的 change 事件
+function bindReasoningToggle() {
+  document.querySelectorAll('[data-reasoning-toggle]').forEach(el => {
+    el.addEventListener('change', () => onReasoningToggle(el));
+  });
+}
+
+// SubTask 18.7：多 tab 实时同步 —— 监听 localStorage 变化
+window.addEventListener('storage', (e) => {
+  if (e.key === _REASONING_TOGGLE_KEY) {
+    const enabled = e.newValue === '1';
+    document.querySelectorAll('[data-reasoning-toggle]').forEach(el => {
+      el.checked = enabled;
+    });
+  }
+});
 
 // 暴露给其他模块
 window.HermesChatSettings = {

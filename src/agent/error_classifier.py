@@ -57,6 +57,10 @@ class ErrorClass(Enum):
     PERMISSION = "permission"
     TIMEOUT = "timeout"
     INTERNAL_ERROR = "internal_error"
+    # 新增（spec integrate-llm-reasoning-mode Task 16）
+    # LLM reasoning 配置非法：budget_tokens 超限 / effort 不支持 /
+    # thinking type 未启用 / adaptive 不支持 / max_tokens < budget 等
+    REASONING_CONFIG_INVALID = "reasoning_config_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +118,24 @@ _TIMEOUT_RE = re.compile(r"超时|timeout|timed.?out", re.IGNORECASE)
 # 真实工具错误：``文件不存在: <path>`` / ``路径不存在: <path>`` / ``not found: xxx``
 _NOT_FOUND_RE = re.compile(
     r"不存在|not found|no such|doesn.?t exist|找不到|未找到",
+    re.IGNORECASE,
+)
+
+# Reasoning 配置非法关键词（spec integrate-llm-reasoning-mode Task 16.2）
+# 覆盖主流 LLM provider 返回的 reasoning 配置校验失败错误信息：
+# - ``budget_tokens``：直接字面量（Anthropic / OpenAI 通用字段名）
+# - ``thinking.*budget``：``thinking budget must be at least 1024`` 等
+# - ``reasoning.*effort``：``invalid reasoning effort 'high'`` 等
+# - ``thinking.*type.*enabled``：``thinking.type must be 'enabled'`` 等
+# - ``adaptive.*not.*supported``：``adaptive overheats not supported`` 等
+# - ``max_tokens.*budget``：``max_tokens must be greater than budget_tokens`` 等
+_REASONING_CONFIG_RE = re.compile(
+    r"budget_tokens"
+    r"|thinking.*budget"
+    r"|reasoning.*effort"
+    r"|thinking.*type.*enabled"
+    r"|adaptive.*not.*supported"
+    r"|max_tokens.*budget",
     re.IGNORECASE,
 )
 
@@ -388,6 +410,18 @@ class ErrorClassifier:
             scan_text, re.IGNORECASE,
         ):
             return ErrorClass.PARAM_ERROR, "parameter validation failed"
+
+        # spec integrate-llm-reasoning-mode Task 16.3：REASONING_CONFIG_INVALID
+        # LLM reasoning 配置非法（budget_tokens 超限 / effort 不支持 /
+        # thinking type 未启用 / adaptive 不支持 / max_tokens < budget）。
+        # 触发路径（SubTask 16.4）：backend.chat 抛 400 异常 →
+        # ReactLoop 捕获 → 异常 message 作为 result 字符串进入 ErrorClassifier。
+        # 放在 PARAM_ERROR 后、PERMISSION 前：reasoning 配置错误比通用权限错误
+        # 更具体，优先匹配避免被 PERMISSION 误吞。
+        if _REASONING_CONFIG_RE.search(scan_text):
+            return ErrorClass.REASONING_CONFIG_INVALID, (
+                "reasoning config invalid (budget_tokens/effort/thinking type)"
+            )
 
         # Phase D 新增：PERMISSION —— 权限不足
         # 注意：HTTP 403 已在 _classify_http 路径识别为 ANTI_CRAWLER，

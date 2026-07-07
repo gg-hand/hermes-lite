@@ -197,17 +197,15 @@ def _split_atomic(content: str) -> List[str]:
 def _extract_keywords(content: str) -> Set[str]:
     """从文本提取关键词集合（用于 Jaccard 去重匹配）。
 
-    策略（v4，核心短语提取）：
+    策略（v3，长词优先匹配）：
     - 情感动词：通过 _scan_emotion_verbs 长词优先匹配，避免子串截胡
+      （"不喜欢"含"喜欢"不再被双重计数）
     - 中文整段：连续汉字段（长度≥2）作为整段关键词，过滤停用词
-    - 核心短语：情感动词前2字+情感动词（捕捉"用户讨厌"等核心模式），
-      替代 v3 的 4 字滑窗——4 字滑窗对所有长段生成子串，噪音过多导致
-      相似信号 Jaccard 被稀释（实测 5 条"用户讨厌emoji"信号两两 Jaccard
-      仅 0.10~0.18，全部低于 0.25 阈值无法合并）
+    - 4 字滑窗：长段（≥6 字）补 4 字子串，捕捉"用户讨厌"这类核心短语
     - 英文：连续字母段（长度≥2），lowercase，过滤停用词
 
-    v3 → v4 变更：去掉 4 字滑窗（噪音过多），改用核心短语提取（只对
-    情感动词附近提取，精准捕捉"主语+情感"模式）。
+    v2 → v3 变更：情感动词抽取改用 _scan_emotion_verbs（长词优先 + 区间占用），
+    防止"不喜欢"被"喜欢"截胡导致正负方向未区分。
 
     参数:
         content: 原始文本。
@@ -224,22 +222,20 @@ def _extract_keywords(content: str) -> Set[str]:
     for verb, _idx in _scan_emotion_verbs(content):
         keywords.add(verb)
 
-    # 2. 中文整段（连续汉字，len≥2，过滤停用词）
+    # 2. 中文整段（连续汉字，len≥2，过滤停用词）+ 4 字滑窗
     for match in re.finditer(r"[\u4e00-\u9fa5]+", content):
         segment = match.group()
         if len(segment) < 2 or segment in _ZH_STOPWORDS:
             continue
         keywords.add(segment)
+        # 2b. 长段（≥6 字）补 4 字滑窗（捕捉"用户讨厌"核心短语）
+        if len(segment) >= 6:
+            for i in range(len(segment) - 3):
+                sub = segment[i:i + 4]
+                if sub not in _ZH_STOPWORDS:
+                    keywords.add(sub)
 
-    # 3. 核心短语：情感动词前2字 + 情感动词（捕捉"用户讨厌"等核心模式）
-    for verb, idx in _scan_emotion_verbs(content):
-        prefix_start = max(0, idx - 2)
-        core = content[prefix_start:idx + len(verb)]
-        for seg in re.findall(r"[\u4e00-\u9fa5]+", core):
-            if len(seg) >= 2 and seg not in _ZH_STOPWORDS:
-                keywords.add(seg)
-
-    # 4. 英文单词（len≥2，lowercase，过滤停用词）
+    # 3. 英文单词（len≥2，lowercase，过滤停用词）
     for match in re.finditer(r"[A-Za-z]+", content):
         word = match.group().lower()
         if len(word) >= 2 and word not in _EN_STOPWORDS:
@@ -472,15 +468,12 @@ class SignalPool:
     # 入池前查重画像
     # ------------------------------------------------------------------
     def _already_in_profile(self, content: str) -> bool:
-        """检查画像是否已包含该信号信息。
+        """检查画像是否已包含该信号信息。覆盖率 ≥ PROFILE_DEDUP_THRESHOLD 视为已有。
 
-        双层判定：
-        1. 关键词覆盖率 ≥ PROFILE_DEDUP_THRESHOLD（非对称，画像关键词稀释时仍能工作）
-        2. 子串包含：信号去掉常见前缀（"用户"/"我"等）后是画像文本的子串
-
-        第二层补充 v4 关键词策略的盲区：信号 "用户偏好简短回复" 与画像
-        "偏好简短回复" 在 v4 关键词集下交集仅 {"偏好"}，覆盖率 0.33 < 0.5
-        无法跳过；但语义上画像已记录该信息，应跳过避免重复累积。
+        采用非对称覆盖率（新信号关键词被画像覆盖的比例），而非对称 Jaccard。
+        画像可能包含多个无关 section（如"用户画像"/"我和你"等标题），其关键词
+        会稀释 Jaccard 分母；覆盖率只关心"新信号的核心信息是否已被记录"，
+        更符合查重语义。
 
         参数:
             content: 待入池的信号内容。
@@ -495,15 +488,7 @@ class SignalPool:
         if not signal_keywords:
             return False
         coverage = len(signal_keywords & profile_keywords) / len(signal_keywords)
-        if coverage >= self.PROFILE_DEDUP_THRESHOLD:
-            return True
-        # 子串包含检查：信号去掉常见前缀后是否在画像中
-        profile_text = self._load_profile_text()
-        if profile_text:
-            stripped = re.sub(r"^(用户|我|这个|一个|那个)", "", content.strip())
-            if stripped and stripped != content.strip() and stripped in profile_text:
-                return True
-        return False
+        return coverage >= self.PROFILE_DEDUP_THRESHOLD
 
     def _get_profile_keywords(self) -> Set[str]:
         """获取画像关键词（带缓存，hash 变化时刷新）。"""
@@ -825,11 +810,9 @@ class SignalPool:
     def _load(self) -> None:
         """从 JSON 文件加载信号池。文件不存在或解析失败时初始化空池。
 
-        v1/v2/v3 → v4 回填：version < 4 时用 v4 抽取器（核心短语提取）重算 keywords
+        v1/v2 → v3 回填：version < 3 时用新抽取器（长词优先匹配）重算 keywords
         并合并重复信号（含方向相反保护）。
-        v4 → v5 回填：version < 5 时对旧复合句信号做 _split_atomic 拆分，
-        解决旧数据未拆分导致 Jaccard 稀释问题。
-        幂等：v5 数据加载时 version >= 5 不会触发回填。
+        幂等：v3 数据加载时 version >= 3 不会触发回填。
         """
         try:
             if not self._pool_path.exists():
@@ -851,10 +834,9 @@ class SignalPool:
                     except ValueError:
                         pass
             self._id_counter = max_num
-            # v1/v2/v3 → v4 回填：重新抽取 keywords（v4 去掉4字滑窗噪音，
-            # 改用核心短语提取）+ 合并重复信号（含方向相反保护）
-            # v4 → v5 回填：对旧复合句信号做 _split_atomic 拆分 + 合并
-            if version < 5:
+            # v1/v2 → v3 回填：重新抽取 keywords（去除旧子串重复如"不喜欢"+"喜欢"并存）
+            # + 合并重复信号（含新方向相反保护）
+            if version < 3:
                 self._backfill_consolidate()
             logger.info("信号池已加载: %d 条信号 (v%d)", len(self._signals), version)
         except (OSError, json.JSONDecodeError) as e:
@@ -863,53 +845,16 @@ class SignalPool:
             self._id_counter = 0
 
     def _backfill_consolidate(self) -> None:
-        """v1/v2/v3/v4 → v5 回填：拆分复合句 + 重新抽取 keywords + 合并重复信号。
+        """v1/v2 → v3 回填：重新抽取 keywords + 合并重复信号。
 
         在 _load（__init__）中调用，此时单线程，_save_debounced 内部加锁安全。
-        幂等：v5 数据加载时 version >= 5 不会触发本方法。
+        幂等：v3 数据加载时 version >= 3 不会触发本方法。
 
-        v4 变更：_extract_keywords 去掉4字滑窗（噪音过多稀释 Jaccard），
-        改用核心短语提取（情感动词前2字+动词）。
-        v5 变更：对旧复合句信号做 _split_atomic 拆分。v4 之前入池的信号
-        content 可能是复合句（如"用户讨厌emoji，偏好简洁正经的交流方式"），
-        未经过 _split_atomic 拆分，导致次要事实噪音稀释主事实关键词集，
-        相似信号 Jaccard 低于 0.25 阈值无法合并。拆分后子信号继承原信号
-        count/sources/first_seen/last_seen/status，然后重新合并。
+        v3 变更：_extract_keywords 改用 _scan_emotion_verbs 长词优先匹配，
+        _has_distinct_objects 新增方向相反保护。
         """
-        # 1. 拆分复合句：对每个信号调用 _split_atomic，多于1部分则替换为子信号
-        # 子信号继承原信号的 count/sources/first_seen/last_seen/status/section
-        # （每次观察复合句时所有子事实都被观察到，所以 count 全量继承）
-        split_signals: List[Signal] = []
-        split_count = 0
-        for s in self._signals:
-            parts = _split_atomic(s.content)
-            if len(parts) <= 1:
-                split_signals.append(s)
-                continue
-            split_count += 1
-            for part in parts:
-                child = Signal(
-                    id=self._new_id(),
-                    content=part,
-                    keywords=sorted(_extract_keywords(part)),
-                    category=s.category,
-                    count=s.count,
-                    sources=list(s.sources),
-                    first_seen=s.first_seen,
-                    last_seen=s.last_seen,
-                    status=s.status,
-                    section=s.section,
-                )
-                split_signals.append(child)
-        if split_count:
-            logger.info("信号池回填拆分 %d 条复合句信号", split_count)
-        self._signals = split_signals
-
-        # 2. 重新抽取 keywords（对未拆分的信号也要重算，适配 v4 抽取器）
         for s in self._signals:
             s.keywords = sorted(_extract_keywords(s.content))
-
-        # 3. 合并重复信号
         merged_ids: Set[str] = set()
         for i, target in enumerate(self._signals):
             if target.id in merged_ids:
@@ -939,8 +884,7 @@ class SignalPool:
         if merged_ids:
             self._signals = [s for s in self._signals if s.id not in merged_ids]
             logger.info("信号池回填合并 %d 条重复信号", len(merged_ids))
-        # 即使无合并也需保存：keywords 已用 v4 重新提取，需持久化新版本号
-        self._save_debounced()
+            self._save_debounced()
 
     def _save_debounced(self) -> None:
         """debounce 1 秒异步写入，避免频繁 IO。
@@ -958,7 +902,7 @@ class SignalPool:
         with self._lock:
             data = {
                 "signals": [s.to_dict() for s in self._signals],
-                "version": 5,
+                "version": 3,
             }
         try:
             self._pool_path.parent.mkdir(parents=True, exist_ok=True)
