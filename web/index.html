@@ -84,47 +84,95 @@
     </div>
     <div class="capability-grid">
       <div class="capability-card">
-        <div class="capability-icon">M</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+            <line x1="12" y1="22.08" x2="12" y2="12"/>
+          </svg>
+        </div>
         <div class="capability-title">长期记忆</div>
         <div class="capability-desc">三层架构：短期缓冲 → ChromaDB 向量库 → memory.md 画像。巩固 + 衰减 + surprise-gating。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">●</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <circle cx="12" cy="12" r="9"/>
+            <line x1="12" y1="3" x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="21"/>
+            <line x1="3" y1="12" x2="6" y2="12"/>
+            <line x1="18" y1="12" x2="21" y2="12"/>
+          </svg>
+        </div>
         <div class="capability-title">信号池画像</div>
         <div class="capability-desc">L1/L2/L3 三层信号统一入口，阈值 7 次才写入，Jaccard 去重 + 情感增强，过滤偶发噪音。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">G</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
         <div class="capability-title">AI 护栏</div>
         <div class="capability-desc">输入扫描 + 工具脱敏 + 输出 PII 过滤三层 fail-open 软护栏，与硬拦截构成 defense in depth。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">W</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </div>
         <div class="capability-title">Workflow 引擎</div>
         <div class="capability-desc">拓扑执行 + retry/fallback/skip/abort 四策略 + 条件跳过 + StepTrace 追踪，多步任务编排。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">R</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+          </svg>
+        </div>
         <div class="capability-title">ReAct 工具链</div>
         <div class="capability-desc">Core/Deferred 双层注册，17 种结构化错误，卡死两阶段检测，路径黑白名单保护。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">K</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+        </div>
         <div class="capability-title">知识库</div>
         <div class="capability-desc">PDF/DOCX/TXT/MD/图片上传，自动分块向量化 + OCR，上传后自动注入 LLM 上下文。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">C</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+        </div>
         <div class="capability-title">Cron 调度</div>
         <div class="capability-desc">提议-确认协议 + cron_tool 子进程隔离 + 工具快照锁定，独立 /scheduler 页。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">I</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <path d="M3 12 L7 7 L7 17 Z" fill="currentColor" stroke="none"/>
+          </svg>
+        </div>
         <div class="capability-title">流式中断</div>
         <div class="capability-desc">SSE 推送 + 立即/优雅中断，断点检测在自然边界切出，per-token 60s 超时。</div>
       </div>
       <div class="capability-card">
-        <div class="capability-icon">◎</div>
+        <div class="capability-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"/>
+            <line x1="12" y1="20" x2="12" y2="4"/>
+            <line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+        </div>
         <div class="capability-title">监控可观测</div>
         <div class="capability-desc">/monitor 独立页 Canvas 直方图 + 信号池攻略进度条 + Metrics SQLite 持久化趋势。</div>
       </div>
@@ -141,28 +189,46 @@
     <div class="react-flow">
       <div class="react-step">
         <div class="react-step-num">01</div>
-        <div class="react-step-icon">💭</div>
+        <div class="react-step-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18h6"/><path d="M10 22h4"/>
+            <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2v.3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V17c0-.7.4-1.5 1-2A7 7 0 0 0 12 2z"/>
+          </svg>
+        </div>
         <div class="react-step-name">思考</div>
         <div class="react-step-desc">LLM 分析上下文<br>决定下一步行动</div>
       </div>
       <div class="react-arrow">→</div>
       <div class="react-step">
         <div class="react-step-num">02</div>
-        <div class="react-step-icon">🔧</div>
+        <div class="react-step-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+          </svg>
+        </div>
         <div class="react-step-name">行动</div>
         <div class="react-step-desc">调用工具执行<br>安全审批拦截高危</div>
       </div>
       <div class="react-arrow">→</div>
       <div class="react-step">
         <div class="react-step-num">03</div>
-        <div class="react-step-icon">👁</div>
+        <div class="react-step-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </div>
         <div class="react-step-name">观察</div>
         <div class="react-step-desc">工具返回结果<br>注入下一轮上下文</div>
       </div>
       <div class="react-arrow">↻</div>
       <div class="react-step">
         <div class="react-step-num">04</div>
-        <div class="react-step-icon">✓</div>
+        <div class="react-step-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
         <div class="react-step-name">完成</div>
         <div class="react-step-desc">任务达成或触发上限<br>总结性回复输出</div>
       </div>

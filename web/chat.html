@@ -74,7 +74,23 @@
         </div>
       </div>
     </div>
-    <!-- 底部：设置按钮（弹出菜单） -->
+    <!-- 底部：快捷入口 + 设置按钮 -->
+    <div class="sidebar-quicklinks">
+      <a href="/scheduler" class="sidebar-quicklink" id="quicklinkScheduler" title="调度管理">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        <span>调度</span>
+        <span class="quicklink-badge" id="schedulerBadge" hidden></span>
+      </a>
+      <a href="/monitor" class="sidebar-quicklink" id="quicklinkMonitor" title="系统监控">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+        </svg>
+        <span>监控</span>
+      </a>
+    </div>
     <div class="sidebar-footer">
       <button class="nav-item" id="btnSettingsFlyout">
         <span class="nav-icon">⚙</span><span class="nav-label">设置</span>
@@ -99,7 +115,20 @@
     <div class="main-header">
       <button class="menu-toggle" id="menuToggle" title="切换侧边栏">&#9776;</button>
       <span class="session-title" id="sessionTitle">未选择会话</span>
-      <span class="status-dot" id="statusDot"></span>
+
+      <!-- Task 3: 顶栏上下文（模型 / 会话名 / 连接状态） -->
+      <div class="topbar-context">
+        <div class="topbar-model" id="topbarModel" title="当前主模型">
+          <span class="topbar-model-label">模型</span>
+          <span class="topbar-model-value">加载中...</span>
+        </div>
+        <div class="topbar-session-name" id="topbarSessionName" title="点击重命名">
+          <span class="topbar-session-text">新会话</span>
+        </div>
+        <div class="topbar-connection" id="topbarConnection" title="连接状态">
+          <span class="topbar-connection-dot"></span>
+        </div>
+      </div>
 
       <!-- 主题切换器 -->
       <div class="topbar-actions">
@@ -141,6 +170,12 @@
              accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif">
     </div>
   </main>
+</div>
+
+<div class="chat-footer">
+  <a href="#" id="btnShowCheatsheet" class="cheatsheet-link">⌨ 快捷键</a>
+  <span class="chat-footer-divider">·</span>
+  <span class="chat-footer-text">hermes-lite v0.1.0</span>
 </div>
 
 <!-- 设置弹窗（高级设置） -->

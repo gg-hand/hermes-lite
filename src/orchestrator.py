@@ -648,6 +648,10 @@ class Orchestrator:
                 # 反向注入到 consolidation_engine，使 L3 提取的 user_profile
                 # 事实走信号池累积（weight=2）
                 self.consolidation_engine.signal_pool = self.signal_pool
+                # 启动后处理存量 triggered 信号：让它们重新入队 + 异步触发
+                # consolidate 立即写入画像，避免永远卡在池中（count 已达阈值
+                # 但未消费的情况）。
+                self.signal_pool.flush_triggered_signals()
             except Exception as e:
                 logger.warning(
                     "SignalPool 初始化失败，降级为 None: %s", e

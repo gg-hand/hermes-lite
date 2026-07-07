@@ -43,6 +43,12 @@ let memorySearchBtnEl = null;
 let memorySearchInputEl = null;
 let memoryTypeFilterEl = null;
 let memoryListEl = null;
+// Task 3: 顶栏上下文元素引用
+let topbarModelEl = null;
+let topbarModelValueEl = null;
+let topbarSessionNameEl = null;
+let topbarSessionTextEl = null;
+let topbarConnectionEl = null;
 
 // ========== Markdown 渲染 ==========
 function renderMarkdown(text) {

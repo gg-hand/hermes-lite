@@ -1089,3 +1089,148 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
+
+/* ---------- 健康检查 hover 浮窗（Task 5） ---------- */
+.uxp-monitor-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 400px;
+  min-width: 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  word-wrap: break-word;
+  white-space: normal;
+}
+.uxp-monitor-tooltip.visible { opacity: 1; }
+.uxp-monitor-tooltip .tooltip-message {
+  color: var(--text-primary);
+  margin-bottom: 0;
+  word-wrap: break-word;
+}
+.uxp-monitor-tooltip .tooltip-detail {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  word-wrap: break-word;
+}
+
+/* ========== 趋势 sparkline（Task 6） ========== */
+.uxp-sparklines {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.uxp-sparkline {
+  background: var(--glass-bg, rgba(255,255,255,0.04));
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px;
+}
+.uxp-sparkline-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.uxp-sparkline-svg {
+  width: 100%;
+  height: 32px;
+  display: block;
+}
+.uxp-sparkline-path {
+  fill: none;
+  stroke: var(--accent, #f59e0b);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.uxp-sparkline-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-top: 2px;
+}
+.uxp-sparkline.empty .uxp-sparkline-svg,
+.uxp-sparkline.empty .uxp-sparkline-value { display: none; }
+.uxp-sparkline.empty::after {
+  content: '暂无数据';
+  display: block;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 12px 0 4px;
+}
+@media (max-width: var(--bp-mobile, 768px)) {
+  .uxp-sparklines { grid-template-columns: 1fr; }
+}
+
+/* ========== 趋势 sparkline（Task 6） ========== */
+.uxp-sparklines {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.uxp-sparkline {
+  background: var(--glass-bg, rgba(255,255,255,0.04));
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px;
+}
+.uxp-sparkline-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.uxp-sparkline-svg {
+  width: 100%;
+  height: 32px;
+  display: block;
+}
+.uxp-sparkline-path {
+  fill: none;
+  stroke: var(--accent, #f59e0b);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.uxp-sparkline-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-top: 2px;
+}
+.uxp-sparkline.empty .uxp-sparkline-svg,
+.uxp-sparkline.empty .uxp-sparkline-value { display: none; }
+.uxp-sparkline.empty::after {
+  content: '暂无数据';
+  display: block;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 12px 0 4px;
+}
+@media (max-width: var(--bp-mobile, 768px)) {
+  .uxp-sparklines { grid-template-columns: 1fr; }
+}

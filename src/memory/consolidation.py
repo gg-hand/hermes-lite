@@ -284,6 +284,13 @@ class ConsolidationEngine:
             namespace, cron_id = self._resolve_namespace(session_id)
             stats = self._make_stats(namespace=namespace, cron_id=cron_id)
             self._apply_pending_ops(profile_updates, memory_ops, namespace, cron_id, stats)
+            # 信号池过期清理：无 pending 时也需触发，避免长期无对话
+            # 累积的信号池无法被清理（触发后立即 apply 后应清理过期项）
+            if self.signal_pool is not None:
+                try:
+                    self.signal_pool.cleanup()
+                except Exception as e:
+                    logger.warning("信号池过期清理失败: %s", e)
             return stats
 
         # Phase 8 Task 1.2: 按 session_id 前缀路由 namespace
@@ -333,6 +340,16 @@ class ConsolidationEngine:
         #    即使本次 LLM 未提取到任何事实，profile_updates / memory_ops
         #     也应被应用，它们独立于对话消息。
         self._apply_pending_ops(profile_updates, memory_ops, namespace, cron_id, stats)
+
+        # 4.5 信号池过期清理：在 if not facts 早返回前执行，确保 cleanup
+        #     在所有 consolidate 调用路径上都被触发（无 LLM 输出也需清理）。
+        #     cleanup 内部用 _lock 保护，O(n) 单次扫描开销低。
+        #     阈值：pending 30 天未活动 / triggered 7 天后。
+        if self.signal_pool is not None:
+            try:
+                self.signal_pool.cleanup()
+            except Exception as e:
+                logger.warning("信号池过期清理失败: %s", e)
 
         if not facts:
             logger.info("本次沉淀未提取到任何事实")
@@ -488,7 +505,15 @@ class ConsolidationEngine:
                         logger.error("新增记忆失败: %s", e)
 
         # 6. user_profile 事实分流：信号池累积 或 异步写入 memory.md
-        if profile_facts:
+        # cron 会话跳过画像更新：cron 与普通用户会话隔离，避免自动任务
+        # 提取的"事实"污染用户画像。cron namespace 的事实仍正常写入向量库
+        # （上面 step 5 已处理），仅跳过 user_profile 类事实的画像写入。
+        is_cron_session = (
+            session_id is not None
+            and isinstance(session_id, str)
+            and session_id.startswith("cron:")
+        )
+        if profile_facts and not is_cron_session:
             if self.signal_pool is not None:
                 # L3 改走信号池：weight=2（一次隐含 15 条对话消息），
                 # section="沉淀笔记"（L3 自动提取的累积区）
@@ -506,9 +531,14 @@ class ConsolidationEngine:
             elif self.memory_md_writer is not None:
                 # 向后兼容：signal_pool 未注入时走原异步写入路径
                 self._async_write_memory_md(profile_facts)
+        elif profile_facts and is_cron_session:
+            logger.info(
+                "cron 会话 (session_id=%s) 跳过 user_profile 事实画像写入 (%d 条)",
+                session_id, len(profile_facts)
+            )
 
         # 7. 重置计数器与消息缓冲
-        # Phase 9: 计数器和消息列表已在 consolidate 开始时通过原子 swap 重置，
+        # Phase 9: 计数器和消息列表已在开始时通过原子 swap 重置，
         # 此处不再调用 self._reset()，避免清除在 consolidate 执行期间
         # 由 add_info() 添加的新消息。pending_profile_updates 和
         # pending_memory_ops 在各自的处理方法中已清空。

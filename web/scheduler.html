@@ -171,6 +171,20 @@
               <div class="schedule-empty">加载中...</div>
             </div>
           </div>
+
+          <!-- 待办 0 项引导：两子分组皆空时显示 -->
+          <div class="uxp-empty-state" id="pendingEmpty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+            </div>
+            <div class="empty-text">暂无待办</div>
+            <button class="empty-action" id="pendingEmptyAction" type="button">新建调度</button>
+          </div>
         </section>
 
         <!-- 调度项列表 -->
@@ -186,6 +200,17 @@
           </div>
           <div class="schedule-list has-scroll-mask" id="scheduleList">
             <div class="schedule-empty">加载中...</div>
+          </div>
+          <!-- 调度项 0 项引导 -->
+          <div class="uxp-empty-state" id="schedulesEmpty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </div>
+            <div class="empty-text">暂无调度项</div>
+            <button class="empty-action" id="schedulesEmptyAction" type="button">立即创建</button>
           </div>
         </section>
 

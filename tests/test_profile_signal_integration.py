@@ -482,6 +482,30 @@ class TestL3ConsolidationDispatch(_IntegrationTestBase):
         # weight=2 + emotion_boost=3（强情感"爱"）= 5
         self.assertEqual(status[0]["count"], 5)
 
+    def test_l3_cron_session_skips_signal_pool(self) -> None:
+        """cron 会话 consolidate 时 L3 user_profile facts 不入信号池。
+
+        cron 与普通用户会话隔离，避免自动任务提取的"事实"污染用户画像。
+        cron namespace 的事实仍正常写入向量库（其他类型 fact），仅跳过
+        user_profile 类事实的画像写入。
+        """
+        facts = [
+            {"type": "user_profile", "content": "用户主力语言是 Python"},
+            {"type": "other", "content": "cron 任务执行了某操作"},
+        ]
+        pool = self._make_signal_pool()
+        engine = self._make_consolidation_engine(facts, signal_pool=pool)
+
+        for i in range(15):
+            engine.add_info({"role": "user", "content": f"msg {i}"})
+
+        # cron 会话
+        engine.consolidate(session_id="cron:test_schedule_l3")
+
+        # 信号池应为空：cron 会话跳过 user_profile facts 入池
+        status = pool.get_status()
+        self.assertEqual(len(status), 0)
+
 
 # ---------------------------------------------------------------------------
 # 4. mark_written_by_contents 回写
@@ -873,27 +897,26 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
         super().tearDown()
 
     def test_seven_adds_trigger_consolidate_writes_profile(self) -> None:
-        """7 次 add 同一信号 → 触发入队 → consolidate 写入画像 → 信号从池中移除。"""
+        """7 次 add 同一信号 → 触发入队 → 异步 consolidate 写入画像 → 信号从池中移除。
+
+        v6: 信号达阈值后立即异步触发 consolidate（_trigger_consolidate_async），
+        不再需要等 info_counter 达 15。测试等待异步线程完成后直接验证画像。
+        """
         # 7 次 add（每次都走 signal_pool 累积）
         for _ in range(7):
             self.handler(
                 action="add", section="习惯", content="用户偏好简洁回复"
             )
 
-        # 信号应已触发入队
-        self.assertEqual(len(self.engine.pending_profile_updates), 1)
+        # 等待异步 consolidate 线程完成（consolidate 内部 _consolidation_lock
+        # 串行化，多次触发安全；这里等待守护线程消费 pending_profile_updates）
+        import time
+        for _ in range(20):  # 最多等 2 秒
+            if "用户偏好简洁回复" in self.profile_path.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.1)
 
-        # 触发 consolidate 前，信号池有 1 条 triggered 信号
-        status_before = self.pool.get_status()
-        self.assertEqual(len(status_before), 1)
-        self.assertEqual(status_before[0]["status"], "triggered")
-
-        # 触发 consolidate
-        for i in range(15):
-            self.engine.add_info({"role": "user", "content": f"msg {i}"})
-        self.engine.consolidate(session_id="e2e_sess")
-
-        # 画像应包含该内容
+        # 画像应包含该内容（异步 consolidate 已写入）
         text = self.profile_path.read_text(encoding="utf-8")
         self.assertIn("用户偏好简洁回复", text)
 
@@ -926,6 +949,199 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
         self.assertEqual(len(status), 1)
         self.assertEqual(status[0]["status"], "pending")
         self.assertEqual(status[0]["count"], 6)
+
+    def test_existing_triggered_signal_flushed_on_startup(self) -> None:
+        """存量 triggered 信号（启动加载时已在池中）通过 flush_triggered_signals 写入画像。
+
+        模拟场景：服务重启后信号池文件中已有 triggered 信号 count=18，
+        但未消费。flush_triggered_signals 应让它们重新入队 + 异步触发
+        consolidate 立即写入画像，避免永远卡在池中。
+        """
+        import json as _json
+        from src.memory.signal_pool import Signal as _Signal
+
+        # 模拟启动加载时已有 triggered 信号（绕过 _add_single 路径）
+        triggered_signal = _Signal(
+            id="sig_test_flush",
+            content="用户讨厌装傻的沟通风格",
+            keywords=["用户讨厌", "讨厌", "装傻", "沟通风格"],
+            category="",
+            count=18,
+            sources=["L3", "L1"],
+            first_seen="2026-07-04T19:00:26.196465",
+            last_seen="2026-07-07T13:22:01.978133",
+            status="triggered",
+            section="沉淀笔记",
+        )
+        self.pool._signals.append(triggered_signal)
+        # pending_profile_updates 应为空（没经过 _add_single 路径）
+        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+
+        # 调用 flush_triggered_signals
+        self.pool.flush_triggered_signals()
+
+        # 等待异步 consolidate 完成
+        import time
+        for _ in range(20):
+            if "讨厌装傻" in self.profile_path.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.1)
+
+        # 画像应包含该内容
+        text = self.profile_path.read_text(encoding="utf-8")
+        self.assertIn("讨厌装傻", text)
+
+        # 信号应从池中移除
+        status = self.pool.get_status()
+        sig_ids = [s["id"] for s in status]
+        self.assertNotIn("sig_test_flush", sig_ids)
+
+    def test_consolidate_triggers_signal_pool_cleanup(self) -> None:
+        """consolidate 调用后自动清理过期信号（pending 30 天 / triggered 7 天）。
+
+        验证：consolidate() 在 _apply_pending_ops 之后调用 signal_pool.cleanup()，
+        过期信号（基于 last_seen）被自动移除，避免无限堆积。
+        """
+        from datetime import datetime, timedelta
+
+        # 添加一条 pending 信号,模拟 31 天前活动
+        self.pool.add("用户偏好简短回复", source="L1")
+        old_time = (datetime.now() - timedelta(days=31)).isoformat()
+        self.pool._signals[0].last_seen = old_time
+        self.assertEqual(len(self.pool.get_status()), 1)
+
+        # 触发 consolidate(注入 15 条消息让 LLM 路径不早返回)
+        for i in range(15):
+            self.engine.add_info({"role": "user", "content": f"msg {i}"})
+        self.engine.consolidate(session_id="e2e_sess")
+
+        # 信号应被自动清理
+        self.assertEqual(len(self.pool.get_status()), 0)
+
+    def test_consolidate_no_pending_still_triggers_cleanup(self) -> None:
+        """无 pending 消息的 consolidate 早返回路径也需触发清理。
+
+        场景：用户长期不聊天,信号池中累积了过期 triggered 信号,
+        此时 consolidate 因无 pending 消息走早返回路径,
+        但仍需触发 cleanup 清理过期信号。
+        """
+        from datetime import datetime, timedelta
+
+        # 添加一条 triggered 信号,模拟 8 天前入队
+        for _ in range(7):
+            self.pool.add("用户偏好简短回复", source="L1")
+        old_time = (datetime.now() - timedelta(days=8)).isoformat()
+        self.pool._signals[0].last_seen = old_time
+
+        # 不 add_info,让 consolidate 走 if not pending: 早返回路径
+        self.engine.consolidate(session_id="e2e_sess")
+
+        # 过期 triggered 信号应被清理
+        self.assertEqual(len(self.pool.get_status()), 0)
+
+
+# ---------------------------------------------------------------------------
+# 8.5 cron 会话隔离：cron 不更新用户画像
+# ---------------------------------------------------------------------------
+
+
+class TestCronSessionIsolation(_IntegrationTestBase):
+    """cron 会话（session_id 以 ``cron:`` 开头）不更新用户画像。
+
+    验证两个入口的隔离：
+    - L1 路径（builtin_tools.py）：profile_update 工具 add/replace/delete 全跳过
+    - L3 路径（consolidation.py）：consolidate 提取的 user_profile 事实跳过 signal_pool
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._write_profile("")
+        self.manager = MemoryMdManager(file_path=str(self.profile_path))
+        self.pool = self._make_signal_pool()
+        self.engine = ConsolidationEngine(
+            llm_client=_MockLLMClient([]),
+            chroma_store=_MockChromaStore(),
+            memory_md_manager=self.manager,
+            signal_pool=self.pool,
+        )
+        self.pool._consolidation_engine = self.engine
+        self.registry = ToolRegistry()
+        _register_update_profile(
+            self.registry, self.engine, signal_pool=self.pool
+        )
+        self.handler = self.registry._core_tools["profile_update"].handler
+
+    def tearDown(self) -> None:
+        super().tearDown()
+
+    def test_cron_add_does_not_enter_signal_pool(self) -> None:
+        """cron 会话 add 操作不进入信号池累积。"""
+        from src.agent._cancel_context import current_session_id
+
+        token = current_session_id.set("cron:test_schedule_1")
+        try:
+            for _ in range(7):  # 远超阈值 7
+                result = self.handler(
+                    action="add", section="偏好",
+                    content="用户喜欢在 cron 中累积"
+                )
+            # 应返回跳过提示
+            self.assertIn("cron 会话不更新用户画像", result)
+        finally:
+            current_session_id.reset(token)
+
+        # 信号池应为空（未入池）
+        status = self.pool.get_status()
+        self.assertEqual(len(status), 0)
+        # 画像应为空
+        self.assertEqual(self.profile_path.read_text(encoding="utf-8").strip(), "")
+
+    def test_cron_replace_delete_does_not_enqueue(self) -> None:
+        """cron 会话 replace/delete 操作不入 pending 队列。"""
+        from src.agent._cancel_context import current_session_id
+
+        token = current_session_id.set("cron:test_schedule_2")
+        try:
+            result_replace = self.handler(
+                action="replace", section="偏好",
+                content="cron 试图替换偏好"
+            )
+            result_delete = self.handler(
+                action="delete", section="偏好",
+                content=""
+            )
+        finally:
+            current_session_id.reset(token)
+
+        self.assertIn("cron 会话不更新用户画像", result_replace)
+        self.assertIn("cron 会话不更新用户画像", result_delete)
+        # pending_profile_updates 应为空
+        self.assertEqual(len(self.engine.pending_profile_updates), 0)
+
+    def test_normal_session_still_updates_profile(self) -> None:
+        """普通会话（非 cron: 前缀）仍正常更新画像（回归保护）。"""
+        from src.agent._cancel_context import current_session_id
+
+        token = current_session_id.set("normal_session_xyz")
+        try:
+            for _ in range(7):
+                self.handler(
+                    action="add", section="偏好",
+                    content="用户偏好简洁回复"
+                )
+        finally:
+            current_session_id.reset(token)
+
+        # 等待异步 consolidate 完成
+        import time
+        for _ in range(20):
+            if "用户偏好简洁回复" in self.profile_path.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.1)
+
+        # 画像应包含该内容
+        text = self.profile_path.read_text(encoding="utf-8")
+        self.assertIn("用户偏好简洁回复", text)
 
 
 # ---------------------------------------------------------------------------
