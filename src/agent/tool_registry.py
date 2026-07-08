@@ -180,6 +180,25 @@ class ToolRegistry:
         if removed:
             logger.debug("已注销工具: %s", name)
 
+    def get_handler(self, name: str) -> Optional[Callable[..., str]]:
+        """获取工具 handler（跨所有 tier 查找），用于后端 API 直接调用。
+
+        与 :meth:`execute_tool` 不同，此方法也查找 Deferred Tier（无需先
+        加载），适合 server.py 中 ``confirm_proposal`` 等后端路由直接调用
+        工具逻辑（非 LLM 工具调用流程）。
+
+        参数:
+            name: 工具名称。
+
+        返回:
+            handler 函数；工具不存在返回 ``None``。
+        """
+        for store in (self._loaded_tools, self._core_tools, self._deferred_tools):
+            tool = store.get(name)
+            if tool is not None:
+                return tool.handler
+        return None
+
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """返回工具 schema 列表（Anthropic tool use 格式）。
 

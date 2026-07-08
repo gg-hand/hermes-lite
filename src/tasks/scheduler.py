@@ -615,6 +615,17 @@ class CronScheduler:
         # ops-reliability-uplift Task 4.1: 触发前清空 history_buffer 隔离上下文
         self._clear_cron_history(orchestrator, session_id)
 
+        # 确保 cron 会话在 session_logger 中存在（即使 workflow 首步即失败，
+        # 用户也能在调度会话列表中看到该会话并查看错误信息）
+        _sl = getattr(orchestrator, "session_logger", None)
+        if _sl is not None:
+            try:
+                _sl.ensure_session(session_id)
+                if schedule.name:
+                    _sl.update_session_title(session_id, schedule.name)
+            except Exception:
+                logger.warning("ensure_session 失败 session_id=%s", session_id, exc_info=True)
+
         # ops-reliability-uplift Task 6.4: 临时覆盖 archive_callback
         # cron session 不走 orchestrator 默认归档（type=conversation_turn 全文），
         # 改为归档上次 run 的 llm_summary（type=summary 精炼摘要）。
@@ -660,10 +671,14 @@ class CronScheduler:
             # Task 10.4：step_traces / workflow_name 从 WorkflowResult 提取并持久化
             step_traces_for_summary: List[Dict[str, Any]] = []
             workflow_name: Optional[str] = None
+            # 标记是否走 workflow 路径（该路径不经过 orchestrator.chat，
+            # 需手动写 session_logger 消息以使调度会话历史可见）
+            is_workflow_path = False
 
             try:
                 if schedule.workflow:
                     # workflow 路径（Task 10.2 双轨：多步经 WorkflowEngine，简易走模板）
+                    is_workflow_path = True
                     wf_result = await asyncio.to_thread(
                         self._execute_workflow,
                         orchestrator,
@@ -712,6 +727,45 @@ class CronScheduler:
                     _sl.update_session_title(session_id, schedule.name)
                 except Exception as e:
                     logger.warning("设置 cron 会话标题失败: %s", e)
+
+            # workflow 路径不经过 orchestrator.chat()，需手动写 session_logger 消息，
+            # 使调度会话历史可见（用户点击 cron 会话可查看触发任务与结果）。
+            # legacy 路径由 orchestrator.chat 内部写入，无需重复。
+            if is_workflow_path and _sl is not None:
+                try:
+                    # 1. user 消息（渲染后的任务文本）
+                    _sl.log_message(
+                        session_id=session_id,
+                        role="user",
+                        content=task_text or "",
+                    )
+                    # 2. tool 消息（按执行顺序记录每个工具调用）
+                    for tc in tool_calls:
+                        tool_name = tc.get("name", "")
+                        result_str = tc.get("result", "")
+                        _sl.log_message(
+                            session_id=session_id,
+                            role="tool",
+                            content=str(result_str),
+                            tool_name=tool_name,
+                            is_error=bool(tc.get("is_error", False)),
+                        )
+                    # 3. assistant 消息（成功取 assistant_response，失败汇总 errors）
+                    if success:
+                        final_content = assistant_response or "(workflow 执行完成但无文本输出)"
+                    else:
+                        err_lines = "; ".join(errors) if errors else "未知错误"
+                        final_content = f"[调度执行失败] {err_lines}"
+                    _sl.log_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=final_content,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "workflow 路径写 session_logger 失败 session_id=%s: %s",
+                        session_id, e,
+                    )
 
             finished_at_dt = datetime.now()
             finished_at = finished_at_dt.isoformat()

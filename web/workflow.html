@@ -15,6 +15,10 @@
 
   <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
   <script src="/static/js/theme.js"></script>
+  <!-- croniter: cron 表达式下次运行时间预览 -->
+  <script src="https://cdn.jsdelivr.net/npm/croniter@2.0.3/dist/croniter.min.js"></script>
+  <!-- utils.js：HermesUtils.previewCronNext + escapeHtml 等共享工具 -->
+  <script src="/static/js/utils.js"></script>
 </head>
 <body>
 
@@ -237,8 +241,45 @@ steps:
   </div>
 </div>
 
+<!-- workflow-presets.js：共享模板预设（scheduler.html 也引用） -->
+<script src="/static/js/workflow-presets.js"></script>
 <!-- workflow.js：三栏交互 + 模板库 + 编辑器 -->
 <script src="/static/js/workflow.js?v=1"></script>
+
+<!-- 保存为调度 mini dialog（内嵌，不跳页） -->
+<div class="mini-dialog-overlay" id="saveAsScheduleDialog" hidden>
+  <div class="mini-dialog" role="dialog" aria-modal="true" aria-labelledby="miniDialogTitle">
+    <header class="mini-dialog-header">
+      <h3 class="mini-dialog-title" id="miniDialogTitle">保存为调度</h3>
+      <button class="mini-dialog-close" id="miniDialogClose" type="button" aria-label="关闭">×</button>
+    </header>
+    <div class="mini-dialog-body">
+      <div class="form-field">
+        <label class="form-field-label">调度名称 *</label>
+        <input type="text" id="miniSchedName" class="form-field-input" placeholder="如：每日新闻摘要">
+      </div>
+      <div class="form-field">
+        <label class="form-field-label">Cron 表达式 *</label>
+        <input type="text" id="miniSchedCron" class="form-field-input mono" placeholder="0 9 * * *">
+        <div class="cron-next-preview" id="miniCronNextPreview">—</div>
+      </div>
+      <div class="form-field">
+        <label class="form-field-label">任务描述</label>
+        <textarea id="miniSchedTask" class="form-field-input" rows="2"
+          placeholder="可选：补充任务描述"></textarea>
+      </div>
+      <div class="form-field">
+        <span class="mini-dialog-info text-muted text-sm">
+          <span class="mono" id="miniDialogStepsCount">0</span> 个 step · 启用后将按 cron 周期自动执行
+        </span>
+      </div>
+    </div>
+    <footer class="mini-dialog-footer">
+      <button class="btn btn-secondary" id="miniDialogCancel">取消</button>
+      <button class="btn btn-primary" id="miniDialogConfirm">创建调度</button>
+    </footer>
+  </div>
+</div>
 
 </body>
 </html>

@@ -911,3 +911,107 @@
     bottom: var(--space-3);
   }
 }
+
+/* ============================================================
+   mini-dialog（"保存为调度"内嵌对话框）
+   与 workflow-help-modal 视觉对齐，但更窄、内嵌
+   ============================================================ */
+.mini-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  padding: var(--space-4);
+}
+.mini-dialog-overlay[hidden] { display: none !important; }
+
+.mini-dialog {
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.mini-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+.mini-dialog-title {
+  flex: 1;
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.mini-dialog-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+.mini-dialog-close:hover { background: var(--bg-hover); color: var(--danger); }
+
+.mini-dialog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mini-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.mini-dialog-info { display: block; }
+
+/* mini-dialog 内的 cron 预览框（复用 scheduler.css 的 .cron-next-preview 风格） */
+.mini-dialog .cron-next-preview {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  min-height: 28px;
+}
+
+@media (max-width: 480px) {
+  .mini-dialog { max-width: 100%; }
+  .mini-dialog-overlay { padding: 0; }
+  .mini-dialog { border-radius: 0; height: 100vh; max-height: 100vh; }
+}
