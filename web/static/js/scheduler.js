@@ -138,189 +138,599 @@ function toggleRunDetail(runItem) {
 
 // ========== 调度项 CRUD ==========
 async function fetchSchedules() {
-  const listEl = document.getElementById('scheduleList');
-  if (!listEl) return;
   try {
     const data = await api('/schedules');
     renderSchedules(data.schedules || []);
   } catch (e) {
-    listEl.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    const listEl = document.getElementById('scheduleListFull');
+    if (listEl) listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
 function renderSchedules(schedules) {
-  const listEl = document.getElementById('scheduleList');
+  const listEl = document.getElementById('scheduleListFull');
   if (!listEl) return;
   _schedulesCache = schedules || [];
-  const countEl = document.getElementById('scheduleCount');
-  if (countEl) countEl.textContent = schedules.length;
   if (!schedules.length) {
-    listEl.innerHTML = '<div class="schedule-empty">暂无调度项，点击「+ 新建」创建</div>';
+    listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无调度项，点击「+ 新建调度」创建</div></div>';
   } else {
-    listEl.innerHTML = schedules.map(s => `
-      <div class="schedule-item" data-id="${escapeHtml(s.id)}">
-        <div class="schedule-item-header">
-          <span class="schedule-name">${escapeHtml(s.name)}</span>
-          <span class="schedule-cron mono">${escapeHtml(s.cron)}</span>
-          <span class="schedule-status-dot ${s.enabled ? 'is-enabled' : 'is-disabled'}" title="${s.enabled ? '已启用' : '已禁用'}"></span>
-        </div>
-        <div class="schedule-meta text-muted text-sm">
-          ${s.last_run ? `上次: ${formatTime(s.last_run)}` : '上次: 未运行'}
-          ${s.next_run ? ` | 下次: ${formatTime(s.next_run)}` : ''}
-        </div>
-        <div class="schedule-actions">
-          <button class="btn btn-primary btn-sm" onclick="openScheduleDetail('${escapeHtml(s.id)}')">详情</button>
-          <button class="btn btn-ghost btn-sm" data-action="expand" data-id="${escapeHtml(s.id)}">记忆/审计</button>
-        </div>
-        <div class="sched-detail"></div>
-      </div>
-    `).join('');
+    listEl.innerHTML = schedules.map(s => renderListCard('schedule', s)).join('');
   }
-  // 更新 SCHEDULES 空态
-  updateSchedulesEmpty(schedules.length);
+  updateManageBadges();
 }
 
-function openScheduleDetail(id) {
-  const s = _schedulesCache.find(x => x.id === id);
-  if (!s) { showToast('未找到调度项: ' + id, 'error'); return; }
-  document.getElementById('scheduleDetailTitle').textContent = `调度项 · ${s.name}`;
-  document.getElementById('scheduleDetailBody').innerHTML = `
-    <div class="form-section">
-      <div class="form-label">名称</div>
-      <div class="form-value">${escapeHtml(s.name)}</div>
+// ========== 统一列表卡片（取代旧的 proposal-card / schedule-item / cron-tool-card） ==========
+function renderListCard(kind, item) {
+  if (kind === 'schedule') return renderScheduleCard(item);
+  if (kind === 'cron_tool_pending') return renderCronToolPendingCard(item);
+  if (kind === 'cron_tool_active') return renderCronToolActiveCard(item);
+  if (kind === 'proposal_pending' || kind === 'proposal_done') return renderProposalCardItem(item);
+  return '';
+}
+
+function renderScheduleCard(s) {
+  const lastRun = s.last_run ? `上次 ${escapeHtml(formatTime(s.last_run))}` : '上次 未运行';
+  const nextRun = s.next_run ? ` · 下次 ${escapeHtml(formatTime(s.next_run))}` : '';
+  return `<div class="list-card kind-schedule" data-kind="schedule" data-id="${escapeHtml(s.id)}" onclick="openDrawer({kind:'schedule', id:'${escapeHtml(s.id)}'})">
+    <div class="list-card-header">
+      <span class="list-card-status-dot ${s.enabled ? 'is-enabled' : 'is-disabled'}" title="${s.enabled ? '已启用' : '已禁用'}"></span>
+      <span class="list-card-title">${escapeHtml(s.name || s.id)}</span>
     </div>
-    <div class="form-section">
-      <div class="form-label">Cron 表达式</div>
-      <div class="form-value mono">${escapeHtml(s.cron)}</div>
+    <div class="list-card-meta">
+      <span class="mono">${escapeHtml(s.cron || '')}</span>
+      <span class="text-muted">${lastRun}${nextRun}</span>
     </div>
-    <div class="form-section">
-      <div class="form-label">任务描述</div>
-      <div class="form-value">${escapeHtml(s.task)}</div>
+  </div>`;
+}
+
+function renderCronToolPendingCard(t) {
+  const name = escapeHtml(t.name || '');
+  const runExt = escapeHtml(t.run_ext || '.py');
+  const mdLines = (t.tool_md || '').split('\n').length;
+  const runLines = (t.run_script || '').split('\n').length;
+  return `<div class="list-card kind-cron_tool_pending" data-kind="cron_tool_pending" data-id="${name}" onclick="openDrawer({kind:'cron_tool_pending', id:'${name}'})">
+    <div class="list-card-header">
+      <span class="list-card-title mono">${name}</span>
+      <span class="tag tag-warning">待审查</span>
     </div>
-    <div class="form-section">
-      <div class="form-label">启用状态</div>
-      <div class="form-value">
+    <div class="list-card-meta text-muted">TOOL.md ${mdLines}行 · run${runExt} ${runLines}行</div>
+  </div>`;
+}
+
+function renderCronToolActiveCard(t) {
+  const name = escapeHtml(t.name || '');
+  const version = escapeHtml(t.version || '');
+  const descRaw = t.description || '';
+  const desc = escapeHtml(truncateText(descRaw, 60));
+  return `<div class="list-card kind-cron_tool_active" data-kind="cron_tool_active" data-id="${name}" onclick="openDrawer({kind:'cron_tool_active', id:'${name}'})">
+    <div class="list-card-header">
+      <span class="list-card-title mono">${name}</span>
+      <span class="tag">v${version}</span>
+    </div>
+    <div class="list-card-meta">${desc || '<em class="text-muted">无描述</em>'}</div>
+  </div>`;
+}
+
+function renderProposalCardItem(p) {
+  const cfg = p.schedule_config || {};
+  const tools = p.requested_tools || [];
+  const statusLabels = {
+    'pending_confirm': '待确认', 'confirmed': '已确认', 'modified': '已修改',
+    'rejected': '已拒绝', 'schedule_active': '已创建调度', 'proposal_created': '已创建',
+  };
+  const statusLabel = statusLabels[p.status] || p.status;
+  const kindClass = p.status === 'pending_confirm' ? 'kind-proposal_pending' : 'kind-schedule';
+  const isPending = p.status === 'pending_confirm';
+  const statusTagClass = p.status === 'pending_confirm' ? 'tag-warning' : p.status === 'rejected' ? 'tag-danger' : 'tag-success';
+  const drawerKind = isPending ? 'proposal_pending' : 'proposal_done';
+  return `<div class="list-card ${kindClass}" data-kind="${drawerKind}" data-id="${escapeHtml(p.proposal_id)}" onclick="openDrawer({kind:'${drawerKind}', id:'${escapeHtml(p.proposal_id)}'})">
+    <div class="list-card-header">
+      <span class="list-card-title">提议 ${escapeHtml(p.proposal_id)}</span>
+      <span class="${statusTagClass}">${escapeHtml(statusLabel)}</span>
+    </div>
+    <div class="list-card-meta">
+      <span class="mono">${escapeHtml(cfg.cron || '?')}</span>
+      <span class="text-muted">${escapeHtml(truncateText(cfg.task || '?', 80))}</span>
+    </div>
+    <div class="list-card-meta text-muted">预授权工具 ${tools.length} 个</div>
+  </div>`;
+}
+
+// ========== Tab 切换 + Badge 更新 ==========
+function switchManageTab(tabName) {
+  _activeManageTab = tabName;
+  document.querySelectorAll('.sched-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.manageTab === tabName);
+  });
+  document.querySelectorAll('.manage-pane').forEach(p => {
+    p.hidden = (p.dataset.managePane !== tabName);
+  });
+  refreshActiveTab();
+}
+
+function refreshActiveTab() {
+  if (_activeManageTab === 'pending') {
+    fetchProposals();
+    fetchCronToolsPending();
+  } else if (_activeManageTab === 'schedules') {
+    fetchSchedules();
+  } else if (_activeManageTab === 'cronTool') {
+    fetchCronTools();
+  }
+}
+
+function updateManageBadges() {
+  const pendingCount = _proposalsCache.filter(p => p.status === 'pending_confirm').length + _pendingCronToolsCache.length;
+  const schedulesCount = _schedulesCache.length;
+  const cronToolCount = _cronToolsCache.length;
+  const setBadge = (id, n) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = String(n);
+      el.hidden = n === 0;
+    }
+  };
+  setBadge('tabBadgePending', pendingCount);
+  setBadge('tabBadgeSchedules', schedulesCount);
+  setBadge('tabBadgeCronTool', cronToolCount);
+}
+
+// ========== Drawer 核心（重写：统一抽屉替代 4 个 modal） ==========
+let _activeManageTab = 'pending';   // 'pending' | 'schedules' | 'cronTool'
+let _drawerState = null;            // { kind, id }
+let _drawerActiveSubTab = 'detail'; // 'detail' | 'memories' | 'audit'
+
+function findInDrawerCache(kind, id) {
+  if (kind === 'proposal_pending' || kind === 'proposal_done') {
+    return _proposalsCache.find(x => x.proposal_id === id);
+  }
+  if (kind === 'schedule') {
+    return _schedulesCache.find(x => x.id === id);
+  }
+  if (kind === 'cron_tool_pending') {
+    return _pendingCronToolsCache.find(x => x.name === id);
+  }
+  if (kind === 'cron_tool_active') {
+    return _cronToolsCache.find(x => x.name === id);
+  }
+  return null;
+}
+
+function titleFor(kind, item) {
+  if (kind === 'proposal_pending' || kind === 'proposal_done') return `提议 · ${item.proposal_id}`;
+  if (kind === 'schedule') return item.name || `调度 · ${item.id}`;
+  if (kind === 'cron_tool_pending') return `审查 · ${item.name}`;
+  if (kind === 'cron_tool_active') return `cron_tool · ${item.name}`;
+  return '详情';
+}
+
+function subtitleFor(kind, item) {
+  if (kind === 'proposal_pending' || kind === 'proposal_done') {
+    const cfg = item.schedule_config || {};
+    return cfg.cron ? `cron: ${cfg.cron}` : '';
+  }
+  if (kind === 'schedule') {
+    return item.cron ? `cron: ${item.cron} · ${item.enabled ? '已启用' : '已禁用'}` : '';
+  }
+  if (kind === 'cron_tool_pending') return '待审查';
+  if (kind === 'cron_tool_active') return `v${item.version || '?'} · ${item.author || '未知作者'}`;
+  return '';
+}
+
+async function openDrawer({ kind, id }) {
+  _drawerState = { kind, id };
+  const overlay = document.getElementById('drawerOverlay');
+  const item = findInDrawerCache(kind, id);
+  if (!item) { showToast('未找到条目: ' + id, 'error'); return; }
+  document.getElementById('drawerTitle').textContent = titleFor(kind, item);
+  document.getElementById('drawerSubtitle').textContent = subtitleFor(kind, item);
+  document.getElementById('drawerBody').innerHTML = '<div class="empty-state"><div class="empty-state-text">加载中...</div></div>';
+  document.getElementById('drawerFooter').innerHTML = '';
+  overlay.hidden = false;
+  try {
+    await mountDrawerContent(kind, item);
+    bindDrawerActions(kind, id);
+  } catch (e) {
+    document.getElementById('drawerBody').innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+function closeDrawer() {
+  const overlay = document.getElementById('drawerOverlay');
+  overlay.hidden = true;
+  _drawerState = null;
+  document.getElementById('drawerBody').innerHTML = '';
+  document.getElementById('drawerFooter').innerHTML = '';
+  document.getElementById('drawerTabBar').hidden = true;
+}
+
+async function mountDrawerContent(kind, item) {
+  const body = document.getElementById('drawerBody');
+  const tabBar = document.getElementById('drawerTabBar');
+  if (kind === 'schedule') {
+    // 调度项：3 个子 pane
+    body.innerHTML = `
+      <div class="drawer-pane active" data-drawer-pane="detail">${renderScheduleDetail(item)}</div>
+      <div class="drawer-pane" data-drawer-pane="memories"><div class="empty-state"><div class="empty-state-text">加载中...</div></div></div>
+      <div class="drawer-pane" data-drawer-pane="audit"><div class="empty-state"><div class="empty-state-text">加载中...</div></div></div>
+    `;
+    tabBar.hidden = false;
+    _drawerActiveSubTab = 'detail';
+    updateDrawerSubTabActive();
+    // 后台异步加载记忆/审计
+    loadScheduleMemoriesForDrawer(item.id);
+    loadScheduleAuditForDrawer(item.id);
+  } else {
+    body.innerHTML = `<div class="drawer-pane active">${renderKindDetail(kind, item)}</div>`;
+    tabBar.hidden = true;
+  }
+}
+
+function updateDrawerSubTabActive() {
+  document.querySelectorAll('.drawer-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.drawerTab === _drawerActiveSubTab);
+  });
+  document.querySelectorAll('.drawer-pane').forEach(p => {
+    p.classList.toggle('active', p.dataset.drawerPane === _drawerActiveSubTab);
+  });
+}
+
+function switchDrawerSubTab(name) {
+  _drawerActiveSubTab = name;
+  updateDrawerSubTabActive();
+}
+
+function renderKindDetail(kind, item) {
+  if (kind === 'proposal_pending' || kind === 'proposal_done') return renderProposalDetail(item);
+  if (kind === 'cron_tool_pending') return renderCronToolPendingDetail(item);
+  if (kind === 'cron_tool_active') return renderCronToolActiveDetail(item);
+  return '<div class="empty-state"><div class="empty-state-text">未知类型</div></div>';
+}
+
+function renderScheduleDetail(s) {
+  return `
+    <div class="drawer-section">
+      <div class="drawer-section-label">名称</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(s.name || '')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">Cron 表达式</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(s.cron || '')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">任务描述</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(s.task || '')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">启用状态</div>
+      <div class="drawer-section-value is-plain">
         <label class="schedule-toggle" title="${s.enabled ? '已启用' : '已禁用'}">
-          <input type="checkbox" id="scheduleDetailToggle" ${s.enabled ? 'checked' : ''}>
+          <input type="checkbox" id="drawerScheduleToggle" ${s.enabled ? 'checked' : ''}>
           <span class="schedule-toggle-slider"></span>
           <span class="text-muted text-sm" style="margin-left:8px">${s.enabled ? '已启用（即时生效）' : '已禁用（即时生效）'}</span>
         </label>
       </div>
     </div>
-    <div class="form-section">
-      <div class="form-label">调度时序</div>
-      <div class="form-value">
+    <div class="drawer-section">
+      <div class="drawer-section-label">调度时序</div>
+      <div class="drawer-section-value is-plain">
         ${s.last_run ? `上次执行: ${escapeHtml(formatTime(s.last_run))}\n` : '上次执行: 未运行\n'}
         ${s.next_run ? `下次执行: ${escapeHtml(formatTime(s.next_run))}` : '下次执行: 未计算'}
       </div>
     </div>
-    <div class="form-section">
-      <div class="form-label">调度项 ID</div>
-      <div class="form-value mono">${escapeHtml(s.id)}</div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">调度项 ID</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(s.id || '')}</div>
     </div>
   `;
-  const toggle = document.getElementById('scheduleDetailToggle');
-  if (toggle) {
-    toggle.addEventListener('change', () => {
-      toggleSchedule(id, toggle.checked);
-      const hint = toggle.parentElement.querySelector('span:last-child');
-      if (hint) hint.textContent = toggle.checked ? '已启用（即时生效）' : '已禁用（即时生效）';
-    });
+}
+
+function renderProposalDetail(p) {
+  const cfg = p.schedule_config || {};
+  const tools = p.requested_tools || [];
+  const statusLabels = {
+    'pending_confirm': '待确认', 'confirmed': '已确认', 'modified': '已修改',
+    'rejected': '已拒绝', 'schedule_active': '已创建调度', 'proposal_created': '已创建',
+  };
+  const statusLabel = statusLabels[p.status] || p.status;
+  const isPending = p.status === 'pending_confirm';
+  const toolsHtml = tools.map(t => {
+    const toolName = escapeHtml(t.tool || '');
+    const scope = escapeHtml(t.scope || 'all');
+    const paths = (t.allowed_paths || []).join(', ');
+    const pathsStr = paths ? ` <span class="text-muted">[${escapeHtml(paths)}]</span>` : '';
+    if (isPending) {
+      return `<label class="drawer-chip-tool checked" title="${scope}">
+        <input type="checkbox" checked data-tool="${toolName}">
+        ${toolName}${pathsStr}
+      </label>`;
+    }
+    return `<span class="drawer-chip-tool checked" title="${scope}">${toolName}${pathsStr}</span>`;
+  }).join('');
+
+  const editAreaHtml = isPending ? `
+    <div class="drawer-edit-area" id="drawerEditArea_${escapeHtml(p.proposal_id)}" hidden>
+      <div class="drawer-section-label" style="margin-bottom:6px">修改后提交</div>
+      <div class="form-row"><label>Cron</label><input type="text" class="form-input" id="drawerEditCron_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.cron || '')}" placeholder="0 9 * * *"></div>
+      <div class="form-row"><label>任务</label><input type="text" class="form-input" id="drawerEditTask_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.task || '')}"></div>
+      <div class="form-row"><label>名称</label><input type="text" class="form-input" id="drawerEditName_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.name || '')}"></div>
+      <div class="drawer-section-label" style="margin:6px 0">勾选/取消预授权工具</div>
+      <div class="drawer-chips">${toolsHtml}</div>
+    </div>
+  ` : '';
+
+  const toolsDisplayHtml = isPending ? '' : `
+    <div class="drawer-section">
+      <div class="drawer-section-label">预授权工具</div>
+      <div class="drawer-chips">${toolsHtml}</div>
+    </div>
+  `;
+
+  const scheduleIdHtml = (p.schedule_id && p.status === 'schedule_active') ? `
+    <div class="drawer-section">
+      <div class="drawer-section-label">已创建调度项</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(p.schedule_id)}</div>
+    </div>
+  ` : '';
+
+  const workflowHtml = cfg.workflow ? `
+    <div class="drawer-section">
+      <div class="drawer-section-label">工作流</div>
+      <div class="drawer-section-value is-mono"><pre>${escapeHtml(JSON.stringify(cfg.workflow, null, 2))}</pre></div>
+    </div>
+  ` : '';
+
+  return `
+    <div class="drawer-section">
+      <div class="drawer-section-label">状态</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(statusLabel)}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">调度配置</div>
+      <div class="drawer-section-value is-plain">
+        ${cfg.name ? `名称: ${escapeHtml(cfg.name)}\n` : ''}Cron: ${escapeHtml(cfg.cron || '?')}\n任务: ${escapeHtml(cfg.task || '?')}
+      </div>
+    </div>
+    ${workflowHtml}
+    <div class="drawer-section">
+      <div class="drawer-section-label">LLM 说明</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(p.llm_explanation || '(无说明)')}</div>
+    </div>
+    ${toolsDisplayHtml}
+    ${scheduleIdHtml}
+    ${editAreaHtml}
+  `;
+}
+
+function renderCronToolPendingDetail(t) {
+  const runExt = escapeHtml(t.run_ext || '.py');
+  const toolMd = t.tool_md || '';
+  const runScript = t.run_script || '';
+  const mdLines = toolMd.split('\n').length;
+  const runLines = runScript.split('\n').length;
+  return `
+    <div class="drawer-section">
+      <div class="drawer-section-label">元信息</div>
+      <div class="drawer-section-value is-plain">TOOL.md ${mdLines} 行 · run${runExt} ${runLines} 行 · 状态：待审查</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">TOOL.md</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(toolMd) || '<em class="text-muted">（空）</em>'}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">run${runExt}</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(runScript) || '<em class="text-muted">（空）</em>'}</div>
+    </div>
+  `;
+}
+
+function renderCronToolActiveDetail(t) {
+  const timeout = t.timeout == null ? '默认(30s)' : `${t.timeout}s`;
+  return `
+    <div class="drawer-section">
+      <div class="drawer-section-label">名称</div>
+      <div class="drawer-section-value is-mono">${escapeHtml(t.name || '')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">版本</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(t.version || '')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">描述</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(t.description || '(无描述)')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">作者</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(t.author || '(未知)')}</div>
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-label">超时</div>
+      <div class="drawer-section-value is-plain">${escapeHtml(timeout)}</div>
+    </div>
+  `;
+}
+
+function bindDrawerActions(kind, id) {
+  const footer = document.getElementById('drawerFooter');
+  if (!footer) return;
+  if (kind === 'proposal_pending') {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-danger btn-sm" data-drawer-action="reject">拒绝</button>
+      <button class="btn btn-ghost" data-drawer-action="toggle-edit">修改并确认</button>
+      <button class="btn btn-primary" data-drawer-action="confirm">确认</button>
+    `;
+    footer.onclick = (e) => handleProposalDrawerAction(e, id);
+    // 工具勾选 chip 变化
+    const body = document.getElementById('drawerBody');
+    if (body) {
+      body.addEventListener('change', (e) => {
+        if (e.target.matches('.drawer-chip-tool input[type="checkbox"]')) {
+          const chip = e.target.closest('.drawer-chip-tool');
+          if (chip) chip.classList.toggle('checked', e.target.checked);
+        }
+      });
+    }
+  } else if (kind === 'schedule') {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-danger btn-sm" data-drawer-action="delete">删除</button>
+      <button class="btn btn-primary" data-drawer-action="trigger">立即触发</button>
+    `;
+    footer.onclick = (e) => handleScheduleDrawerAction(e, id);
+    // 启停开关
+    const toggle = document.getElementById('drawerScheduleToggle');
+    if (toggle) {
+      toggle.addEventListener('change', () => {
+        toggleSchedule(id, toggle.checked);
+        const hint = toggle.parentElement.querySelector('span:last-child');
+        if (hint) hint.textContent = toggle.checked ? '已启用（即时生效）' : '已禁用（即时生效）';
+      });
+    }
+  } else if (kind === 'cron_tool_pending') {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-danger btn-sm" data-drawer-action="reject">拒绝</button>
+      <button class="btn btn-primary" data-drawer-action="activate">批准</button>
+    `;
+    footer.onclick = (e) => handleCronToolPendingDrawerAction(e, id);
+  } else if (kind === 'cron_tool_active') {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-danger btn-sm" data-drawer-action="delete">删除</button>
+      <button class="btn btn-primary" data-drawer-action="reload">重新加载</button>
+    `;
+    footer.onclick = (e) => handleCronToolActiveDrawerAction(e, id);
   }
-  document.getElementById('scheduleDetailFooter').innerHTML = `
-    <button class="btn btn-ghost" onclick="closeModal('scheduleDetailModal')">关闭</button>
-    <button class="btn btn-danger btn-sm" id="scheduleDetailDeleteBtn">删除</button>
-    <button class="btn btn-primary" id="scheduleDetailTriggerBtn">立即触发</button>
-  `;
-  document.getElementById('scheduleDetailTriggerBtn').onclick = () => {
-    closeModal('scheduleDetailModal');
-    triggerSchedule(id);
-  };
-  document.getElementById('scheduleDetailDeleteBtn').onclick = () => {
-    closeModal('scheduleDetailModal');
-    deleteSchedule(id);
-  };
-  openModal('scheduleDetailModal');
 }
 
-// ========== 调度项二级展开（记忆 + 审计）==========
-async function toggleScheduleExpand(id) {
-  const itemEl = document.querySelector(`.schedule-item[data-id="${CSS.escape(id)}"]`);
-  if (!itemEl) return;
-  selectedScheduleId = id;
-  // 标记选中
-  document.querySelectorAll('.schedule-item').forEach(el => {
-    el.classList.toggle('selected', el.dataset.id === id);
-  });
-  const isExpanded = itemEl.classList.toggle('expanded');
-  if (!isExpanded) return;
-  const detailEl = itemEl.querySelector('.sched-detail');
-  if (!detailEl) return;
-  // 首次展开时加载
-  if (detailEl.dataset.loaded === '1') return;
-  detailEl.dataset.loaded = '1';
-  detailEl.innerHTML = `
-    <div class="sched-detail-subsection">
-      <div class="sched-detail-title">调度记忆</div>
-      <div class="sched-memories"><div class="schedule-empty">加载中...</div></div>
-    </div>
-    <div class="sched-detail-subsection">
-      <div class="sched-detail-title">工具调用审计</div>
-      <div class="sched-audit"><div class="schedule-empty">加载中...</div></div>
-    </div>
-  `;
-  loadScheduleMemories(id, detailEl.querySelector('.sched-memories'));
-  loadScheduleAudit(id, detailEl.querySelector('.sched-audit'));
+function handleProposalDrawerAction(e, proposalId) {
+  const btn = e.target.closest('[data-drawer-action]');
+  if (!btn) return;
+  const action = btn.dataset.drawerAction;
+  if (action === 'close') closeDrawer();
+  else if (action === 'confirm') confirmProposal(proposalId);
+  else if (action === 'reject') rejectProposal(proposalId);
+  else if (action === 'toggle-edit') toggleDrawerProposalEditMode(proposalId);
 }
 
-async function loadScheduleMemories(id, container) {
-  if (!container) return;
+function toggleDrawerProposalEditMode(proposalId) {
+  const editArea = document.getElementById(`drawerEditArea_${proposalId}`);
+  if (!editArea) return;
+  const isEditing = !editArea.hidden;
+  editArea.hidden = isEditing;
+  const footer = document.getElementById('drawerFooter');
+  if (!footer) return;
+  if (!isEditing) {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-primary" data-drawer-action="modify-confirm">提交修改并确认</button>
+      <button class="btn btn-ghost" data-drawer-action="toggle-edit">取消</button>
+    `;
+  } else {
+    footer.innerHTML = `
+      <button class="btn btn-ghost" data-drawer-action="close">关闭</button>
+      <button class="btn btn-danger btn-sm" data-drawer-action="reject">拒绝</button>
+      <button class="btn btn-ghost" data-drawer-action="toggle-edit">修改并确认</button>
+      <button class="btn btn-primary" data-drawer-action="confirm">确认</button>
+    `;
+  }
+}
+
+function handleScheduleDrawerAction(e, scheduleId) {
+  const btn = e.target.closest('[data-drawer-action]');
+  if (!btn) return;
+  const action = btn.dataset.drawerAction;
+  if (action === 'close') closeDrawer();
+  else if (action === 'delete') { closeDrawer(); deleteSchedule(scheduleId); }
+  else if (action === 'trigger') { closeDrawer(); triggerSchedule(scheduleId); }
+}
+
+function handleCronToolPendingDrawerAction(e, name) {
+  const btn = e.target.closest('[data-drawer-action]');
+  if (!btn) return;
+  const action = btn.dataset.drawerAction;
+  if (action === 'close') closeDrawer();
+  else if (action === 'activate') { closeDrawer(); activateCronTool(name); }
+  else if (action === 'reject') { closeDrawer(); rejectCronTool(name); }
+}
+
+function handleCronToolActiveDrawerAction(e, name) {
+  const btn = e.target.closest('[data-drawer-action]');
+  if (!btn) return;
+  const action = btn.dataset.drawerAction;
+  if (action === 'close') closeDrawer();
+  else if (action === 'delete') { closeDrawer(); deleteCronTool(name); }
+  else if (action === 'reload') { closeDrawer(); reloadCronTool(name); }
+}
+
+async function loadScheduleMemoriesForDrawer(id) {
+  const pane = document.querySelector('.drawer-pane[data-drawer-pane="memories"]');
+  if (!pane) return;
   try {
     const data = await api(`/schedules/${encodeURIComponent(id)}/memories?limit=20`);
-    renderScheduleMemories(id, data.memories || [], container);
+    renderScheduleMemoryList(data.memories || [], pane, id);
+    // 更新右上角 badge
+    const badge = document.getElementById('drawerBadgeMemories');
+    if (badge) {
+      const n = (data.memories || []).length;
+      badge.textContent = String(n);
+      badge.hidden = n === 0;
+    }
   } catch (e) {
-    container.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    pane.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
-function renderScheduleMemories(scheduleId, memories, container) {
+function renderScheduleMemoryList(memories, container, scheduleId) {
   if (!container) return;
   if (!memories.length) {
-    container.innerHTML = '<div class="schedule-empty">暂无隔离记忆</div>';
+    container.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无隔离记忆</div></div>';
     return;
   }
   container.innerHTML = memories.map(m => `
     <div class="schedule-memory-item" data-id="${escapeHtml(m.id)}">
       <div class="memory-text">${escapeHtml(truncateText(m.content || '', 400))}</div>
       <div class="memory-footer">
-        <button class="btn btn-danger btn-sm" data-action="del-cron-mem" data-id="${escapeHtml(scheduleId)}" data-memory-id="${escapeHtml(m.id)}">删除</button>
+        <button class="btn btn-danger btn-sm" data-drawer-action="del-cron-mem" data-schedule-id="${escapeHtml(scheduleId)}" data-memory-id="${escapeHtml(m.id)}">删除</button>
       </div>
     </div>
   `).join('');
+  // 绑定删除事件
+  container.onclick = (e) => {
+    const btn = e.target.closest('[data-drawer-action="del-cron-mem"]');
+    if (btn) deleteScheduleMemory(btn.dataset.scheduleId, btn.dataset.memoryId);
+  };
 }
 
-async function loadScheduleAudit(id, container) {
-  if (!container) return;
+async function loadScheduleAuditForDrawer(id) {
+  const pane = document.querySelector('.drawer-pane[data-drawer-pane="audit"]');
+  if (!pane) return;
   try {
     const data = await api(`/schedules/${encodeURIComponent(id)}/audit?limit=50`);
-    renderScheduleAudit(data.logs || [], container);
+    renderScheduleAuditList(data.logs || [], pane);
+    // 更新右上角 badge
+    const badge = document.getElementById('drawerBadgeAudit');
+    if (badge) {
+      const n = (data.logs || []).length;
+      badge.textContent = String(n);
+      badge.hidden = n === 0;
+    }
   } catch (e) {
-    container.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    pane.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
-function renderScheduleAudit(logs, container) {
+function renderScheduleAuditList(logs, container) {
   if (!container) return;
   if (!logs.length) {
-    container.innerHTML = '<div class="schedule-empty">暂无工具调用审计</div>';
+    container.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无工具调用审计</div></div>';
     return;
   }
   container.innerHTML = logs.map(l => {
     const source = l.decision_source || 'default_rule';
     const sourceLabelMap = {
-      schedule_grant: '预授权',
-      user_confirm: '用户确认',
-      default_rule: '默认规则',
+      schedule_grant: '预授权', user_confirm: '用户确认', default_rule: '默认规则',
     };
     const sourceLabel = sourceLabelMap[source] || source;
     const inputStr = l.tool_input ? JSON.stringify(l.tool_input) : '';
@@ -341,16 +751,20 @@ function renderScheduleAudit(logs, container) {
   }).join('');
 }
 
+// ========== 调度项二级展开已废弃（功能移入 drawer 次级 Tab） ==========
+// 旧的 toggleScheduleExpand / loadScheduleMemories / loadScheduleAudit /
+// renderScheduleMemories / renderScheduleAudit / deleteScheduleMemory 等函数
+// 已被上面的 loadScheduleMemoriesForDrawer / loadScheduleAuditForDrawer /
+// renderScheduleMemoryList / renderScheduleAuditList 替代。
+
 async function deleteScheduleMemory(scheduleId, memoryId) {
   if (!confirm('确认删除此条隔离记忆？')) return;
   try {
     await api(`/schedules/${encodeURIComponent(scheduleId)}/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' });
     showToast('记忆已删除', 'success');
-    // 重新加载该调度项的记忆
-    const itemEl = document.querySelector(`.schedule-item[data-id="${CSS.escape(scheduleId)}"].expanded`);
-    if (itemEl) {
-      const memContainer = itemEl.querySelector('.sched-memories');
-      if (memContainer) loadScheduleMemories(scheduleId, memContainer);
+    // 如果 drawer 当前打开的是该调度项的记忆 pane，刷新之
+    if (_drawerState && _drawerState.kind === 'schedule' && _drawerState.id === scheduleId) {
+      loadScheduleMemoriesForDrawer(scheduleId);
     }
   } catch (e) {
     showToast('删除失败: ' + e.message, 'error');
@@ -436,205 +850,50 @@ async function deleteSchedule(id) {
 }
 
 // ========== 提议系统 ==========
-function _handleProposalAction(e) {
-  const btn = e.target.closest('[data-action]');
-  if (!btn) return;
-  const action = btn.dataset.action;
-  const pid = btn.dataset.proposalId;
-  if (!pid) return;
-  if (action === 'confirm-proposal') confirmProposal(pid);
-  else if (action === 'reject-proposal') rejectProposal(pid);
-  else if (action === 'modify-confirm') modifyAndConfirmProposal(pid);
-  else if (action === 'toggle-edit') toggleProposalEditMode(pid);
-}
-
-function _handleProposalToolChange(e) {
-  if (!e.target.matches('.proposal-tool-chip input[type="checkbox"]')) return;
-  const chip = e.target.closest('.proposal-tool-chip');
-  if (chip) chip.classList.toggle('checked', e.target.checked);
-}
-
 async function fetchProposals() {
-  const listEl = document.getElementById('proposalList');
-  if (!listEl) return;
   try {
     const data = await api('/proposals');
     renderProposals(data.proposals || []);
   } catch (e) {
-    listEl.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    const listEl = document.getElementById('pendingListFull');
+    if (listEl) listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
 function renderProposals(proposals) {
-  const listEl = document.getElementById('proposalList');
+  const listEl = document.getElementById('pendingListFull');
   if (!listEl) return;
   _proposalsCache = proposals || [];
-  const sorted = [...(proposals || [])].sort((a, b) => {
-    const priority = { 'pending_confirm': 0, 'confirmed': 1, 'modified': 1, 'schedule_active': 1, 'proposal_created': 1, 'rejected': 2 };
-    return (priority[a.status] ?? 99) - (priority[b.status] ?? 99);
+  proposals.forEach(p => {
+    proposalToolsCache[p.proposal_id] = p.requested_tools || [];
   });
-  const countEl = document.getElementById('proposalCount');
-  if (countEl) countEl.textContent = proposals.length;
-  if (!sorted.length) {
-    listEl.innerHTML = '<div class="schedule-empty">暂无待确认的提议</div>';
+  // 合并：proposals 按状态排序 + pending cron_tools
+  const items = [];
+  proposals.forEach(p => items.push({ kind: p.status === 'pending_confirm' ? 'proposal_pending' : 'proposal_done', item: p }));
+  _pendingCronToolsCache.forEach(t => items.push({ kind: 'cron_tool_pending', item: t }));
+  // 排序：pending_confirm 在前，其它按时间倒序
+  items.sort((a, b) => {
+    const rank = { proposal_pending: 0, cron_tool_pending: 1, proposal_done: 2 };
+    return (rank[a.kind] ?? 99) - (rank[b.kind] ?? 99);
+  });
+  if (!items.length) {
+    listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无待办</div></div>';
   } else {
-    proposals.forEach(p => {
-      proposalToolsCache[p.proposal_id] = p.requested_tools || [];
-    });
-    listEl.innerHTML = sorted.map(p => renderProposalCard(p)).join('');
+    listEl.innerHTML = items.map(({ kind, item }) => renderListCard(kind, item)).join('');
   }
-  // 更新 PENDING 空态
-  _proposalsCount = proposals.length;
-  _proposalsLoaded = true;
-  updatePendingEmpty();
-}
+  updateManageBadges();
 
-function renderProposalCard(p) {
-  const cfg = p.schedule_config || {};
-  const tools = p.requested_tools || [];
-  const statusLabels = {
-    'pending_confirm': '待确认',
-    'confirmed': '已确认',
-    'modified': '已修改',
-    'rejected': '已拒绝',
-    'schedule_active': '已创建调度',
-    'proposal_created': '已创建',
-  };
-  const statusLabel = statusLabels[p.status] || p.status;
-  const toolsCount = tools.length;
-  const namePart = cfg.name ? ` · ${escapeHtml(cfg.name)}` : '';
-  const statusTagClass = p.status === 'pending_confirm' ? 'tag-warning' : p.status === 'rejected' ? 'tag-danger' : 'tag-success';
-  return `<div class="proposal-card" data-proposal-id="${escapeHtml(p.proposal_id)}">
-    <div class="proposal-card-header">
-      <span class="proposal-card-title">提议 ${escapeHtml(p.proposal_id)}</span>
-      <span class="${statusTagClass}">${escapeHtml(statusLabel)}</span>
-    </div>
-    <div class="proposal-card-section">
-      <div class="proposal-card-config text-sm">
-        <span class="mono">${escapeHtml(cfg.cron || '?')}</span> · ${escapeHtml(cfg.task || '?')}${namePart}<br>
-        <span class="text-muted">预授权工具 ${toolsCount} 个</span>
-      </div>
-    </div>
-    <div class="proposal-card-actions">
-      <button class="btn btn-primary btn-sm" onclick="openProposalDetail('${escapeHtml(p.proposal_id)}')">查看详情</button>
-    </div>
-  </div>`;
-}
-
-function openProposalDetail(proposalId) {
-  const p = _proposalsCache.find(x => x.proposal_id === proposalId);
-  if (!p) { showToast('未找到提议: ' + proposalId, 'error'); return; }
-  const cfg = p.schedule_config || {};
-  const tools = p.requested_tools || [];
-  const statusLabels = {
-    'pending_confirm': '待确认',
-    'confirmed': '已确认',
-    'modified': '已修改',
-    'rejected': '已拒绝',
-    'schedule_active': '已创建调度',
-    'proposal_created': '已创建',
-  };
-  const statusLabel = statusLabels[p.status] || p.status;
-  const isPending = p.status === 'pending_confirm';
-
-  const toolsHtml = tools.map(t => {
-    const toolName = escapeHtml(t.tool || '');
-    const scope = escapeHtml(t.scope || 'all');
-    const paths = (t.allowed_paths || []).join(', ');
-    const pathsStr = paths ? ` <span class="text-muted">[${escapeHtml(paths)}]</span>` : '';
-    if (isPending) {
-      return `<label class="proposal-tool-chip checked" title="${scope}">
-        <input type="checkbox" checked data-tool="${toolName}">
-        ${toolName}${pathsStr}
-      </label>`;
+  // URL 参数 ?proposal_id=xxx 自动打开 drawer
+  if (window._pendingProposalId) {
+    const targetId = window._pendingProposalId;
+    window._pendingProposalId = null;
+    const found = proposals.find(p => p.proposal_id === targetId);
+    if (found) {
+      const kind = found.status === 'pending_confirm' ? 'proposal_pending' : 'proposal_done';
+      setTimeout(() => openDrawer({ kind, id: targetId }), 50);
+    } else {
+      showToast(`未找到提议: ${targetId}`, 'error');
     }
-    return `<span class="proposal-tool-chip checked" title="${scope}">${toolName}${pathsStr}</span>`;
-  }).join('');
-
-  const editAreaHtml = isPending ? `
-    <div class="form-section" id="editArea_${escapeHtml(p.proposal_id)}" style="display:none;">
-      <div class="form-label">修改并确认（编辑后点底部「提交修改并确认」）</div>
-      <div class="form-row"><label>Cron</label><input type="text" id="editCron_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.cron || '')}" placeholder="0 9 * * *"></div>
-      <div class="form-row"><label>任务</label><input type="text" id="editTask_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.task || '')}"></div>
-      <div class="form-row"><label>名称</label><input type="text" id="editName_${escapeHtml(p.proposal_id)}" value="${escapeHtml(cfg.name || '')}"></div>
-      <div class="form-label">勾选/取消预授权工具</div>
-      <div class="proposal-detail-tools">${toolsHtml}</div>
-    </div>
-  ` : '';
-
-  const toolsDisplayHtml = isPending ? '' : `
-    <div class="form-section">
-      <div class="form-label">预授权工具</div>
-      <div class="proposal-detail-tools">${toolsHtml}</div>
-    </div>
-  `;
-
-  const scheduleIdHtml = (p.schedule_id && p.status === 'schedule_active') ? `
-    <div class="form-section">
-      <div class="form-label">已创建调度项</div>
-      <div class="form-value mono">${escapeHtml(p.schedule_id)}</div>
-    </div>
-  ` : '';
-
-  const workflowHtml = cfg.workflow ? `
-    <div class="form-section">
-      <div class="form-label">工作流</div>
-      <div class="form-value mono">${escapeHtml(JSON.stringify(cfg.workflow))}</div>
-    </div>
-  ` : '';
-
-  document.getElementById('proposalDetailTitle').textContent = `提议 ${p.proposal_id} · ${statusLabel}`;
-  document.getElementById('proposalDetailBody').innerHTML = `
-    <div class="form-section">
-      <div class="form-label">调度配置</div>
-      <div class="form-value">
-        ${cfg.name ? `名称: ${escapeHtml(cfg.name)}\n` : ''}Cron: ${escapeHtml(cfg.cron || '?')}\n任务: ${escapeHtml(cfg.task || '?')}
-      </div>
-    </div>
-    ${workflowHtml}
-    <div class="form-section">
-      <div class="form-label">LLM 说明</div>
-      <div class="form-value">${escapeHtml(p.llm_explanation || '(无说明)')}</div>
-    </div>
-    ${toolsDisplayHtml}
-    ${scheduleIdHtml}
-    ${editAreaHtml}
-  `;
-
-  const footer = document.getElementById('proposalDetailFooter');
-  if (isPending) {
-    footer.innerHTML = `
-      <button class="btn btn-ghost" onclick="closeModal('proposalDetailModal')">关闭</button>
-      <button class="btn btn-danger btn-sm" data-action="reject-proposal" data-proposal-id="${escapeHtml(p.proposal_id)}">拒绝</button>
-      <button class="btn btn-ghost" data-action="toggle-edit" data-proposal-id="${escapeHtml(p.proposal_id)}">修改并确认</button>
-      <button class="btn btn-primary" data-action="confirm-proposal" data-proposal-id="${escapeHtml(p.proposal_id)}">确认</button>
-    `;
-  } else {
-    footer.innerHTML = `<button class="btn btn-ghost" onclick="closeModal('proposalDetailModal')">关闭</button>`;
-  }
-  openModal('proposalDetailModal');
-}
-
-function toggleProposalEditMode(proposalId) {
-  const editArea = document.getElementById(`editArea_${proposalId}`);
-  if (!editArea) return;
-  const isEditing = editArea.style.display !== 'none';
-  editArea.style.display = isEditing ? 'none' : '';
-  const footer = document.getElementById('proposalDetailFooter');
-  if (!footer) return;
-  if (!isEditing) {
-    footer.innerHTML = `
-      <button class="btn btn-ghost" onclick="closeModal('proposalDetailModal')">关闭</button>
-      <button class="btn btn-primary" data-action="modify-confirm" data-proposal-id="${escapeHtml(proposalId)}">提交修改并确认</button>
-      <button class="btn btn-ghost" data-action="toggle-edit" data-proposal-id="${escapeHtml(proposalId)}">取消</button>
-    `;
-  } else {
-    footer.innerHTML = `
-      <button class="btn btn-ghost" onclick="closeModal('proposalDetailModal')">关闭</button>
-      <button class="btn btn-danger btn-sm" data-action="reject-proposal" data-proposal-id="${escapeHtml(proposalId)}">拒绝</button>
-      <button class="btn btn-ghost" data-action="toggle-edit" data-proposal-id="${escapeHtml(proposalId)}">修改并确认</button>
-      <button class="btn btn-primary" data-action="confirm-proposal" data-proposal-id="${escapeHtml(proposalId)}">确认</button>
-    `;
   }
 }
 
@@ -643,7 +902,7 @@ async function confirmProposal(proposalId) {
   try {
     const data = await api(`/proposals/${encodeURIComponent(proposalId)}/confirm`, { method: 'POST' });
     showToast(data.message || '提议已确认，调度项已创建', 'success');
-    closeModal('proposalDetailModal');
+    closeDrawer();
     fetchProposals();
     fetchSchedules();
   } catch (e) {
@@ -656,7 +915,7 @@ async function rejectProposal(proposalId) {
   try {
     const data = await api(`/proposals/${encodeURIComponent(proposalId)}/reject`, { method: 'POST' });
     showToast(data.message || '提议已拒绝', 'success');
-    closeModal('proposalDetailModal');
+    closeDrawer();
     fetchProposals();
   } catch (e) {
     showToast('拒绝失败: ' + e.message, 'error');
@@ -664,9 +923,9 @@ async function rejectProposal(proposalId) {
 }
 
 async function modifyAndConfirmProposal(proposalId) {
-  const cronInput = document.getElementById(`editCron_${proposalId}`);
-  const taskInput = document.getElementById(`editTask_${proposalId}`);
-  const nameInput = document.getElementById(`editName_${proposalId}`);
+  const cronInput = document.getElementById(`drawerEditCron_${proposalId}`);
+  const taskInput = document.getElementById(`drawerEditTask_${proposalId}`);
+  const nameInput = document.getElementById(`drawerEditName_${proposalId}`);
   if (!cronInput || !taskInput) {
     showToast('编辑区未就绪', 'error');
     return;
@@ -681,11 +940,11 @@ async function modifyAndConfirmProposal(proposalId) {
   if (nameInput && nameInput.value.trim()) {
     scheduleConfigUpdates.name = nameInput.value.trim();
   }
-  const modalBody = document.getElementById('proposalDetailBody');
+  const modalBody = document.getElementById('drawerBody');
   const originalTools = proposalToolsCache[proposalId] || [];
   const checkedTools = [];
   if (modalBody) {
-    modalBody.querySelectorAll('.proposal-tool-chip input[type="checkbox"]').forEach(cb => {
+    modalBody.querySelectorAll('.drawer-chip-tool input[type="checkbox"]').forEach(cb => {
       if (cb.checked) {
         const toolName = cb.dataset.tool;
         const orig = originalTools.find(t => (t.tool || '') === toolName);
@@ -706,7 +965,7 @@ async function modifyAndConfirmProposal(proposalId) {
       }
     });
     showToast(data.message || '提议已修改并创建调度项', 'success');
-    closeModal('proposalDetailModal');
+    closeDrawer();
     fetchProposals();
     fetchSchedules();
   } catch (e) {
@@ -716,67 +975,26 @@ async function modifyAndConfirmProposal(proposalId) {
 
 // ========== Cron Tool 系统 ==========
 async function fetchCronToolsPending() {
-  const listEl = document.getElementById('cronToolPendingList');
-  if (!listEl) return;
   try {
     const data = await api('/cron_tools/pending');
     renderCronToolsPending(data.pending || []);
   } catch (e) {
-    listEl.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    const listEl = document.getElementById('pendingListFull');
+    if (listEl) listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
 function renderCronToolsPending(items) {
-  const listEl = document.getElementById('cronToolPendingList');
-  if (!listEl) return;
   _pendingCronToolsCache = items || [];
-  const countEl = document.getElementById('cronToolPendingCount');
-  if (countEl) countEl.textContent = items.length;
-  if (!items.length) {
-    listEl.innerHTML = '<div class="schedule-empty">暂无待审查 cron_tool</div>';
+  // 不再单独渲染列表，而是让 renderProposals 合并
+  // 重新触发 renderProposals 合并渲染
+  if (_proposalsCache.length || _pendingCronToolsCache.length) {
+    renderProposals(_proposalsCache);
   } else {
-    listEl.innerHTML = items.map(t => renderCronToolPendingCard(t)).join('');
+    const listEl = document.getElementById('pendingListFull');
+    if (listEl) listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无待办</div></div>';
   }
-  // 更新 PENDING 空态
-  _cronToolPendingCount = items.length;
-  _cronToolPendingLoaded = true;
-  updatePendingEmpty();
-}
-
-function renderCronToolPendingCard(t) {
-  const name = escapeHtml(t.name || '');
-  const runExt = escapeHtml(t.run_ext || '.py');
-  const mdLines = (t.tool_md || '').split('\n').length;
-  const runLines = (t.run_script || '').split('\n').length;
-  return `<div class="cron-tool-card">
-    <div class="cron-tool-card-header">
-      <span><span class="cron-tool-card-name mono">${name}</span><span class="tag tag-warning">待审查</span></span>
-      <span class="cron-tool-card-meta text-muted text-sm">TOOL.md ${mdLines}行 · run${runExt} ${runLines}行</span>
-    </div>
-    <div class="cron-tool-card-actions">
-      <button class="btn btn-primary btn-sm" onclick="openCronToolDetail('${name}')">查看详情</button>
-    </div>
-  </div>`;
-}
-
-function openCronToolDetail(name) {
-  const t = _pendingCronToolsCache.find(x => x.name === name);
-  if (!t) { showToast('未找到 cron_tool: ' + name, 'error'); return; }
-  const runExt = escapeHtml(t.run_ext || '.py');
-  const toolMd = t.tool_md || '';
-  const runScript = t.run_script || '';
-  const mdLines = toolMd.split('\n').length;
-  const runLines = runScript.split('\n').length;
-  document.getElementById('cronToolDetailTitle').textContent = '审查: ' + name;
-  document.getElementById('cronToolDetailBody').innerHTML =
-    `<div class="schedule-empty">TOOL.md ${mdLines} 行 · run${runExt} ${runLines} 行 · 状态：待审查</div>` +
-    `<div class="form-section"><div class="form-label">TOOL.md</div><pre class="tool-card-content">${escapeHtml(toolMd) || '<em class="text-muted">（空）</em>'}</pre></div>` +
-    `<div class="form-section"><div class="form-label">run${runExt}</div><pre class="tool-card-content">${escapeHtml(runScript) || '<em class="text-muted">（空）</em>'}</pre></div>`;
-  const approveBtn = document.getElementById('cronToolDetailApproveBtn');
-  const rejectBtn = document.getElementById('cronToolDetailRejectBtn');
-  approveBtn.onclick = () => { closeModal('cronToolDetailModal'); activateCronTool(name); };
-  rejectBtn.onclick = () => { closeModal('cronToolDetailModal'); rejectCronTool(name); };
-  openModal('cronToolDetailModal');
+  updateManageBadges();
 }
 
 async function activateCronTool(name) {
@@ -803,71 +1021,25 @@ async function rejectCronTool(name) {
 }
 
 async function fetchCronTools() {
-  const listEl = document.getElementById('cronToolList');
-  if (!listEl) return;
   try {
     const data = await api('/cron_tools');
     renderCronTools(data.cron_tools || []);
   } catch (e) {
-    listEl.innerHTML = `<div class="schedule-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+    const listEl = document.getElementById('cronToolListFull');
+    if (listEl) listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
 function renderCronTools(items) {
-  const listEl = document.getElementById('cronToolList');
+  const listEl = document.getElementById('cronToolListFull');
   if (!listEl) return;
   _cronToolsCache = items || [];
-  const countEl = document.getElementById('cronToolCount');
-  if (countEl) countEl.textContent = items.length;
   if (!items.length) {
-    listEl.innerHTML = '<div class="schedule-empty">暂无已激活 cron_tool</div>';
-    return;
+    listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">暂无已激活 cron_tool</div></div>';
+  } else {
+    listEl.innerHTML = items.map(t => renderListCard('cron_tool_active', t)).join('');
   }
-  listEl.innerHTML = items.map(t => renderCronToolCard(t)).join('');
-}
-
-function renderCronToolCard(t) {
-  const name = escapeHtml(t.name || '');
-  const version = escapeHtml(t.version || '');
-  const descRaw = t.description || '';
-  const desc = escapeHtml(truncateText(descRaw, 60));
-  return `<div class="cron-tool-card">
-    <div class="cron-tool-card-header">
-      <span><span class="cron-tool-card-name mono">${name}</span><span class="tag">v${version}</span></span>
-      <span class="cron-tool-card-meta text-sm">${desc || '<em class="text-muted">无描述</em>'}</span>
-    </div>
-    <div class="cron-tool-card-actions">
-      <button class="btn btn-primary btn-sm" onclick="openCronToolActiveDetail('${name}')">查看详情</button>
-    </div>
-  </div>`;
-}
-
-function openCronToolActiveDetail(name) {
-  const t = _cronToolsCache.find(x => x.name === name);
-  if (!t) { showToast('未找到 cron_tool: ' + name, 'error'); return; }
-  const timeout = t.timeout == null ? '默认(30s)' : `${t.timeout}s`;
-  document.getElementById('cronToolActiveDetailTitle').textContent = `cron_tool · ${t.name}`;
-  document.getElementById('cronToolActiveDetailBody').innerHTML = `
-    <div class="form-section"><div class="form-label">名称</div><div class="form-value mono">${escapeHtml(t.name || '')}</div></div>
-    <div class="form-section"><div class="form-label">版本</div><div class="form-value">${escapeHtml(t.version || '')}</div></div>
-    <div class="form-section"><div class="form-label">描述</div><div class="form-value">${escapeHtml(t.description || '(无描述)')}</div></div>
-    <div class="form-section"><div class="form-label">作者</div><div class="form-value">${escapeHtml(t.author || '(未知)')}</div></div>
-    <div class="form-section"><div class="form-label">超时</div><div class="form-value">${escapeHtml(timeout)}</div></div>
-  `;
-  document.getElementById('cronToolActiveDetailFooter').innerHTML = `
-    <button class="btn btn-ghost" onclick="closeModal('cronToolActiveDetailModal')">关闭</button>
-    <button class="btn btn-danger btn-sm" id="cronToolActiveDeleteBtn">删除</button>
-    <button class="btn btn-primary" id="cronToolActiveReloadBtn">重新加载</button>
-  `;
-  document.getElementById('cronToolActiveReloadBtn').onclick = () => {
-    closeModal('cronToolActiveDetailModal');
-    reloadCronTool(name);
-  };
-  document.getElementById('cronToolActiveDeleteBtn').onclick = () => {
-    closeModal('cronToolActiveDetailModal');
-    deleteCronTool(name);
-  };
-  openModal('cronToolActiveDetailModal');
+  updateManageBadges();
 }
 
 async function reloadCronTool(name) {
@@ -1066,27 +1238,9 @@ function renderScheduleMessageBubble(m) {
   </div>`;
 }
 
-// ========== UXP 空状态引导（PENDING / SCHEDULES 0 项时） ==========
-
-/** 更新 PENDING 整体空态：两子分组都加载完且都为 0 时显示 */
-function updatePendingEmpty() {
-  const el = document.getElementById('pendingEmpty');
-  if (!el) return;
-  // 等两个子列表都至少渲染过一次，避免初始加载时短暂闪现空态
-  if (!_proposalsLoaded || !_cronToolPendingLoaded) {
-    el.hidden = true;
-    return;
-  }
-  const isEmpty = _proposalsCount === 0 && _cronToolPendingCount === 0;
-  el.hidden = !isEmpty;
-}
-
-/** 更新 SCHEDULES 空态：调度项为 0 时显示 */
-function updateSchedulesEmpty(count) {
-  const el = document.getElementById('schedulesEmpty');
-  if (!el) return;
-  el.hidden = count > 0;
-}
+// ========== UXP 空状态引导已废弃（移除） ==========
+// 旧 updatePendingEmpty / updateSchedulesEmpty / setupEmptyStateActions 已删除，
+// 改用 updateManageBadges() 仅更新右上角 badge 数字。
 
 /** 触发新建调度弹窗（复用 btnNewScheduleTab 的逻辑：清空表单 + 重置 workflow + 打开 modal） */
 function openScheduleModal() {
@@ -1103,6 +1257,65 @@ function openScheduleModal() {
   openModal('scheduleModal');
 }
 
+/** 打开新建调度弹窗并预填 workflow spec（来自 /workflow 的"保存为调度"或 chat 卡片的"在编辑器打开"） */
+function openScheduleModalWithWorkflow(spec) {
+  // 1. 调用现有 openScheduleModal 打开弹窗（清空表单 + resetWorkflowConfig + openModal）
+  openScheduleModal();
+
+  // 2. 切换 workflow 模式为"多步"（若 spec 含 steps）
+  if (spec && Array.isArray(spec.steps) && spec.steps.length > 0) {
+    // 切换 radio 到 multi
+    const multiRadio = document.querySelector('input[name="schedWfMode"][value="multi"]');
+    if (multiRadio) multiRadio.checked = true;
+    // 显隐对应区域
+    const simpleEl = document.querySelector('.sched-wf-config-simple');
+    const multiEl = document.querySelector('.sched-wf-config-multi');
+    const emptyHint = document.querySelector('.sched-wf-empty-hint');
+    if (simpleEl) simpleEl.hidden = true;
+    if (multiEl) multiEl.hidden = false;
+    if (emptyHint) emptyHint.hidden = true;
+    if (typeof updateWorkflowStepBadge === 'function') updateWorkflowStepBadge();
+
+    // 3. 填充 workflow name
+    if (spec.name) {
+      const wfName = document.getElementById('schedWfName');
+      if (wfName) wfName.value = spec.name;
+    }
+
+    // 4. 遍历 spec.steps，调用 addWorkflowStep 添加每个 step 并填充字段
+    spec.steps.forEach((step) => {
+      if (typeof addWorkflowStep !== 'function') return;
+      addWorkflowStep();
+      const stepsEl = document.getElementById('schedWfSteps');
+      if (!stepsEl) return;
+      const allSteps = stepsEl.querySelectorAll('.sched-wf-step');
+      const lastStep = allSteps[allSteps.length - 1];
+      if (!lastStep) return;
+      const idInput = lastStep.querySelector('.sched-wf-step-id-input');
+      const nameInput = lastStep.querySelector('.sched-wf-step-name-input');
+      const typeSelect = lastStep.querySelector('.sched-wf-step-type-select');
+      const configArea = lastStep.querySelector('.sched-wf-step-config-area');
+      const depsInput = lastStep.querySelector('.sched-wf-step-deps-input');
+      const onFailureSelect = lastStep.querySelector('.sched-wf-step-onfailure-select');
+      if (idInput) idInput.value = step.id || '';
+      if (nameInput) nameInput.value = step.name || '';
+      if (typeSelect) typeSelect.value = step.type || 'llm';
+      if (configArea) configArea.value = JSON.stringify(step.config || {}, null, 2);
+      if (depsInput) depsInput.value = (step.depends_on || []).join(', ');
+      if (onFailureSelect && step.on_failure) {
+        const action = typeof step.on_failure === 'string' ? step.on_failure : (step.on_failure.action || 'abort');
+        onFailureSelect.value = action;
+      }
+    });
+  }
+
+  // 5. 可选：用 spec.name 填充 schedule 名称
+  if (spec && spec.name) {
+    const schedName = document.getElementById('schedName');
+    if (schedName && !schedName.value) schedName.value = spec.name;
+  }
+}
+
 /** 绑定 PENDING / SCHEDULES 空态引导按钮的 click 事件 */
 function setupEmptyStateActions() {
   const pendingAction = document.getElementById('pendingEmptyAction');
@@ -1115,9 +1328,35 @@ function setupEmptyStateActions() {
 function init() {
   // 1. 初始化数据
   refreshAll();
+  updateManageBadges();
 
-  // 1.5 空状态引导按钮绑定（PENDING / SCHEDULES 0 项时点击触发新建调度弹窗）
-  setupEmptyStateActions();
+  // 1.5 URL 参数处理：?proposal_id=xxx 自动展开 / ?new_workflow[_key]=xxx 打开新建弹窗预填
+  const _urlParams = new URLSearchParams(window.location.search);
+  const _pendingProposalIdParam = _urlParams.get('proposal_id');
+  const _newWorkflowB64 = _urlParams.get('new_workflow');
+  const _newWorkflowKey = _urlParams.get('new_workflow_key');
+  if (_pendingProposalIdParam) {
+    // 等待 fetchProposals() 渲染后自动展开（renderProposals 末尾检查 window._pendingProposalId）
+    window._pendingProposalId = _pendingProposalIdParam;
+  } else if (_newWorkflowKey || _newWorkflowB64) {
+    // 解析 workflow spec（localStorage 降级模式或 base64 模式），打开新建调度弹窗并预填
+    setTimeout(() => {
+      try {
+        let json;
+        if (_newWorkflowKey) {
+          json = localStorage.getItem(_newWorkflowKey);
+          if (json) localStorage.removeItem(_newWorkflowKey);
+          if (!json) throw new Error('导入数据已过期或不存在');
+        } else {
+          json = decodeURIComponent(escape(atob(_newWorkflowB64)));
+        }
+        const spec = JSON.parse(json);
+        openScheduleModalWithWorkflow(spec);
+      } catch (e) {
+        showToast(`workflow 导入失败: ${e.message}`, 'error');
+      }
+    }, 100);
+  }
 
   // 2. refresh-picker 绑定
   const refreshIntervalSel = document.getElementById('refreshInterval');
@@ -1142,17 +1381,31 @@ function init() {
   }
   startTimer();
 
-  // 3. section refresh 按钮绑定
+  // 3. 左列 section refresh 按钮绑定
   const btnRefreshScheduleRuns = document.getElementById('btnRefreshScheduleRuns');
   if (btnRefreshScheduleRuns) btnRefreshScheduleRuns.addEventListener('click', fetchScheduleRuns);
-  const btnRefreshProposals = document.getElementById('btnRefreshProposals');
-  if (btnRefreshProposals) btnRefreshProposals.addEventListener('click', fetchProposals);
-  const btnRefreshSchedules = document.getElementById('btnRefreshSchedules');
-  if (btnRefreshSchedules) btnRefreshSchedules.addEventListener('click', fetchSchedules);
-  const btnRefreshCronToolsPending = document.getElementById('btnRefreshCronToolsPending');
-  if (btnRefreshCronToolsPending) btnRefreshCronToolsPending.addEventListener('click', fetchCronToolsPending);
-  const btnRefreshCronTools = document.getElementById('btnRefreshCronTools');
-  if (btnRefreshCronTools) btnRefreshCronTools.addEventListener('click', fetchCronTools);
+
+  // 3.5. 右列 Manage Tab 切换
+  document.querySelectorAll('.sched-tab[data-manage-tab]').forEach(tab => {
+    tab.addEventListener('click', () => switchManageTab(tab.dataset.manageTab));
+  });
+  // 当前 Tab 刷新按钮
+  const btnRefreshActive = document.getElementById('btnRefreshActive');
+  if (btnRefreshActive) btnRefreshActive.addEventListener('click', refreshActiveTab);
+
+  // 3.6. Drawer 关闭
+  const drawerClose = document.getElementById('drawerClose');
+  if (drawerClose) drawerClose.addEventListener('click', closeDrawer);
+  const drawerOverlay = document.getElementById('drawerOverlay');
+  if (drawerOverlay) {
+    drawerOverlay.addEventListener('click', (e) => {
+      if (e.target === drawerOverlay) closeDrawer();
+    });
+  }
+  // Drawer 次级 Tab 切换
+  document.querySelectorAll('.drawer-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchDrawerSubTab(tab.dataset.drawerTab));
+  });
 
   // runsLimit 变更时重新加载
   const runsLimitSel = document.getElementById('runsLimit');
@@ -1189,22 +1442,20 @@ function init() {
       // 重置 workflow 配置
       resetWorkflowConfig();
       updateCreateScheduleBtnState();
+      // 触发 cron 预览刷新
+      const cronNext = document.getElementById('cronNextPreview');
+      if (cronNext && typeof previewCronNext === 'function' && schedCron) {
+        cronNext.textContent = previewCronNext(schedCron.value, 5);
+      }
       openModal('scheduleModal');
     });
   }
 
-  // 6. 关键修复：proposalDetailModal 死按钮绑定
-  const proposalDetailModal = document.getElementById('proposalDetailModal');
-  if (proposalDetailModal) {
-    proposalDetailModal.addEventListener('click', _handleProposalAction);
-    proposalDetailModal.addEventListener('change', _handleProposalToolChange);
-  }
-
-  // 7. Run 卡片点击委托（展开/折叠 + 调度名跳转到会话视图）
+  // 6. Run 卡片点击委托（展开/折叠 + 调度名跳转到会话视图）
   const runsList = document.getElementById('scheduleRunsList');
   if (runsList) {
     runsList.addEventListener('click', (e) => {
-      // 7a. 调度名点击：跳转到单调度会话视图（左列内切换）
+      // 6a. 调度名点击：跳转到单调度会话视图（左列内切换）
       const schedNameEl = e.target.closest('.schedule-run-sched-name[data-schedule-id]');
       if (schedNameEl) {
         e.stopPropagation();
@@ -1212,7 +1463,7 @@ function init() {
         if (schedId) switchLeftViewToSession(schedId);
         return;
       }
-      // 7b. 默认：展开/折叠 run 详情
+      // 6b. 默认：展开/折叠 run 详情
       const header = e.target.closest('.schedule-run-header');
       if (!header) return;
       const runItem = header.closest('.schedule-run-item');
@@ -1220,39 +1471,19 @@ function init() {
     });
   }
 
-  // 8. 调度项点击委托（记忆/审计展开、记忆删除）
-  const scheduleList = document.getElementById('scheduleList');
-  if (scheduleList) {
-    scheduleList.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-action]');
-      if (btn) {
-        const action = btn.dataset.action;
-        const id = btn.dataset.id;
-        if (action === 'expand') toggleScheduleExpand(id);
-        else if (action === 'del-cron-mem') deleteScheduleMemory(id, btn.dataset.memoryId);
-        return;
-      }
-    });
-  }
-
-  // 9. 右列可折叠 section 通用折叠逻辑（待办/调度项/cron_tool已激活）
-  document.querySelectorAll('.scheduler-col-manage .monitor-section.collapsible .section-header').forEach(header => {
-    header.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;  // 忽略按钮点击
-      const section = header.closest('.monitor-section');
-      if (section) section.classList.toggle('collapsed');
-    });
-  });
-
-  // 10. ESC 关闭 modal
+  // 7. ESC 关闭 drawer / modal（drawer 优先）
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      document.querySelectorAll('.modal-overlay.show').forEach(el => el.classList.remove('show'));
+      if (_drawerState) {
+        closeDrawer();
+      } else {
+        document.querySelectorAll('.modal-overlay.show').forEach(el => el.classList.remove('show'));
+      }
     }
   });
 
-  // 11. 页面可见性变化时暂停/恢复轮询（仅历史视图自动刷新；
-  //     会话视图不自动轮询，避免覆盖用户阅读位置）
+  // 8. 页面可见性变化时暂停/恢复轮询（仅历史视图自动刷新；
+  //    会话视图不自动轮询，避免覆盖用户阅读位置）
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopTimer();
@@ -1262,7 +1493,7 @@ function init() {
     }
   });
 
-  // 12. 左列会话视图按钮：返回历史 / 刷新当前会话
+  // 9. 左列会话视图按钮：返回历史 / 刷新当前会话
   const btnBackToHistory = document.getElementById('btnBackToHistory');
   if (btnBackToHistory) {
     btnBackToHistory.addEventListener('click', () => switchLeftViewToHistory());
@@ -1277,11 +1508,105 @@ function init() {
     });
   }
 
-  // 13. 切换会话按钮 + 下拉选择器
+  // 10. 切换会话按钮 + 下拉选择器
   initSessionPicker();
 
-  // 14. 新建调度弹窗：Tab 切换 + workflow 模式切换 + cron 预设 + step 编辑器
+  // 11. 新建调度弹窗: cron 实时预览 + 模板 chips + workflow 模式 + step 编辑器
+  initScheduleModalNew();
   initScheduleModal();
+}
+
+/** 新建调度弹窗补充初始化（cron 实时预览 + workflow 模板 chips 渲染） */
+function initScheduleModalNew() {
+  // 1) cron 输入实时预览
+  const schedCron = document.getElementById('schedCron');
+  const cronNext = document.getElementById('cronNextPreview');
+  if (schedCron && cronNext) {
+    const refreshPreview = () => {
+      const fn = (window.HermesUtils && window.HermesUtils.previewCronNext)
+        || (typeof previewCronNext === 'function' ? previewCronNext : null);
+      cronNext.textContent = fn ? fn(schedCron.value, 5) : '—';
+    };
+    schedCron.addEventListener('input', refreshPreview);
+    refreshPreview();
+  }
+
+  // 2) workflow 模板 chips 渲染
+  loadWorkflowPresetsToChips();
+}
+
+/** 从 window.WORKFLOW_PRESETS 渲染 chips 到 #wfTemplateChips */
+function loadWorkflowPresetsToChips() {
+  const container = document.getElementById('wfTemplateChips');
+  if (!container) return;
+  const presets = window.WORKFLOW_PRESETS || [];
+  if (!presets.length) {
+    container.innerHTML = '<span class="text-muted text-sm">暂无模板</span>';
+    return;
+  }
+  container.innerHTML = presets.map(p => {
+    const diff = p.difficulty || 'beginner';
+    return `<button type="button" class="wf-template-chip"
+      data-preset-id="${escapeHtml(p.id)}" title="${escapeHtml(p.description || '')}">
+      ${escapeHtml(p.name)}
+      <span class="wf-template-chip-tag ${diff}">${escapeHtml(diff)}</span>
+    </button>`;
+  }).join('');
+  // 绑定点击事件：调用 applyWorkflowPreset
+  container.querySelectorAll('.wf-template-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.presetId;
+      const preset = presets.find(p => p.id === id);
+      if (preset) applyWorkflowPreset(preset);
+    });
+  });
+}
+
+/** 把预设的 steps 灌入到新建调度的多步模式编辑区 */
+function applyWorkflowPreset(preset) {
+  if (!preset || !preset.spec) return;
+  // 1) 切到 multi 模式
+  const multiRadio = document.querySelector('input[name="schedWfMode"][value="multi"]');
+  if (multiRadio) {
+    multiRadio.checked = true;
+    multiRadio.dispatchEvent(new Event('change'));
+  }
+  // 2) 填 wf 名称
+  const wfNameInput = document.getElementById('schedWfName');
+  if (wfNameInput && preset.spec.name) wfNameInput.value = preset.spec.name;
+  // 3) 清空现有 step 并添加 preset 的所有 step
+  const stepsEl = document.getElementById('schedWfSteps');
+  const steps = Array.isArray(preset.spec.steps) ? preset.spec.steps : [];
+  if (stepsEl) {
+    stepsEl.innerHTML = '';
+    _wfStepCounter = 0;
+    steps.forEach(step => {
+      addWorkflowStep();
+      const allSteps = stepsEl.querySelectorAll('.sched-wf-step');
+      const lastStep = allSteps[allSteps.length - 1];
+      if (!lastStep) return;
+      const idInput = lastStep.querySelector('.sched-wf-step-id-input');
+      const nameInput = lastStep.querySelector('.sched-wf-step-name-input');
+      const typeSelect = lastStep.querySelector('.sched-wf-step-type-select');
+      const configArea = lastStep.querySelector('.sched-wf-step-config-area');
+      const depsInput = lastStep.querySelector('.sched-wf-step-deps-input');
+      const onFailureSelect = lastStep.querySelector('.sched-wf-step-onfailure-select');
+      if (idInput) idInput.value = step.id || '';
+      if (nameInput) nameInput.value = step.name || '';
+      if (typeSelect && step.type) {
+        typeSelect.value = step.type;
+        typeSelect.dispatchEvent(new Event('change'));
+      }
+      if (configArea) configArea.value = JSON.stringify(step.config || {}, null, 2);
+      if (depsInput) depsInput.value = (step.depends_on || []).join(', ');
+      if (onFailureSelect) {
+        const action = (step.on_failure && step.on_failure.action) || 'abort';
+        onFailureSelect.value = action;
+      }
+    });
+    updateWorkflowStepBadge();
+  }
+  showToast(`已加载模板：${preset.name}`, 'success');
 }
 
 // ============================================================

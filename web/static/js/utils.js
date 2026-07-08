@@ -207,6 +207,45 @@ function closeModal(id) {
   if (modal) modal.classList.remove('show');
 }
 
+// ========== Cron 表达式下次运行预览 ==========
+/**
+ * 用 croniter 计算 cron 表达式接下来的 N 次运行时间。
+ * @param {string} expr - 5 字段 cron 表达式
+ * @param {number} count - 计算次数，默认 5
+ * @returns {string} - 形如 "7/8 14:30 · 7/8 15:00 · ..."；表达式非法返回 '表达式无效'
+ */
+function previewCronNext(expr, count) {
+  const n = count || 5;
+  if (!expr || typeof expr !== 'string' || !expr.trim()) return '—';
+  const trimmed = expr.trim();
+  // 优先使用 croniter 全局（CDN 引入）
+  if (typeof window.croniter !== 'undefined') {
+    try {
+      const it = window.croniter.parse(trimmed, new Date());
+      const arr = [];
+      let d = it.next();
+      if (!d || isNaN(d.getTime())) throw new Error('parse fail');
+      arr.push(formatCronSlot(d));
+      for (let i = 1; i < n; i++) {
+        d = it.next();
+        if (!d) break;
+        arr.push(formatCronSlot(d));
+      }
+      return arr.join(' · ');
+    } catch (e) {
+      return '表达式无效';
+    }
+  }
+  // 降级：仅做 5 段格式校验
+  const parts = trimmed.split(/\s+/);
+  if (parts.length !== 5) return '表达式无效';
+  return '（需联网载入 croniter 才能预览）';
+}
+
+function formatCronSlot(d) {
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 // 暴露给其他模块（ES module 模式不采用，保持全局函数风格与原代码一致）
 window.HermesUtils = {
   API_BASE,
@@ -227,4 +266,5 @@ window.HermesUtils = {
   handleCodeCopyClick,
   openModal,
   closeModal,
+  previewCronNext,
 };

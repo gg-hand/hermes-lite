@@ -188,6 +188,10 @@ class WorkflowEngine:
             step_traces.append(trace)
             step_trace_map[step.id] = trace
 
+            # 2b.1 将 step 产出存入 context.step_outputs，供后续 step 引用
+            if trace.outputs:
+                context.step_outputs[step.id] = trace.outputs
+
             # 2c. abort 策略：终止整个 workflow
             # PERMANENT 类错误（含 notimplemented）触发 abort 检查：
             # - NotImplementedError：强制 abort（无论 action 配置）
@@ -220,6 +224,10 @@ class WorkflowEngine:
                     f"step '{trace.step_id}' ({trace.step_type}) "
                     f"{trace.status}: {trace.error_message}"
                 )
+            # 聚合每个 step 的 tool_calls 到 result.tool_calls，
+            # 供调用方（如 CronScheduler 写 session_logger）按顺序遍历
+            if trace.tool_calls:
+                result.tool_calls.extend(trace.tool_calls)
 
         # 5. D5 修复：合并 context.error_channel 到 result.errors
         error_channel = getattr(context, "error_channel", None)
@@ -231,6 +239,14 @@ class WorkflowEngine:
         result.success = not aborted and not any(
             t.status in ("failed", "timeout") for t in step_traces
         )
+
+        # 从最后一个成功的 LLM step 提取 assistant_response
+        for trace in reversed(step_traces):
+            if trace.status == "success" and trace.outputs:
+                resp = trace.outputs.get("response") or trace.outputs.get("result")
+                if resp:
+                    result.assistant_response = resp
+                    break
 
         return result
 

@@ -265,6 +265,11 @@ class LlmCallExecutor(StepExecutor):
         # 时间变量替换（与 WorkflowContext.render 一致）
         user_input = context.render(prompt_template)
 
+        # 注入 depends_on 前置步骤的输出，使 LLM 能引用上游结果
+        dep_outputs = self._build_depends_context(spec, context)
+        if dep_outputs:
+            user_input = dep_outputs + "\n\n" + user_input
+
         # D5 修复后的 _call_llm_single_turn：异常写入 error_channel
         # 但 base.py 当前版本仍吞异常 → 此处显式捕获并写入 context
         helper = _LlmCallTemplate()
@@ -306,6 +311,42 @@ class LlmCallExecutor(StepExecutor):
             except Exception:
                 logger.debug("context.append_error 调用失败", exc_info=True)
 
+    @staticmethod
+    def _build_depends_context(spec: StepSpec, context: WorkflowContext) -> str:
+        """构建 depends_on 前置步骤的输出上下文文本。
+
+        遍历 ``spec.depends_on`` 中的 step_id，从 ``context.step_outputs``
+        取对应 outputs，格式化为可读文本块供 LLM 引用。
+
+        参数:
+            spec: 当前 step 的声明式定义。
+            context: 工作流执行上下文（含 step_outputs）。
+
+        返回:
+            格式化的前置步骤输出文本；无 depends_on 或无可用输出时返回空串。
+        """
+        if not spec.depends_on:
+            return ""
+        step_outputs = getattr(context, "step_outputs", None) or {}
+        blocks: List[str] = []
+        for dep_id in spec.depends_on:
+            outputs = step_outputs.get(dep_id)
+            if not outputs:
+                continue
+            # tool step: outputs = {"result": str, "tool": str}
+            # llm step: outputs = {"response": str}
+            content = outputs.get("result") or outputs.get("response") or ""
+            if not content:
+                continue
+            tool_name = outputs.get("tool")
+            header = f"--- {dep_id} ---"
+            if tool_name:
+                header = f"--- {dep_id} (工具: {tool_name}) ---"
+            blocks.append(f"{header}\n{content}")
+        if not blocks:
+            return ""
+        return "[前置步骤输出]\n\n" + "\n\n".join(blocks)
+
 
 # ---------------------------------------------------------------------------
 # 5.3c ToolCallExecutor
@@ -345,7 +386,8 @@ class ToolCallExecutor(StepExecutor):
             raise StepExecutionError(
                 "permanent", "tool step 缺少 config.tool 字段"
             )
-        tool_input = spec.config.get("input") or {}
+        # 兼容 LLM 生成的 "arguments" 和规范字段 "input" 两种 key
+        tool_input = spec.config.get("input") or spec.config.get("arguments") or {}
 
         # 安全约束：PolicyEngine.check
         policy_engine = getattr(context, "policy_engine", None)

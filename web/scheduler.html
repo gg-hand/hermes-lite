@@ -15,6 +15,8 @@
 
   <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
   <script src="/static/js/theme.js"></script>
+  <!-- croniter: cron 表达式下次运行时间预览 -->
+  <script src="https://cdn.jsdelivr.net/npm/croniter@2.0.3/dist/croniter.min.js"></script>
 </head>
 <body>
 
@@ -128,7 +130,7 @@
         </div>
       </section>
 
-      <!-- ========== 右列：管理面板 ========== -->
+      <!-- ========== 右列：管理面板（Tab + 抽屉） ========== -->
       <div class="scheduler-col-manage">
 
         <!-- 顶部新建调度按钮区 -->
@@ -140,105 +142,49 @@
           </button>
         </div>
 
-        <!-- 待办区 -->
-        <section class="monitor-section scheduler-section collapsible">
-          <div class="section-header">
-            <div class="section-label">Pending</div>
-            <h2 class="section-title">待办</h2>
-            <div class="section-actions">
-              <span class="section-toggle">▼</span>
-            </div>
+        <!-- Tab 切换器 -->
+        <div class="sched-tabs sched-tabs-top" id="manageTabs">
+          <button class="sched-tab active" data-manage-tab="pending" type="button">
+            待办 <span class="sched-tab-badge" id="tabBadgePending">0</span>
+          </button>
+          <button class="sched-tab" data-manage-tab="schedules" type="button">
+            调度项 <span class="sched-tab-badge" id="tabBadgeSchedules">0</span>
+          </button>
+          <button class="sched-tab" data-manage-tab="cronTool" type="button">
+            Cron Tool <span class="sched-tab-badge" id="tabBadgeCronTool">0</span>
+          </button>
+          <div class="sched-tabs-actions">
+            <button class="btn btn-ghost btn-sm" id="btnRefreshActive" title="刷新当前 Tab">↻</button>
           </div>
+        </div>
 
-          <!-- 提议确认 -->
-          <div class="sched-subsection">
-            <div class="sched-subheader">
-              <span class="sched-subtitle">提议确认</span>
-              <span class="sched-subcount" id="proposalCount">0</span>
-              <button class="btn btn-ghost btn-sm" id="btnRefreshProposals" title="刷新提议">↻</button>
-            </div>
-            <div id="proposalList" class="has-scroll-mask">
-              <div class="schedule-empty">加载中...</div>
-            </div>
-          </div>
-
-          <!-- cron_tool 待审查 -->
-          <div class="sched-subsection">
-            <div class="sched-subheader">
-              <span class="sched-subtitle">cron_tool 待审查</span>
-              <span class="sched-subcount" id="cronToolPendingCount">0</span>
-              <button class="btn btn-ghost btn-sm" id="btnRefreshCronToolsPending" title="刷新待审查">↻</button>
-            </div>
-            <div id="cronToolPendingList" class="has-scroll-mask">
-              <div class="schedule-empty">加载中...</div>
-            </div>
-          </div>
-
-          <!-- 待办 0 项引导：两子分组皆空时显示 -->
-          <div class="uxp-empty-state" id="pendingEmpty" hidden>
-            <div class="empty-icon" aria-hidden="true">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="4" width="18" height="18" rx="2"/>
-                <line x1="16" y1="2" x2="16" y2="6"/>
-                <line x1="8" y1="2" x2="8" y2="6"/>
-                <line x1="3" y1="10" x2="21" y2="10"/>
-              </svg>
-            </div>
-            <div class="empty-text">暂无待办</div>
-            <button class="empty-action" id="pendingEmptyAction" type="button">新建调度</button>
+        <!-- 待办 Tab：提议 + cron_tool 待审查 合并展示 -->
+        <section class="manage-pane active" data-manage-pane="pending" id="managePanePending">
+          <div class="manage-pane-body" id="pendingListFull">
+            <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
           </div>
         </section>
 
-        <!-- 调度项列表 -->
-        <section class="monitor-section scheduler-section collapsible">
-          <div class="section-header">
-            <div class="section-label">Schedules</div>
-            <h2 class="section-title">调度项</h2>
-            <div class="section-actions">
-              <span class="section-count" id="scheduleCount">0</span>
-              <button class="btn btn-ghost btn-sm" id="btnRefreshSchedules" title="刷新调度项">↻</button>
-              <span class="section-toggle">▼</span>
-            </div>
-          </div>
-          <div class="schedule-list has-scroll-mask" id="scheduleList">
-            <div class="schedule-empty">加载中...</div>
-          </div>
-          <!-- 调度项 0 项引导 -->
-          <div class="uxp-empty-state" id="schedulesEmpty" hidden>
-            <div class="empty-icon" aria-hidden="true">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 16 14"/>
-              </svg>
-            </div>
-            <div class="empty-text">暂无调度项</div>
-            <button class="empty-action" id="schedulesEmptyAction" type="button">立即创建</button>
+        <!-- 调度项 Tab -->
+        <section class="manage-pane" data-manage-pane="schedules" id="managePaneSchedules" hidden>
+          <div class="manage-pane-body" id="scheduleListFull">
+            <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
           </div>
         </section>
 
-        <!-- cron_tool 已激活 -->
-        <section class="monitor-section scheduler-section collapsible collapsed" id="cronToolManageSection">
-          <div class="section-header">
-            <div class="section-label">Cron Tools</div>
-            <h2 class="section-title">cron_tool 已激活</h2>
-            <div class="section-actions">
-              <span class="section-count" id="cronToolCount">0</span>
-              <button class="btn btn-ghost btn-sm" id="btnRefreshCronTools" title="刷新已激活">↻</button>
-              <span class="section-toggle">▼</span>
-            </div>
-          </div>
-          <div id="cronToolList" class="has-scroll-mask">
-            <div class="schedule-empty">加载中...</div>
+        <!-- Cron Tool 已激活 Tab -->
+        <section class="manage-pane" data-manage-pane="cronTool" id="managePaneCronTool" hidden>
+          <div class="manage-pane-body" id="cronToolListFull">
+            <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
           </div>
         </section>
-
       </div>
     </div>
 
   </main>
 </div>
 
-<!-- 新建调度弹窗（专业版，支持 workflow） -->
+<!-- 新建调度弹窗（单页：基础信息 + Workflow 配置垂直堆叠） -->
 <div class="modal-overlay" id="scheduleModal">
   <div class="modal schedule-modal-pro">
     <div class="modal-header">
@@ -246,14 +192,11 @@
       <button class="modal-close" onclick="closeModal('scheduleModal')">&times;</button>
     </div>
     <div class="modal-body">
-      <!-- Tab 切换 -->
-      <div class="sched-tabs">
-        <button class="sched-tab active" data-sched-tab="basic">基础信息</button>
-        <button class="sched-tab" data-sched-tab="workflow">Workflow 配置 <span class="sched-tab-badge" id="workflowStepBadge" hidden>0</span></button>
-      </div>
 
-      <!-- Tab 1: 基础信息 -->
-      <div class="sched-tab-pane active" data-sched-pane="basic">
+      <!-- Section 1: 基础信息 -->
+      <section class="sched-section">
+        <h3 class="sched-section-title">基础信息</h3>
+
         <div class="form-group">
           <label>名称 *</label>
           <input class="form-input" id="schedName" placeholder="调度名称（如：每日新闻摘要）">
@@ -261,19 +204,20 @@
         <div class="form-group">
           <label>Cron 表达式 *</label>
           <div class="sched-cron-row">
-            <input class="form-input" id="schedCron" placeholder="*/30 * * * *">
+            <input class="form-input mono" id="schedCron" placeholder="*/30 * * * *">
             <div class="sched-cron-presets">
               <button type="button" class="cron-preset" data-cron="*/30 * * * *">每 30 分</button>
               <button type="button" class="cron-preset" data-cron="0 * * * *">每小时</button>
               <button type="button" class="cron-preset" data-cron="0 9 * * *">每天 9:00</button>
               <button type="button" class="cron-preset" data-cron="0 9 * * 1">每周一 9:00</button>
             </div>
+            <div class="cron-next-preview" id="cronNextPreview">—</div>
           </div>
           <div class="hint">标准 5 字段 cron（分 时 日 月 周）</div>
         </div>
         <div class="form-group">
           <label>任务描述 *</label>
-          <textarea class="form-input" id="schedTask" rows="4" placeholder="要执行的任务描述，例如：&#10;请总结今天的技术新闻，重点关注 AI 和云计算领域。"></textarea>
+          <textarea class="form-input" id="schedTask" rows="3" placeholder="要执行的任务描述，例如：&#10;请总结今天的技术新闻，重点关注 AI 和云计算领域。"></textarea>
         </div>
         <div class="form-group">
           <label>启用</label>
@@ -282,13 +226,24 @@
             <option value="false">禁用</option>
           </select>
         </div>
-      </div>
+      </section>
 
-      <!-- Tab 2: Workflow 配置 -->
-      <div class="sched-tab-pane" data-sched-pane="workflow">
-        <div class="sched-wf-empty-hint">
-          <div class="sched-wf-empty-title">未配置 Workflow</div>
-          <div class="sched-wf-empty-desc text-muted">留空将使用默认单轮任务执行（直接调用 LLM）。配置 workflow 可启用多步骤、重试与 fallback 策略。</div>
+      <div class="sched-section-divider"></div>
+
+      <!-- Section 2: Workflow 配置 -->
+      <section class="sched-section">
+        <h3 class="sched-section-title">
+          Workflow 配置
+          <span class="sched-section-hint text-muted">（可选）留空使用单轮任务</span>
+        </h3>
+
+        <!-- workflow 模板快速选择 chips -->
+        <div class="form-group">
+          <label>从模板快速开始</label>
+          <div class="wf-template-chips" id="wfTemplateChips">
+            <!-- 由 scheduler.js 从 window.WORKFLOW_PRESETS 动态渲染 -->
+          </div>
+          <div class="hint">点击模板 → 自动填入多步模式 + steps（仍可在下方调整）</div>
         </div>
 
         <div class="form-group">
@@ -305,14 +260,14 @@
               <input type="radio" name="schedWfMode" value="simple">
               <span class="sched-wf-mode-card">
                 <span class="sched-wf-mode-title">简易模式</span>
-                <span class="sched-wf-mode-desc text-muted">调用内置模板（research / directory_watch / email_notify 等）</span>
+                <span class="sched-wf-mode-desc text-muted">调用内置模板</span>
               </span>
             </label>
             <label class="sched-wf-mode-option">
               <input type="radio" name="schedWfMode" value="multi">
               <span class="sched-wf-mode-card">
                 <span class="sched-wf-mode-title">多步模式</span>
-                <span class="sched-wf-mode-desc text-muted">声明式 step 编排，支持依赖、条件、重试</span>
+                <span class="sched-wf-mode-desc text-muted">step 编排 + 依赖 + 重试</span>
               </span>
             </label>
           </div>
@@ -333,7 +288,7 @@
           </div>
           <div class="form-group">
             <label>模板配置 (JSON)</label>
-            <textarea class="form-input mono" id="schedWfTemplateConfig" rows="6" placeholder='{"topic": "AI 新闻", "max_sources": 5}'></textarea>
+            <textarea class="form-input mono" id="schedWfTemplateConfig" rows="4" placeholder='{"topic": "AI 新闻", "max_sources": 5}'></textarea>
             <div class="hint">将作为 template_config 传入模板，结构由模板定义</div>
           </div>
         </div>
@@ -346,13 +301,15 @@
           </div>
           <div class="sched-wf-steps-header">
             <span class="text-muted text-sm">Steps 编排</span>
+            <span class="sched-tab-badge" id="workflowStepBadge" hidden>0</span>
             <button type="button" class="btn btn-ghost btn-sm" id="btnAddStep">+ 添加 Step</button>
           </div>
           <div class="sched-wf-steps" id="schedWfSteps">
-            <div class="sched-wf-steps-empty text-muted">点击「+ 添加 Step」开始编排 workflow</div>
+            <div class="sched-wf-steps-empty text-muted">点击上方模板快速开始，或点「+ 添加 Step」手动编排</div>
           </div>
         </div>
-      </div>
+      </section>
+
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('scheduleModal')">取消</button>
@@ -361,72 +318,39 @@
   </div>
 </div>
 
-<!-- cron_tool 审查详情弹窗 -->
-<div class="modal-overlay" id="cronToolDetailModal">
-  <div class="modal cron-tool-detail-modal">
-    <div class="modal-header">
-      <h2 id="cronToolDetailTitle">cron_tool 审查</h2>
-      <button class="modal-close" onclick="closeModal('cronToolDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="cronToolDetailBody"></div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('cronToolDetailModal')">关闭</button>
-      <button class="btn btn-mini btn-danger" id="cronToolDetailRejectBtn">✗ 拒绝</button>
-      <button class="btn btn-primary" id="cronToolDetailApproveBtn">✓ 通过审查（激活）</button>
-    </div>
-  </div>
-</div>
+<!-- 统一详情抽屉（取代原 4 个 modal） -->
+<div class="drawer-overlay" id="drawerOverlay" hidden>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+    <header class="drawer-header">
+      <div class="drawer-title-wrap">
+        <h3 class="drawer-title" id="drawerTitle">详情</h3>
+        <span class="drawer-subtitle text-muted" id="drawerSubtitle"></span>
+      </div>
+      <button class="drawer-close" id="drawerClose" type="button" aria-label="关闭">×</button>
+    </header>
 
-<!-- 提议确认详情弹窗 -->
-<div class="modal-overlay" id="proposalDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="proposalDetailTitle">提议详情</h2>
-      <button class="modal-close" onclick="closeModal('proposalDetailModal')">&times;</button>
+    <!-- 抽屉内次级 Tab（部分 kind 才有，如 schedule 的 详情/记忆/审计） -->
+    <div class="drawer-tab-bar" id="drawerTabBar" hidden>
+      <button class="drawer-tab active" data-drawer-tab="detail" type="button">详情</button>
+      <button class="drawer-tab" data-drawer-tab="memories" type="button" data-tab-badge-target="memories">隔离记忆 <span class="sched-tab-badge" id="drawerBadgeMemories" hidden>0</span></button>
+      <button class="drawer-tab" data-drawer-tab="audit" type="button" data-tab-badge-target="audit">工具审计 <span class="sched-tab-badge" id="drawerBadgeAudit" hidden>0</span></button>
     </div>
-    <div class="modal-body" id="proposalDetailBody"></div>
-    <div class="modal-footer" id="proposalDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('proposalDetailModal')">关闭</button>
-    </div>
-  </div>
-</div>
 
-<!-- 调度项详情弹窗 -->
-<div class="modal-overlay" id="scheduleDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="scheduleDetailTitle">调度项详情</h2>
-      <button class="modal-close" onclick="closeModal('scheduleDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="scheduleDetailBody"></div>
-    <div class="modal-footer" id="scheduleDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('scheduleDetailModal')">关闭</button>
-    </div>
-  </div>
-</div>
-
-<!-- cron_tool 已激活详情弹窗 -->
-<div class="modal-overlay" id="cronToolActiveDetailModal">
-  <div class="modal proposal-detail-modal">
-    <div class="modal-header">
-      <h2 id="cronToolActiveDetailTitle">cron_tool 详情</h2>
-      <button class="modal-close" onclick="closeModal('cronToolActiveDetailModal')">&times;</button>
-    </div>
-    <div class="modal-body" id="cronToolActiveDetailBody"></div>
-    <div class="modal-footer" id="cronToolActiveDetailFooter">
-      <button class="btn btn-secondary" onclick="closeModal('cronToolActiveDetailModal')">关闭</button>
-    </div>
-  </div>
+    <div class="drawer-body" id="drawerBody"></div>
+    <footer class="drawer-footer" id="drawerFooter"></footer>
+  </aside>
 </div>
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
-<!-- JS 模块（utils 必须先加载，提供 api/openModal/closeModal/escapeHtml/formatTime/showToast） -->
+<!-- JS 模块（utils 必须先加载，提供 api/openModal/closeModal/escapeHtml/formatTime/showToast/previewCronNext） -->
 <!-- Markdown + DOMPurify（与 chat.html 一致） -->
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script src="/static/js/utils.js"></script>
+<!-- workflow-presets.js：共享模板预设（workflow.html 也引用） -->
+<script src="/static/js/workflow-presets.js"></script>
 <script src="/static/js/scheduler.js"></script>
 
 <script>

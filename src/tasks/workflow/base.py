@@ -108,6 +108,9 @@ class WorkflowContext:
         error_channel: LLM 调用等步骤的异常记录通道（D5 修复）。
             ``append_error`` 追加错误信息，``WorkflowEngine.execute`` 末尾
             合并到 ``WorkflowResult.errors``。为空列表时无异常。
+        step_outputs: 已完成 step 的产出字典，key 为 step_id，value 为
+            该 step 的 ``outputs`` dict。供后续 step（如 LLM 步骤）通过
+            ``depends_on`` 引用前置步骤的输出结果。
     """
 
     session_id: str
@@ -119,6 +122,7 @@ class WorkflowContext:
     last_run_time: Optional[datetime] = None
     get_env: Optional[Callable[[str, str], str]] = None
     error_channel: List[str] = field(default_factory=list)
+    step_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def get_env_value(self, key: str, default: str = "") -> str:
         """获取环境变量值（兼容 ``get_env=None`` 场景）。"""

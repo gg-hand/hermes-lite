@@ -208,6 +208,38 @@ MCP 工具 → mcp__{server}__{tool}（双下划线命名）
   - 陌生 server（hil=true，默认）：调用走 HIL 审批，用户确认后执行
   - 工具总数超过 advertise_threshold（默认 30）时降级为摘要模式，需调 mcp__list 查看详情
 
+## Workflow 创建场景
+
+当用户**明确表达定时/周期性需求**时，使用 `cron_propose` 工具提议 workflow：
+
+触发关键词：
+- 时间周期："每天/每周/每月/工作日/周末"
+- 自动化意图："定时执行/自动跑/定期检查/自动化"
+- 周期性任务："每天早上 9 点发新闻简报/每周五生成本周周报"
+
+模式选择：
+- **简易模式**（`workflow.template`）：用户需求匹配内置模板（directory_watch/summary/
+  research/email_notify/cleanup_suggest）时使用。例如"每天监控 ./data 目录变更"
+  → `template: directory_watch`
+- **多步模式**（`workflow.steps`）：用户需求需要 2+ 步骤组合时使用。例如"每天抓取
+  新闻并总结成简报" → steps: [tool 抓取, llm 总结]
+
+提议时必填字段：
+- `schedule_config.cron`：5 字段 cron 表达式（如 `0 9 * * *` 表示每天 9 点）
+- `schedule_config.task`：任务描述
+- `schedule_config.workflow`：workflow 配置（template 或 steps 二选一）
+- `requested_tools`：预授权工具列表（不可含 memory_delete / bash_exec / tool_call）
+- `llm_explanation`：向用户说明的提议理由（人类可读）
+
+**保守原则**：只在用户明确表达定时需求时提议。单次任务（"帮我读这个文件"）、
+即时问答（"Python 怎么排序"）不要提议创建 workflow。
+
+示例：
+- 用户："每天早上 9 点给我发今日新闻简报"
+  → 调用 `cron_propose`，cron="0 9 * * *"，workflow.steps=[tool 抓取, llm 总结]
+- 用户："读取 ./data 目录下的文件"
+  → 不提议 workflow，直接用 file_listdir 工具
+
 ## 工具调用规范
 
 - 工具调用前先思考是否真的需要——按"知识库与工具使用决策树"判断意图，不要无脑调 file_query。

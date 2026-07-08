@@ -7,80 +7,9 @@
 (function () {
   'use strict';
 
-  // ---------- 模板预设（Task 9 会扩展为完整 5 个，这里先放骨架占位） ----------
-  const WORKFLOW_PRESETS = [
-    {
-      id: 'daily_news',
-      name: '每日新闻两步流',
-      description: '先调用搜索工具采集新闻，再让 LLM 总结成简报',
-      difficulty: 'beginner',
-      tags: ['llm', 'tool'],
-      spec: {
-        name: 'daily_news',
-        steps: [
-          { id: 'fetch', name: '抓取新闻', type: 'tool', config: { tool: 'web_search', input: { query: '今日热点新闻' } } },
-          { id: 'summarize', name: '生成简报', type: 'llm', depends_on: ['fetch'], config: { prompt: '将上一步新闻整理成 300 字简报' } }
-        ]
-      }
-    },
-    {
-      id: 'weekly_report',
-      name: '周报生成',
-      description: '从记忆库检索本周会话要点，LLM 生成结构化周报',
-      difficulty: 'intermediate',
-      tags: ['llm', 'react'],
-      spec: {
-        name: 'weekly_report',
-        steps: [
-          { id: 'recall', name: '回忆本周', type: 'react', config: { task: '检索本周重要会话要点', max_loops: 3 } },
-          { id: 'draft', name: '起草周报', type: 'llm', depends_on: ['recall'], config: { prompt: '基于检索结果生成周报，分进度/问题/计划三段' } }
-        ]
-      }
-    },
-    {
-      id: 'dir_watch_email',
-      name: '目录监控+邮件',
-      description: '监控目录变更并发送邮件通知，纯确定性步骤',
-      difficulty: 'beginner',
-      tags: ['deterministic'],
-      spec: {
-        name: 'dir_watch_email',
-        steps: [
-          { id: 'watch', name: '监控目录', type: 'deterministic', config: { template: 'directory_watch', path: './data' } },
-          { id: 'notify', name: '发送邮件', type: 'deterministic', depends_on: ['watch'], config: { template: 'email_notify', to: 'admin@local' } }
-        ]
-      }
-    },
-    {
-      id: 'code_review',
-      name: '代码 review',
-      description: 'ReactLoop 自主审查代码改动并输出报告',
-      difficulty: 'advanced',
-      tags: ['react'],
-      spec: {
-        name: 'code_review',
-        steps: [
-          { id: 'review', name: '审查改动', type: 'react', config: { task: '审查最近一次 git diff，指出问题', max_loops: 5, tool_whitelist: ['shell', 'file_read'] } }
-        ]
-      }
-    },
-    {
-      id: 'backup_cleanup',
-      name: '数据备份清理',
-      description: '备份数据目录后清理过期文件，两步确定性流程',
-      difficulty: 'intermediate',
-      tags: ['tool', 'deterministic'],
-      spec: {
-        name: 'backup_cleanup',
-        steps: [
-          { id: 'backup', name: '执行备份', type: 'tool', config: { tool: 'shell', input: { command: 'tar -czf backup.tar.gz ./data' } } },
-          { id: 'cleanup', name: '清理过期', type: 'deterministic', depends_on: ['backup'], config: { template: 'cleanup_suggest', max_age_days: 30 } }
-        ]
-      }
-    }
-  ];
-
-  const STEP_TYPES = ['deterministic', 'llm', 'tool', 'react', 'subworkflow'];
+  // ---------- 模板预设：来自共享的 workflow-presets.js ----------
+  const WORKFLOW_PRESETS = window.WORKFLOW_PRESETS || [];
+  const STEP_TYPES = window.WORKFLOW_STEP_TYPES || ['deterministic', 'llm', 'tool', 'react', 'subworkflow'];
 
   // ---------- 状态 ----------
   const state = {
@@ -462,18 +391,77 @@
     box.textContent = msg;
   }
 
+  // ---------- 保存为调度（内嵌 mini dialog，无跳转） ----------
   function saveAsSchedule() {
     if (!state.currentSpec) {
       showValidateResult(false, '请先加载模板或新建 workflow');
       return;
     }
-    // 跳转到调度页并附带 workflow spec（通过 URL hash 传递简化版）
+    openSaveAsScheduleDialog();
+  }
+
+  function openSaveAsScheduleDialog() {
+    const dialog = $('#saveAsScheduleDialog');
+    if (!dialog) return;
+    // 预填名称（默认 = workflow name）
+    const nameInput = $('#miniSchedName');
+    if (nameInput) nameInput.value = state.currentSpec.name || '';
+    // 预填任务描述（取第一个 llm step 的 prompt）
+    const taskInput = $('#miniSchedTask');
+    if (taskInput) {
+      const firstLlm = (state.currentSpec.steps || []).find((s) => s.type === 'llm');
+      taskInput.value = (firstLlm && firstLlm.config && firstLlm.config.prompt) || '';
+    }
+    // 默认 cron（用户可改）
+    const cronInput = $('#miniSchedCron');
+    if (cronInput && !cronInput.value) cronInput.value = '0 9 * * *';
+    // step 计数
+    const countEl = $('#miniDialogStepsCount');
+    if (countEl) countEl.textContent = String((state.currentSpec.steps || []).length);
+    // 触发 cron 预览
+    refreshMiniCronPreview();
+    dialog.hidden = false;
+    // 聚焦名称输入
+    setTimeout(() => { if (nameInput) nameInput.focus(); }, 50);
+  }
+
+  function closeSaveAsScheduleDialog() {
+    const dialog = $('#saveAsScheduleDialog');
+    if (dialog) dialog.hidden = true;
+  }
+
+  function refreshMiniCronPreview() {
+    const cronInput = $('#miniSchedCron');
+    const preview = $('#miniCronNextPreview');
+    if (!cronInput || !preview) return;
+    const fn = (window.HermesUtils && window.HermesUtils.previewCronNext)
+      || (typeof previewCronNext === 'function' ? previewCronNext : null);
+    preview.textContent = fn ? fn(cronInput.value, 5) : '—';
+  }
+
+  async function confirmSaveAsSchedule() {
+    const name = (($('#miniSchedName') || {}).value || '').trim();
+    const cron = (($('#miniSchedCron') || {}).value || '').trim();
+    const task = (($('#miniSchedTask') || {}).value || '').trim();
+    if (!name) { showValidateResult(false, '请填写调度名称'); return; }
+    if (!cron) { showValidateResult(false, '请填写 cron 表达式'); return; }
+    const payload = {
+      name,
+      cron,
+      task: task || `执行 workflow: ${name}`,
+      enabled: true,
+      workflow: state.currentSpec,
+    };
+    const confirmBtn = $('#miniDialogConfirm');
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '创建中...'; }
     try {
-      const yaml = specToYaml(state.currentSpec);
-      const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(yaml))));
-      window.location.href = `/scheduler?wf=${encoded}`;
+      const data = await api('/schedules', { method: 'POST', body: payload });
+      showValidateResult(true, `✓ 调度已创建：${data.schedule_id || data.id || name}`);
+      closeSaveAsScheduleDialog();
     } catch (e) {
-      showValidateResult(false, `序列化失败: ${e.message}`);
+      showValidateResult(false, `创建失败: ${e.message}`);
+    } finally {
+      if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '创建调度'; }
     }
   }
 
@@ -607,6 +595,27 @@
         helpOverlay.hidden = true;
       }
     });
+
+    // 保存为调度 mini dialog 事件
+    const miniDialog = $('#saveAsScheduleDialog');
+    const miniClose = $('#miniDialogClose');
+    const miniCancel = $('#miniDialogCancel');
+    const miniConfirm = $('#miniDialogConfirm');
+    const miniCronInput = $('#miniSchedCron');
+    if (miniClose) miniClose.addEventListener('click', closeSaveAsScheduleDialog);
+    if (miniCancel) miniCancel.addEventListener('click', closeSaveAsScheduleDialog);
+    if (miniConfirm) miniConfirm.addEventListener('click', confirmSaveAsSchedule);
+    if (miniDialog) {
+      miniDialog.addEventListener('click', (e) => {
+        if (e.target === miniDialog) closeSaveAsScheduleDialog();
+      });
+    }
+    if (miniCronInput) miniCronInput.addEventListener('input', refreshMiniCronPreview);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && miniDialog && !miniDialog.hidden) {
+        closeSaveAsScheduleDialog();
+      }
+    });
   }
 
   // ---------- 初始化 ----------
@@ -614,8 +623,32 @@
     renderTemplates();
     bindEvents();
     renderEditor();
-    // URL 参数 ?preset=xxx 自动加载
     const params = new URLSearchParams(window.location.search);
+    // ?import_key=<localStorage key> 降级模式（超长 spec）优先于 ?import=
+    const importKey = params.get('import_key');
+    const importB64 = params.get('import');
+    if (importKey || importB64) {
+      try {
+        let json;
+        if (importKey) {
+          json = localStorage.getItem(importKey);
+          if (json) localStorage.removeItem(importKey);
+          if (!json) throw new Error('导入数据已过期或不存在');
+        } else {
+          json = decodeURIComponent(escape(atob(importB64)));
+        }
+        const spec = JSON.parse(json);
+        state.currentSpec = spec;
+        state.selectedStepIdx = null;
+        state.advancedMode = false;
+        renderEditor();
+        showValidateResult(true, `已导入 workflow：${(spec.steps || []).length} step`);
+      } catch (e) {
+        showValidateResult(false, `导入失败：${e.message}`);
+      }
+      return;
+    }
+    // URL 参数 ?preset=xxx 自动加载
     const presetId = params.get('preset');
     if (presetId) {
       const p = state.presets.find((x) => x.id === presetId);

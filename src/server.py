@@ -2569,17 +2569,32 @@ def confirm_proposal(proposal_id: str):
         raise HTTPException(status_code=404, detail=f"提议 {proposal_id} 不存在")
 
     # 1. 确认提议（pending_confirm → confirmed）
-    ok = proposal_store.confirm(proposal_id)
-    if not ok:
+    # 幂等处理：若 proposal 已是 confirmed/modified（如之前创建调度失败留下的
+    # 中间态），跳过状态转换直接创建调度项，避免用户被 409 卡住无法重试。
+    if proposal.status == "pending_confirm":
+        ok = proposal_store.confirm(proposal_id)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"提议 {proposal_id} 当前状态为 {proposal.status}，无法确认",
+            )
+    elif proposal.status not in ("confirmed", "modified"):
         raise HTTPException(
             status_code=409,
             detail=f"提议 {proposal_id} 当前状态为 {proposal.status}，无法确认",
         )
 
     # 2. 调用 create_schedule 工具创建调度项
-    result_str = orchestrator.tool_registry.execute_tool(
-        "cron_create", {"proposal_id": proposal_id}
-    )
+    # cron_create 是 Deferred Tier 工具，execute_tool 不查找 _deferred_tools，
+    # 需用 get_handler 直接获取 handler 调用（后端 API 非 LLM 工具调用流程）
+    handler = orchestrator.tool_registry.get_handler("cron_create")
+    if handler is None:
+        raise HTTPException(status_code=500, detail="cron_create 工具未注册")
+    try:
+        result_str = handler(proposal_id=proposal_id)
+    except Exception as e:
+        logger.exception("confirm_proposal 调用 cron_create 失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"创建调度项失败: {e}")
     # create_schedule 返回 JSON 字符串，解析判断成功/失败
     try:
         result = json.loads(result_str)
@@ -2637,9 +2652,15 @@ def modify_proposal(proposal_id: str, req: ProposalModifyRequest):
         )
 
     # 2. 调用 create_schedule 工具创建调度项（用修改后的配置）
-    result_str = orchestrator.tool_registry.execute_tool(
-        "cron_create", {"proposal_id": proposal_id}
-    )
+    # cron_create 是 Deferred Tier 工具，需用 get_handler 直接调用
+    handler = orchestrator.tool_registry.get_handler("cron_create")
+    if handler is None:
+        raise HTTPException(status_code=500, detail="cron_create 工具未注册")
+    try:
+        result_str = handler(proposal_id=proposal_id)
+    except Exception as e:
+        logger.exception("modify_proposal 调用 cron_create 失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"创建调度项失败: {e}")
     try:
         result = json.loads(result_str)
     except (json.JSONDecodeError, TypeError):

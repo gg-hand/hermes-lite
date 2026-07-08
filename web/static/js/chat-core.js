@@ -457,6 +457,22 @@ function describeToolAction(toolName, toolInput) {
     case 'file_list_uploads':
       desc = '列出上传文件';
       break;
+    // 调度类
+    case 'cron_list':
+      desc = '列出调度项';
+      break;
+    case 'cron_propose':
+      desc = `提议调度 ${input.schedule_config?.cron || ''}`;
+      break;
+    case 'cron_create':
+      desc = `创建调度 ${input.proposal_id || ''}`;
+      break;
+    case 'cron_update':
+      desc = `更新调度 ${input.schedule_id || ''}`;
+      break;
+    case 'cron_tool_create':
+      desc = '创建 cron 工具';
+      break;
     default:
       desc = toolName || 'tool';
   }
@@ -633,6 +649,100 @@ function updateStreamBubble(bubble, fullText) {
 
 // ========== 工具卡片（流式 + 历史） ==========
 // 修复点 1：plan_create/plan_update_step 由 todo 卡片系统展示，不创建工具卡
+
+// workflow 方案专属卡片（cron_propose 结果渲染）
+function _appendWorkflowProposeCard(msgEl, toolInput, parsedResult) {
+  const input = toolInput || {};
+  const scheduleConfig = input.schedule_config || {};
+  const cron = scheduleConfig.cron || '';
+  const workflowSpec = scheduleConfig.workflow || null;
+  const llmExplanation = input.llm_explanation || '';
+  const proposalId = parsedResult.proposal_id || '';
+  const status = parsedResult.status || 'pending_confirm';
+
+  const card = document.createElement('div');
+  card.className = 'workflow-propose-card';
+  if (proposalId) card.dataset.proposalId = proposalId;
+
+  const statusMap = {
+    pending_confirm: { label: '待确认', cls: 'is-pending' },
+    confirmed: { label: '已确认', cls: 'is-active' },
+    modified: { label: '已修改', cls: 'is-active' },
+    rejected: { label: '已拒绝', cls: 'is-rejected' },
+    schedule_active: { label: '已生效', cls: 'is-active' },
+  };
+  const statusInfo = statusMap[status] || statusMap.pending_confirm;
+
+  let stepsHtml = '';
+  if (workflowSpec && Array.isArray(workflowSpec.steps) && workflowSpec.steps.length > 0) {
+    stepsHtml = workflowSpec.steps.map((step, idx) => {
+      const stepName = step.name || step.id || `step${idx + 1}`;
+      const stepType = step.type || 'llm';
+      const arrow = idx < workflowSpec.steps.length - 1 ? '<div class="preview-arrow">↓</div>' : '';
+      return `
+        <div class="preview-step">
+          <div class="preview-step-node">${idx + 1}</div>
+          <div class="preview-step-info">
+            <div class="preview-step-name">${escapeHtml(stepName)}</div>
+            <div class="preview-step-meta">${escapeHtml(stepType)}</div>
+          </div>
+        </div>
+        ${arrow}
+      `;
+    }).join('');
+  } else if (workflowSpec && workflowSpec.template) {
+    stepsHtml = `
+      <div class="preview-step">
+        <div class="preview-step-node">T</div>
+        <div class="preview-step-info">
+          <div class="preview-step-name">模板: ${escapeHtml(workflowSpec.template)}</div>
+          <div class="preview-step-meta">template</div>
+        </div>
+      </div>
+    `;
+  }
+
+  let openEditorBtn = '';
+  if (workflowSpec && Array.isArray(workflowSpec.steps) && workflowSpec.steps.length > 0) {
+    try {
+      const json = JSON.stringify(workflowSpec);
+      const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(json))));
+      // URL 长度安全阈值：超过 2000 字符时降级为 localStorage 传递
+      if (encoded.length > 2000) {
+        const storageKey = `wf_import_${Date.now()}`;
+        try {
+          localStorage.setItem(storageKey, json);
+          openEditorBtn = `<a class="btn btn-ghost btn-sm" href="/workflow?import_key=${storageKey}" target="_blank" rel="noopener">在编辑器打开</a>`;
+        } catch (e) {
+          openEditorBtn = `<a class="btn btn-ghost btn-sm" href="/workflow?import=${encoded}" target="_blank" rel="noopener">在编辑器打开</a>`;
+        }
+      } else {
+        openEditorBtn = `<a class="btn btn-ghost btn-sm" href="/workflow?import=${encoded}" target="_blank" rel="noopener">在编辑器打开</a>`;
+      }
+    } catch (e) { /* 忽略编码失败 */ }
+  }
+
+  card.innerHTML = `
+    <div class="workflow-propose-card-header">
+      <span>🔧 提议调度 ${escapeHtml(cron)}</span>
+      <span class="workflow-propose-card-status ${statusInfo.cls}">${statusInfo.label}</span>
+    </div>
+    ${llmExplanation ? `<div class="workflow-propose-card-explanation">${escapeHtml(llmExplanation)}</div>` : ''}
+    ${stepsHtml ? `<div class="workflow-propose-card-steps">${stepsHtml}</div>` : ''}
+    <div class="workflow-propose-card-meta">
+      <span>proposal_id: <code>${escapeHtml(proposalId)}</code></span>
+    </div>
+    <div class="workflow-propose-card-actions">
+      <a class="btn btn-primary btn-sm" href="/scheduler?proposal_id=${encodeURIComponent(proposalId)}" target="_blank" rel="noopener">去确认</a>
+      ${openEditorBtn}
+    </div>
+  `;
+
+  msgEl.appendChild(card);
+  scrollMessagesToBottom();
+  return card;
+}
+
 function appendToolCard(msgEl, toolEvent) {
   const toolName = toolEvent.name || 'tool';
   const toolInput = toolEvent.input || {};
@@ -641,6 +751,18 @@ function appendToolCard(msgEl, toolEvent) {
   const toolUseId = toolEvent.tool_use_id || '';
 
   if (toolName === 'plan_create' || toolName === 'plan_update_step') return;
+
+  // 识别 cron_propose 工具结果，渲染 workflow 方案专属卡片
+  if (toolName === 'cron_propose' && toolResult) {
+    const parsed = typeof toolResult === 'string' ? safeParseJSON(toolResult) : toolResult;
+    if (parsed && parsed.proposal_id) {
+      if (toolUseId) {
+        const existing = msgEl.querySelector(`[data-tool-call-id="${CSS.escape(toolUseId)}"]`);
+        if (existing) existing.remove();
+      }
+      return _appendWorkflowProposeCard(msgEl, toolInput, parsed);
+    }
+  }
 
   // 两阶段更新：tool_use_id 匹配已有卡片则更新状态
   if (toolUseId && toolResult) {
