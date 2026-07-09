@@ -4563,7 +4563,20 @@ def get_profile():
 
 # ---------- 静态文件服务（Web 前端）----------
 
-_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+# 优先使用 HERMES_ROOT 环境变量（由 Tauri sidecar.rs 注入），
+# 避免 __file__ 在嵌入式 Python 环境下路径解析不可靠。
+_HERMES_ROOT = os.environ.get("HERMES_ROOT")
+if _HERMES_ROOT and os.path.isdir(os.path.join(_HERMES_ROOT, "web")):
+    _WEB_DIR = os.path.join(_HERMES_ROOT, "web")
+else:
+    _WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+
+# 调试日志：帮助诊断前端文件查找问题
+import logging as _logging
+_logging.info("server: HERMES_ROOT=%s, _WEB_DIR=%s, exists=%s, __file__=%s",
+              _HERMES_ROOT, _WEB_DIR, os.path.isdir(_WEB_DIR), os.path.abspath(__file__))
+if os.path.isdir(_WEB_DIR):
+    _logging.info("server: web dir contents: %s", os.listdir(_WEB_DIR)[:10])
 
 
 @app.get("/")
@@ -4584,7 +4597,7 @@ def serve_index():
             )
     index_path = os.path.join(_WEB_DIR, "index.html")
     if not os.path.exists(index_path):
-        raise HTTPException(status_code=404, detail="前端文件未找到")
+        raise HTTPException(status_code=404, detail=f"前端文件未找到: web_dir={_WEB_DIR}")
     return FileResponse(
         index_path,
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

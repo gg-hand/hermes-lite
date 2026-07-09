@@ -103,6 +103,7 @@ fn main() {
             commands::show_window,
             commands::minimize_to_tray,
             commands::minimize_window,
+            commands::toggle_maximize,
         ])
         // 页面刷新/导航后注入的脚本会被销毁。每次 PageLoadEvent::Finished
         // 时重新注入 titlebar 与 init_script，确保 chat-settings.js 的
@@ -112,7 +113,11 @@ fn main() {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let url = payload.url();
                 log::info!("on_page_load: page finished, url={}", url);
-                bridge::reinject(webview, port);
+                // 只对 main 窗口注入 bridge（titlebar + fetch 改写）
+                // settings 窗口有原生标题栏，不需要注入
+                if webview.window().label() == "main" {
+                    bridge::reinject(webview, port);
+                }
                 let needle = format!("127.0.0.1:{}", port);
                 if url.as_str().contains(needle.as_str()) {
                     let _ = webview.window().show();
@@ -160,9 +165,16 @@ fn main() {
                             let _ = w_fallback.set_focus();
                         });
                     } else {
-                        // sidecar 未就绪：直接显示窗口（展示报错状态）
+                        // sidecar 未就绪：仅显示主窗口，不弹窗。
+                        // 桌面端进入即是聊天页，设置通过聊天页内的模态框完成。
                         let _ = w.show();
                         let _ = w.set_focus();
+                        let w_fallback = w.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            let _ = w_fallback.show();
+                            let _ = w_fallback.set_focus();
+                        });
                     }
                 }
             });

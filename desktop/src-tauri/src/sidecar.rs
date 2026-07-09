@@ -3,10 +3,22 @@
 //! 职责：spawn `python -m src.server`、健康检查、优雅关闭。
 //! 工作目录设为 hermes_root（让 src/ 包可被找到），数据目录通过 HERMES_DATA_DIR 环境变量传递。
 
+use crate::credstore;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
+
+/// provider 名（与 credstore key_name 对应）→ 环境变量名映射。
+/// spawn sidecar 时从 credstore 读取并注入，不覆盖已存在的环境变量。
+const PROVIDER_ENV_MAP: &[(&str, &str)] = &[
+    ("openai", "OPENAI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("qwen", "DASHSCOPE_API_KEY"),
+    ("bing", "BING_API_KEY"),
+    ("baidu", "BAIDU_API_KEY"),
+];
 
 pub struct SidecarHandle {
     child: Option<Child>,
@@ -52,8 +64,22 @@ impl SidecarHandle {
             .env("HERMES_PORT", port.to_string())
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONHOME", &python_home)
-            .env("PYTHONPATH", python_home.join("Lib").join("site-packages"))
-            .stdout(Stdio::from(log_file))
+            .env("PYTHONPATH", python_home.join("Lib").join("site-packages"));
+
+        // 从 credstore 读取 API key 注入环境变量（不覆盖已有环境变量）
+        for (provider, env_var) in PROVIDER_ENV_MAP {
+            if std::env::var(env_var).is_ok() {
+                continue;
+            }
+            if let Ok(Some(key)) = credstore::load_key(provider) {
+                if !key.is_empty() {
+                    cmd.env(env_var, &key);
+                    log::info!("credstore: injected {} from credstore", env_var);
+                }
+            }
+        }
+
+        cmd.stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .stdin(Stdio::null());
 

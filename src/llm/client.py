@@ -1718,21 +1718,33 @@ class LLMClient:
         self._persist_thinking: bool = bool(reasoning_config.get("persist_thinking", False))
 
         # 校验必要配置
+        _desktop = os.environ.get("HERMES_DESKTOP") == "1"
         if not self.main_model:
             raise ValueError("配置 llm.main_model 未设置")
         if not self.main_api_key:
-            raise ValueError(
-                f"主对话 LLM API Key 未设置：请在环境变量 "
-                f"{_PROVIDER_DEFAULT_ENV_KEY.get(self.main_provider, 'API_KEY')} 中配置，"
-                f"或在 config.yaml 中为 llm.main_api_key 指定值"
-            )
+            if _desktop:
+                logger.warning(
+                    "桌面端模式：主对话 API Key 未配置，LLM 功能不可用，"
+                    "请通过聊天页设置模态框配置 API Key 后重启服务"
+                )
+                self.main_api_key = "sk-not-configured"
+            else:
+                raise ValueError(
+                    f"主对话 LLM API Key 未设置：请在环境变量 "
+                    f"{_PROVIDER_DEFAULT_ENV_KEY.get(self.main_provider, 'API_KEY')} 中配置，"
+                    f"或在 config.yaml 中为 llm.main_api_key 指定值"
+                )
         if not self.consolidation_model:
             raise ValueError("配置 llm.consolidation_model 未设置")
         if not self.consolidation_api_key:
-            raise ValueError(
-                f"consolidation LLM API Key 未设置：请在环境变量 "
-                f"{_PROVIDER_DEFAULT_ENV_KEY.get(self.consolidation_provider, 'API_KEY')} 中配置"
-            )
+            if _desktop:
+                logger.warning("桌面端模式：consolidation API Key 未配置，将使用占位符")
+                self.consolidation_api_key = "sk-not-configured"
+            else:
+                raise ValueError(
+                    f"consolidation LLM API Key 未设置：请在环境变量 "
+                    f"{_PROVIDER_DEFAULT_ENV_KEY.get(self.consolidation_provider, 'API_KEY')} 中配置"
+                )
 
         # 创建 Backend 实例
         self._main_backend: AsyncBaseBackend = _create_backend(

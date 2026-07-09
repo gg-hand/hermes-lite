@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>hermes-lite · 设置</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
-  <link rel="stylesheet" href="../../web/static/css/tokens.css">
-  <link rel="stylesheet" href="../../web/static/css/base.css">
-  <link rel="stylesheet" href="../../web/static/css/components.css">
-  <script src="../../web/static/js/theme.js"></script>
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <script src="/static/js/theme.js"></script>
   <style>
     body { padding: 24px 32px; max-width: 720px; margin: 0 auto; }
     .settings-section { margin-bottom: 32px; }
@@ -17,9 +17,10 @@
     .settings-row:last-child { border-bottom: none; }
     .settings-label { font-size: 14px; color: var(--text); }
     .settings-value { font-size: 13px; color: var(--text-muted); font-family: monospace; }
-    .api-key-input { width: 320px; padding: 6px 10px; font-size: 13px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+    .api-key-input { width: 280px; padding: 6px 10px; font-size: 13px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
     .btn-row { display: flex; gap: 8px; }
     .btn-save-key { padding: 6px 12px; font-size: 12px; }
+    .btn-delete-key { padding: 6px 12px; font-size: 12px; }
     .accent-picker { display: flex; gap: 8px; }
     .accent-dot { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
     .accent-dot.is-active { border-color: var(--text); }
@@ -27,7 +28,7 @@
     .accent-blue { background: #3b82f6; }
     .accent-teal { background: #14b8a6; }
     .accent-amber { background: #f59e0b; }
-    .toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-md); opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 400px; }
     .toast.show { opacity: 1; }
   </style>
 </head>
@@ -42,6 +43,7 @@
     <div class="btn-row">
       <input type="password" class="api-key-input" id="apiKeyOpenai" placeholder="sk-...">
       <button class="btn btn-primary btn-save-key" onclick="saveKey('openai')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('openai')">删除</button>
     </div>
   </div>
   <div class="settings-row">
@@ -49,6 +51,7 @@
     <div class="btn-row">
       <input type="password" class="api-key-input" id="apiKeyAnthropic" placeholder="sk-ant-...">
       <button class="btn btn-primary btn-save-key" onclick="saveKey('anthropic')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('anthropic')">删除</button>
     </div>
   </div>
   <div class="settings-row">
@@ -56,6 +59,35 @@
     <div class="btn-row">
       <input type="password" class="api-key-input" id="apiKeyDeepseek" placeholder="sk-...">
       <button class="btn btn-primary btn-save-key" onclick="saveKey('deepseek')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('deepseek')">删除</button>
+    </div>
+  </div>
+  <div class="settings-row">
+    <span class="settings-label">通义千问 API Key</span>
+    <div class="btn-row">
+      <input type="password" class="api-key-input" id="apiKeyQwen" placeholder="sk-...">
+      <button class="btn btn-primary btn-save-key" onclick="saveKey('qwen')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('qwen')">删除</button>
+    </div>
+  </div>
+</section>
+
+<section class="settings-section">
+  <h2>搜索配置</h2>
+  <div class="settings-row">
+    <span class="settings-label">Bing Search API Key</span>
+    <div class="btn-row">
+      <input type="password" class="api-key-input" id="apiKeyBing" placeholder="可选">
+      <button class="btn btn-primary btn-save-key" onclick="saveKey('bing')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('bing')">删除</button>
+    </div>
+  </div>
+  <div class="settings-row">
+    <span class="settings-label">百度搜索 API Key</span>
+    <div class="btn-row">
+      <input type="password" class="api-key-input" id="apiKeyBaidu" placeholder="可选">
+      <button class="btn btn-primary btn-save-key" onclick="saveKey('baidu')">保存</button>
+      <button class="btn btn-ghost btn-delete-key" onclick="deleteKey('baidu')">删除</button>
     </div>
   </div>
 </section>
@@ -108,7 +140,12 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  const { invoke } = window.__TAURI__ || { invoke: async () => { throw new Error('Tauri not available'); } };
+  // Tauri 2 withGlobalTauri 模式下 invoke 在 window.__TAURI__.core.invoke，
+  // Tauri 1 兼容路径为 window.__TAURI__.invoke
+  const __TAURI__ = window.__TAURI__ || {};
+  const invoke = (__TAURI__.core && __TAURI__.core.invoke)
+               || __TAURI__.invoke
+               || (async () => { throw new Error('Tauri invoke not available'); });
 
   async function loadInitial() {
     try {
@@ -127,11 +164,11 @@
     } catch (e) { console.error('get_app_version failed:', e); }
 
     // 加载已保存的 API keys（仅显示是否已设置，不显示明文）
-    for (const k of ['openai', 'anthropic', 'deepseek']) {
+    for (const k of ['openai', 'anthropic', 'deepseek', 'qwen', 'bing', 'baidu']) {
       try {
         const val = await invoke('load_api_key', { keyName: k });
         const input = document.getElementById('apiKey' + k.charAt(0).toUpperCase() + k.slice(1));
-        if (val) { input.placeholder = '已设置（输入新值覆盖）'; }
+        if (val && input) { input.placeholder = '已设置（输入新值覆盖）'; }
       } catch (e) { /* ignore */ }
     }
   }
@@ -145,9 +182,24 @@
       await invoke('save_api_key', { keyName: provider, value: value });
       input.value = '';
       input.placeholder = '已设置（输入新值覆盖）';
-      showToast(provider + ' API Key 已保存');
+      showToast(provider + ' API Key 已保存，需重启后端服务生效');
     } catch (e) {
       showToast('保存失败: ' + e);
+    }
+  }
+
+  async function deleteKey(provider) {
+    try {
+      await invoke('delete_api_key', { keyName: provider });
+      const inputId = 'apiKey' + provider.charAt(0).toUpperCase() + provider.slice(1);
+      const input = document.getElementById(inputId);
+      if (input) {
+        input.value = '';
+        input.placeholder = provider === 'bing' || provider === 'baidu' ? '可选' : 'sk-...';
+      }
+      showToast(provider + ' API Key 已删除，需重启后端服务生效');
+    } catch (e) {
+      showToast('删除失败: ' + e);
     }
   }
 
@@ -162,7 +214,7 @@
     showToast('正在重启后端服务...');
     try {
       await invoke('restart_sidecar');
-      showToast('后端服务已重启');
+      showToast('后端服务已重启，正在加载聊天页...');
     } catch (e) { showToast('重启失败: ' + e); }
   }
 
@@ -170,7 +222,7 @@
     const t = document.getElementById('toast');
     t.textContent = msg;
     t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 2500);
+    setTimeout(() => t.classList.remove('show'), 3500);
   }
 
   document.querySelectorAll('.accent-dot').forEach(dot => {

@@ -3,12 +3,16 @@
   "identifier": "default",
   "description": "Capability for hermes-lite desktop main window",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*/**", "http://localhost:*/**"]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",

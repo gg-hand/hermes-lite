@@ -6,7 +6,7 @@
 use crate::credstore;
 use crate::sidecar::SidecarHandle;
 use std::path::PathBuf;
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 use tokio::sync::Mutex as AsyncMutex;
 
 pub struct AppState {
@@ -30,6 +30,7 @@ pub fn get_data_dir(state: State<'_, AppState>) -> String {
 #[tauri::command]
 pub async fn restart_sidecar(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mut guard = state.sidecar.lock().await;
     if let Some(mut old) = guard.take() {
@@ -47,6 +48,16 @@ pub async fn restart_sidecar(
         .await
         .map_err(|e| format!("health check failed: {}", e))?;
     *guard = Some(new_handle);
+    drop(guard);
+
+    // 重启成功后，主窗口导航到 sidecar
+    if let Some(w) = app.get_webview_window("main") {
+        let url = format!("http://127.0.0.1:{}/", state.port);
+        let js = format!("window.location.replace({:?});", url);
+        let _ = w.eval(&js);
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
     Ok(())
 }
 
@@ -121,5 +132,19 @@ pub fn minimize_window(window: WebviewWindow) -> Result<(), String> {
     window
         .minimize()
         .map_err(|e| format!("minimize failed: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_maximize(window: WebviewWindow) -> Result<(), String> {
+    if window.is_maximized().map_err(|e| format!("is_maximized failed: {}", e))? {
+        window
+            .unmaximize()
+            .map_err(|e| format!("unmaximize failed: {}", e))?;
+    } else {
+        window
+            .maximize()
+            .map_err(|e| format!("maximize failed: {}", e))?;
+    }
     Ok(())
 }

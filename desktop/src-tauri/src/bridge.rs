@@ -118,10 +118,11 @@ pub fn init_script(port: u16) -> String {
 ///
 /// 布局补偿：body 增加 padding-top: 36px，`.app` 高度调整为 calc(100vh - 36px)。
 const TITLEBAR_SCRIPT: &str = r#"(function() {
+    var __eventsBound = false;
+
     function injectTitlebar() {
         if (document.getElementById('__hermes_titlebar__')) return;
         if (!document.body) {
-            // body 尚未就绪，等待 DOMContentLoaded 后重试
             document.addEventListener('DOMContentLoaded', injectTitlebar);
             return;
         }
@@ -195,16 +196,23 @@ const TITLEBAR_SCRIPT: &str = r#"(function() {
         document.head.appendChild(style);
 
         // ---------- DOM ----------
+        // data-tauri-drag-region: Tauri 2 内置拖拽支持，无需 JS window API。
+        // Tauri 在底层监听该元素的 mousedown 自动调用 startDragging。
         var bar = document.createElement('div');
         bar.id = '__hermes_titlebar__';
         bar.innerHTML = `
-            <div class="__htb_drag__">
+            <div class="__htb_drag__" data-tauri-drag-region>
                 <span class="__htb_title__">Hermes Lite</span>
             </div>
             <div class="__htb_buttons__">
                 <button class="__htb_btn__" id="__htb_min__" title="最小化" aria-label="最小化">
                     <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5">
                         <line x1="1" y1="5" x2="9" y2="5"/>
+                    </svg>
+                </button>
+                <button class="__htb_btn__" id="__htb_max__" title="最大化/还原" aria-label="最大化/还原">
+                    <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="1.5" y="1.5" width="7" height="7"/>
                     </svg>
                 </button>
                 <button class="__htb_btn__ __htb_btn_close__" id="__htb_close__" title="关闭" aria-label="关闭">
@@ -217,52 +225,101 @@ const TITLEBAR_SCRIPT: &str = r#"(function() {
         `;
         document.body.appendChild(bar);
 
-        // ---------- 事件 ----------
-        var __TAURI__ = window.__TAURI__;
-        var invoke = __TAURI__ && (__TAURI__.invoke || (__TAURI__.core && __TAURI__.core.invoke));
-
-        // 拖拽移动窗口（仅左键）
-        var dragEl = bar.querySelector('.__htb_drag__');
-        if (__TAURI__ && __TAURI__.window) {
-            var getWin = __TAURI__.window.getCurrentWindow || __TAURI__.window.getCurrent;
-            if (getWin) {
-                var w = getWin.call(__TAURI__.window);
-                dragEl.addEventListener('mousedown', function(e) {
-                    if (e.button === 0 && w.startDragging) w.startDragging();
-                });
-                // 双击最大化/还原
-                dragEl.addEventListener('dblclick', function() {
-                    if (!w.isMaximized) return;
-                    w.isMaximized().then(function(max) {
-                        if (max) { if (w.unmaximize) w.unmaximize(); }
-                        else { if (w.maximize) w.maximize(); }
-                    }).catch(function(){});
-                });
-            }
-        }
-
-        // 最小化按钮：调用 minimize_window 命令（最小化到任务栏）
-        var minBtn = document.getElementById('__htb_min__');
-        if (minBtn && invoke) {
-            minBtn.addEventListener('click', function() {
-                invoke('minimize_window').catch(function(e) {
-                    console.error('[desktop-bridge] minimize_window failed:', e);
-                });
-            });
-        }
-
-        // 关闭按钮：调用 minimize_to_tray 命令（隐藏到托盘）
-        var closeBtn = document.getElementById('__htb_close__');
-        if (closeBtn && invoke) {
-            closeBtn.addEventListener('click', function() {
-                invoke('minimize_to_tray').catch(function(e) {
-                    console.error('[desktop-bridge] minimize_to_tray failed:', e);
-                });
-            });
-        }
-
-        console.log('[desktop-bridge] titlebar injected');
+        // 事件绑定独立，等待 invoke 就绪后执行
+        bindEvents(0);
     }
+
+    // 获取 Tauri 2 invoke 函数。
+    // 在远程 URL（http://127.0.0.1:port）上，window.__TAURI__ 可能不可用，
+    // 但 window.__TAURI_INTERNALS__（Tauri 2 内部 IPC 入口）可能可用。
+    // 检查顺序：__TAURI_INTERNALS__.invoke > __TAURI__.core.invoke > __TAURI__.invoke
+    function getInvoke() {
+        // Tauri 2 内部 IPC（data-tauri-drag-region 也依赖此对象）
+        var internals = window.__TAURI_INTERNALS__;
+        if (internals && typeof internals.invoke === 'function') {
+            return internals.invoke.bind(internals);
+        }
+        // Tauri 2 withGlobalTauri 模式
+        var t = window.__TAURI__;
+        if (!t) return null;
+        if (t.core && typeof t.core.invoke === 'function') return t.core.invoke.bind(t.core);
+        if (typeof t.invoke === 'function') return t.invoke;
+        return null;
+    }
+
+    function bindEvents(retry) {
+        if (__eventsBound) return;
+        if (retry > 50) {
+            console.error('[desktop-bridge] invoke not available after 10s, buttons will not work',
+                '| __TAURI__:', !!window.__TAURI__,
+                '| __TAURI_INTERNALS__:', !!window.__TAURI_INTERNALS__,
+                '| __TAURI__.core:', !!(window.__TAURI__ && window.__TAURI__.core),
+                '| __TAURI__.core.invoke:', !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke),
+                '| __TAURI_INTERNALS__.invoke:', !!(window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke));
+            return;
+        }
+
+        // 关键：重试条件是 invoke 可用，而非仅 __TAURI__ 存在。
+        // Tauri 2 可能先注入 __TAURI__ 对象再异步填充 core 子模块，
+        // 仅检查 __TAURI__ 存在会在 invoke 未就绪时就停止重试。
+        var invoke = getInvoke();
+        if (!invoke) {
+            setTimeout(function() { bindEvents(retry + 1); }, 200);
+            return;
+        }
+        __eventsBound = true;
+
+        console.log('[desktop-bridge] bindEvents: invoke available at retry=' + retry,
+            '| source:', window.__TAURI_INTERNALS__ ? 'internals' : 'tauri');
+
+        var minBtn = document.getElementById('__htb_min__');
+        var maxBtn = document.getElementById('__htb_max__');
+        var closeBtn = document.getElementById('__htb_close__');
+        var dragEl = document.querySelector('.__htb_drag__');
+
+        // 使用 Tauri 2 内置 plugin:window|* 命令（与 data-tauri-drag-region 同一 IPC 通道）
+        // 自定义命令在远程 URL（http://127.0.0.1:port）上不可用，只有 plugin:* 命令可用。
+        if (minBtn) {
+            minBtn.addEventListener('click', function() {
+                console.log('[desktop-bridge] minimize clicked');
+                invoke('plugin:window|minimize').catch(function(e) {
+                    console.error('[desktop-bridge] plugin:window|minimize failed:', e);
+                });
+            });
+        }
+
+        // 最大化/还原
+        if (maxBtn) {
+            maxBtn.addEventListener('click', function() {
+                console.log('[desktop-bridge] toggle_maximize clicked');
+                invoke('plugin:window|toggle_maximize').catch(function(e) {
+                    console.error('[desktop-bridge] plugin:window|toggle_maximize failed:', e);
+                });
+            });
+        }
+
+        // 关闭（隐藏到托盘）
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function() {
+                console.log('[desktop-bridge] close clicked');
+                invoke('plugin:window|hide').catch(function(e) {
+                    console.error('[desktop-bridge] plugin:window|hide failed:', e);
+                });
+            });
+        }
+
+        // 双击标题栏最大化/还原（拖拽本身由 data-tauri-drag-region 处理）
+        if (dragEl) {
+            dragEl.addEventListener('dblclick', function() {
+                invoke('plugin:window|toggle_maximize').catch(function(e) {
+                    console.error('[desktop-bridge] dblclick plugin:window|toggle_maximize failed:', e);
+                });
+            });
+        }
+
+        console.log('[desktop-bridge] titlebar events bound');
+    }
+
     injectTitlebar();
 })();
 "#;

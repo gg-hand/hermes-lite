@@ -21,6 +21,12 @@ from dotenv import load_dotenv
 # 在 shell 脚本（start.sh/restart.sh）中已通过 source .env 加载，
 # 此处作为 Python 层兜底，确保直接通过 python -m uvicorn 启动时也能读取 .env
 load_dotenv()
+# 桌面端：也从 data_dir 加载 .env 文件（安装目录下通常没有 .env）
+_hermes_data_dir = os.environ.get("HERMES_DATA_DIR")
+if _hermes_data_dir:
+    _data_env_file = os.path.join(_hermes_data_dir, ".env")
+    if os.path.isfile(_data_env_file):
+        load_dotenv(_data_env_file, override=True)
 
 # 匹配 ${ENV_VAR} 形式的占位符
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -115,10 +121,18 @@ def validate_required_env_vars(config: dict) -> None:
             missing_critical.append(path)
 
     if missing_critical:
-        raise ValueError(
-            f"关键 API Key 未配置（环境变量缺失）：{', '.join(missing_critical)}。\n"
-            "请设置对应的环境变量或在 config.yaml 中使用 ${VAR_NAME} 占位符。"
-        )
+        if os.environ.get("HERMES_DESKTOP") == "1":
+            import logging
+            logging.getLogger(__name__).warning(
+                "桌面端模式：关键 API Key 未配置（%s）。服务可启动，但 LLM 功能不可用，"
+                "请通过聊天页设置模态框配置 API Key。",
+                ", ".join(missing_critical),
+            )
+        else:
+            raise ValueError(
+                f"关键 API Key 未配置（环境变量缺失）：{', '.join(missing_critical)}。\n"
+                "请设置对应的环境变量或在 config.yaml 中使用 ${VAR_NAME} 占位符。"
+            )
 
     for path in _WARN_API_KEY_PATHS:
         value = _get_nested(config, path)
