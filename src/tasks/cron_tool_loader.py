@@ -59,8 +59,10 @@ DEFAULT_TIMEOUT = 30
 
 #: 支持的 run.* 扩展名 → 解释器映射
 #: 顺序优先：python（项目运行时已有）> bash > node
+#: HERMES_PYTHON_PATH 用于桌面端打包时指向 bundled python-build-standalone；
+#: 未设时回落到 sys.executable（dev/EC2 现状）。
 _RUN_INTERPRETERS: Dict[str, list] = {
-    ".py": [sys.executable or "python"],
+    ".py": [os.environ.get("HERMES_PYTHON_PATH") or sys.executable or "python"],
     ".sh": ["bash"],
     ".js": ["node"],
 }

@@ -15,8 +15,10 @@
 
   <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
   <script src="/static/js/theme.js"></script>
-  <!-- croniter: cron 表达式下次运行时间预览 -->
-  <script src="https://cdn.jsdelivr.net/npm/croniter@2.0.3/dist/croniter.min.js"></script>
+  <!-- croniter CDN 已移除：原 URL 指向不存在的 JS 包（croniter 是 Python 库）。
+       utils.js 的 previewCronNext 在 window.croniter 未定义时会降级显示提示，
+       不影响 cron 调度功能（调度由 Python 端 croniter 计算）。
+       桌面端离线模式如需预览，可后续引入 cron-parser 写一个 shim 暴露为 window.croniter.parse。 -->
 </head>
 <body>
 
@@ -345,9 +347,9 @@
 <div class="toast" id="toast"></div>
 
 <!-- JS 模块（utils 必须先加载，提供 api/openModal/closeModal/escapeHtml/formatTime/showToast/previewCronNext） -->
-<!-- Markdown + DOMPurify（与 chat.html 一致） -->
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<!-- Markdown + DOMPurify（本地化，桌面端离线可用） -->
+<script src="/static/js/vendor/marked.min.js"></script>
+<script src="/static/js/vendor/purify.min.js"></script>
 <script src="/static/js/utils.js"></script>
 <!-- workflow-presets.js：共享模板预设（workflow.html 也引用） -->
 <script src="/static/js/workflow-presets.js"></script>

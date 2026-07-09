@@ -1,0 +1,16 @@
+{
+  "name": "hermes-lite-desktop",
+  "version": "0.1.0",
+  "description": "Hermes Lite Windows desktop shell (Tauri 2 + Python sidecar)",
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "dev:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-sidecar.ps1",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

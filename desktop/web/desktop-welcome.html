@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="violet">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>欢迎使用 Hermes Lite</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
+  <link rel="stylesheet" href="../../web/static/css/tokens.css">
+  <link rel="stylesheet" href="../../web/static/css/base.css">
+  <link rel="stylesheet" href="../../web/static/css/components.css">
+  <script src="../../web/static/js/theme.js"></script>
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 40px; }
+    .welcome-container { max-width: 560px; width: 100%; text-align: center; }
+    .welcome-logo { font-size: 48px; font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+    .welcome-subtitle { font-size: 14px; color: var(--text-muted); margin-bottom: 40px; }
+    .welcome-step { display: none; }
+    .welcome-step.active { display: block; }
+    .welcome-step h2 { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+    .welcome-step p { font-size: 13px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.6; }
+    .api-key-field { margin-bottom: 16px; text-align: left; }
+    .api-key-field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+    .api-key-field input { width: 100%; padding: 10px 12px; font-size: 13px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; color: var(--text); box-sizing: border-box; }
+    .welcome-nav { display: flex; justify-content: space-between; margin-top: 32px; }
+    .welcome-progress { display: flex; gap: 8px; justify-content: center; margin-bottom: 32px; }
+    .progress-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: background 0.2s; }
+    .progress-dot.active { background: var(--accent); }
+    .toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div class="welcome-container">
+  <div class="welcome-logo">~$</div>
+  <div class="welcome-subtitle">Hermes Lite · 个人 AI Agent 桌面版</div>
+
+  <div class="welcome-progress">
+    <span class="progress-dot active" data-step="0"></span>
+    <span class="progress-dot" data-step="1"></span>
+    <span class="progress-dot" data-step="2"></span>
+    <span class="progress-dot" data-step="3"></span>
+  </div>
+
+  <div class="welcome-step active" data-step="0">
+    <h2>欢迎使用</h2>
+    <p>Hermes Lite 是一个轻量级个人 AI Agent，支持多轮对话、记忆持久化、RAG 知识库检索和定时任务调度。</p>
+    <p>本向导将引导你完成初始配置，约需 1 分钟。</p>
+  </div>
+
+  <div class="welcome-step" data-step="1">
+    <h2>配置 API 密钥</h2>
+    <p>请至少配置一个 LLM 提供商的 API Key。密钥将安全存储在 Windows 凭据管理器中，不会写入磁盘文件。</p>
+    <div class="api-key-field">
+      <label>OpenAI API Key</label>
+      <input type="password" id="welcomeKeyOpenai" placeholder="sk-...（可选）">
+    </div>
+    <div class="api-key-field">
+      <label>Anthropic API Key</label>
+      <input type="password" id="welcomeKeyAnthropic" placeholder="sk-ant-...（可选）">
+    </div>
+    <div class="api-key-field">
+      <label>DeepSeek API Key</label>
+      <input type="password" id="welcomeKeyDeepseek" placeholder="sk-...（可选）">
+    </div>
+  </div>
+
+  <div class="welcome-step" data-step="2">
+    <h2>数据存储位置</h2>
+    <p>你的对话记录、记忆向量库、上传文件等数据将存储在：</p>
+    <p style="font-family: monospace; font-size: 12px; background: var(--bg-elevated); padding: 10px; border-radius: 6px; word-break: break-all;" id="dataDirDisplay">加载中...</p>
+    <p>你可以随时在设置中打开此目录。</p>
+  </div>
+
+  <div class="welcome-step" data-step="3">
+    <h2>配置完成</h2>
+    <p>所有设置已完成。你现在可以开始使用 Hermes Lite 了。</p>
+    <p>对话窗口将在关闭本向导后自动出现。</p>
+  </div>
+
+  <div class="welcome-nav">
+    <button class="btn btn-secondary" id="btnPrev" onclick="prevStep()" style="visibility: hidden;">上一步</button>
+    <button class="btn btn-primary" id="btnNext" onclick="nextStep()">下一步</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const { invoke } = window.__TAURI__ || { invoke: async () => { throw new Error('Tauri not available'); } };
+  let currentStep = 0;
+
+  async function loadInitial() {
+    try {
+      const dir = await invoke('get_data_dir');
+      document.getElementById('dataDirDisplay').textContent = dir;
+    } catch (e) {
+      document.getElementById('dataDirDisplay').textContent = '%APPDATA%\\hermes-lite\\';
+    }
+  }
+
+  function showStep(n) {
+    document.querySelectorAll('.welcome-step').forEach(s => s.classList.remove('active'));
+    document.querySelector(`.welcome-step[data-step="${n}"]`).classList.add('active');
+    document.querySelectorAll('.progress-dot').forEach((d, i) => {
+      d.classList.toggle('active', i <= n);
+    });
+    document.getElementById('btnPrev').style.visibility = n === 0 ? 'hidden' : 'visible';
+    document.getElementById('btnNext').textContent = n === 3 ? '完成' : '下一步';
+    currentStep = n;
+  }
+
+  function prevStep() {
+    if (currentStep > 0) showStep(currentStep - 1);
+  }
+
+  async function nextStep() {
+    if (currentStep === 1) {
+      // 保存 API keys
+      const providers = ['openai', 'anthropic', 'deepseek'];
+      for (const p of providers) {
+        const inputId = 'welcomeKey' + p.charAt(0).toUpperCase() + p.slice(1);
+        const val = document.getElementById(inputId).value.trim();
+        if (val) {
+          try {
+            await invoke('save_api_key', { keyName: p, value: val });
+          } catch (e) {
+            showToast('保存 ' + p + ' 失败: ' + e);
+            return;
+          }
+        }
+      }
+    }
+    if (currentStep === 3) {
+      // 完成：标记向导已完成并关闭窗口
+      try {
+        await invoke('show_window');
+      } catch (e) { /* ignore */ }
+      window.close();
+      return;
+    }
+    showStep(currentStep + 1);
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
+  loadInitial();
+</script>
+
+</body>
+</html>

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Body, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -352,6 +352,46 @@ stream_manager: Optional[StreamManager] = None
 upload_manager: Optional[Any] = None
 etl_engine: Optional[Any] = None
 file_context_injector: Optional[Any] = None
+
+
+# ---------- 桌面端数据目录覆盖（仅 HERMES_DATA_DIR 已设时生效）----------
+
+# 桌面端打包时，Tauri 侧 spawn sidecar 注入 HERMES_DATA_DIR 指向 %APPDATA%\hermes-lite\。
+# dev/EC2 部署不设此 env var，行为完全等同改动前（data/* 相对路径走 cwd）。
+_DESKTOP_PATH_MAP: List[tuple] = [
+    (("storage", "sqlite_path"), "data/sessions.db"),
+    (("memory", "chroma_path"), "data/chroma"),
+    (("memory", "memory_md_path"), "data/memory.md"),
+    (("memory", "signal_pool_path"), "data/profile_signal_pool.json"),
+    (("files", "upload_dir"), "data/uploads"),
+    (("history", "persistence_dir"), "data/history"),
+    (("monitoring", "audit_log_path"), "data/audit.jsonl"),
+]
+# 注：data/schedules.yaml 和 data/schedules/ (runs_store base_dir) 在 CronScheduler 中硬编码默认值，
+# 不通过 config 读取。桌面端通过设置 sidecar 的 cwd 指向 HERMES_DATA_DIR 让这些相对路径自然解析。
+
+
+def _override_data_paths(cfg: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
+    """将 config 中所有 data/* 相对路径解析为 {data_dir}/data/* 绝对路径。
+
+    只覆盖明确以 'data/' 开头的相对路径；用户自定义的绝对路径不动。
+    返回新的 cfg（不修改入参的深层结构，但允许同 dict 浅改）。
+    """
+    for keys, default_rel in _DESKTOP_PATH_MAP:
+        section_name, field_name = keys
+        section = cfg.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        cur = section.get(field_name, default_rel)
+        if isinstance(cur, str) and cur.startswith("data/"):
+            new_path = str((data_dir / cur).resolve())
+            section[field_name] = new_path
+            try:
+                Path(new_path).parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass  # 路径创建失败时 lifespan 后续步骤会以更清晰的错误抛出
+            logger.info("[desktop] %s.%s → %s", section_name, field_name, new_path)
+    return cfg
 
 
 # ---------- Pydantic 请求/响应模型 ----------
@@ -851,6 +891,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("正在加载配置: %s", CONFIG_PATH)
     config = load_config(CONFIG_PATH)
+
+    # === Hermes-Lite Desktop 数据目录覆盖 ===
+    # 仅当 HERMES_DATA_DIR 已设置时生效；未设置时 dev/EC2 行为完全不变。
+    # 同时设置 sidecar 的 cwd 指向此目录，让 CronScheduler 硬编码的
+    # data/schedules.yaml 等相对路径也自然解析到这里（见 _DESKTOP_PATH_MAP 注释）。
+    if os.environ.get("HERMES_DATA_DIR"):
+        _hermes_data_dir = Path(os.environ["HERMES_DATA_DIR"]).resolve()
+        _hermes_data_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("[desktop] HERMES_DATA_DIR = %s", _hermes_data_dir)
+        config = _override_data_paths(config, _hermes_data_dir)
 
     # Phase X: 校验关键环境变量（API Key 等）是否已正确配置
     try:
@@ -1386,6 +1436,73 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
+
+
+# ---------- 桌面端文件上传端点（仅 HERMES_DESKTOP=1 时注册） ----------
+# Tauri 端从 webview 拿到本地 path 后通过 HTTP POST 转发到本端点，
+# 服务端做路径白名单校验 → 读字节 → 喂 UploadManager。
+# 未设 HERMES_DESKTOP 时端点不存在（404），不影响 dev/EC2 部署。
+if os.environ.get("HERMES_DESKTOP") == "1":
+
+    @app.post("/files/from-path")
+    async def upload_from_path(path: str = Form(...)):
+        """Tauri 桌面端：从本地文件系统 path 上传文件。
+
+        安全约束：
+        - 仅当 HERMES_DESKTOP=1 时启用（防 Web 端滥用）
+        - path 必须在 HERMES_DATA_DIR 下（防任意文件读取）
+        - 文件大小走 upload_manager.max_upload_size_mb 兜底校验
+        """
+        if upload_manager is None:
+            raise HTTPException(503, "upload_manager not initialized")
+        if not os.environ.get("HERMES_DATA_DIR"):
+            raise HTTPException(500, "HERMES_DATA_DIR not set in desktop mode")
+
+        try:
+            abs_path = Path(path).resolve()
+        except (OSError, ValueError) as e:
+            raise HTTPException(400, f"invalid path: {e}")
+        allowed_root = Path(os.environ["HERMES_DATA_DIR"]).resolve()
+        # 防止 path 通过 .. 跳出 allowed_root
+        try:
+            abs_path.relative_to(allowed_root)
+        except ValueError:
+            raise HTTPException(403, "path outside allowed root")
+        if not abs_path.is_file():
+            raise HTTPException(404, "file not found")
+
+        # 大小预校验（避免读取超大文件耗内存）
+        max_bytes = int(upload_manager.max_upload_size_mb) * 1024 * 1024
+        try:
+            file_size = abs_path.stat().st_size
+        except OSError as e:
+            raise HTTPException(500, f"stat failed: {e}")
+        if file_size > max_bytes:
+            raise HTTPException(413, f"file too large: {file_size} > {max_bytes}")
+
+        try:
+            with open(abs_path, "rb") as f:
+                content = f.read()
+        except OSError as e:
+            raise HTTPException(500, f"read failed: {e}")
+
+        # 桌面端启动时无 chat session；用特殊标识，前端聊天时如需引用再二次关联
+        desktop_session_id = "desktop-bootstrap"
+        file_id, is_dup = upload_manager.save(
+            filename=abs_path.name,
+            content=content,
+            session_id=desktop_session_id,
+        )
+        if file_id is None:
+            raise HTTPException(400, "upload validation failed")
+        return {
+            "ok": True,
+            "filename": abs_path.name,
+            "file_id": file_id,
+            "is_dup": bool(is_dup),
+        }
+
+    logger.info("[desktop] /files/from-path 端点已注册（HERMES_DESKTOP=1）")
 
 
 # ---------- CORS 配置 ----------
@@ -4455,7 +4572,16 @@ def serve_index():
 
     设置 ``Cache-Control: no-cache, no-store, must-revalidate`` 防止浏览器
     缓存旧 HTML，确保前端改动即时生效（用户首次访问后无需手动 hard refresh）。
+
+    桌面端（``HERMES_DESKTOP=1``）根路径直接返回对话页，跳过介绍页。
     """
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        chat_path = os.path.join(_WEB_DIR, "chat.html")
+        if os.path.exists(chat_path):
+            return FileResponse(
+                chat_path,
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
     index_path = os.path.join(_WEB_DIR, "index.html")
     if not os.path.exists(index_path):
         raise HTTPException(status_code=404, detail="前端文件未找到")
@@ -4534,6 +4660,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "src.server:app",
         host=server_cfg.get("host", "0.0.0.0"),
-        port=int(server_cfg.get("port", 8000)),
+        port=int(os.environ.get("HERMES_PORT") or server_cfg.get("port", 8000)),
         workers=1,
     )

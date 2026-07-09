@@ -70,3 +70,11 @@ deploy/
 # ── Windows 工件 ──
 $null
 Thumbs.db
+
+# ── 桌面端打包（仅 feature/desktop-v0.1.0 分支生效） ──
+desktop/src-tauri/target/
+desktop/node_modules/
+desktop/dist/
+desktop/binaries/
+*.exe
+*.msi

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hermes Lite",
+  "version": "0.1.0",
+  "identifier": "com.hermeslite.desktop",
+  "build": {
+    "frontendDist": "../../web",
+    "devUrl": "http://127.0.0.1:18000",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Hermes Lite",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": false,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../web": "web",
+      "../../config.yaml.example": "config.yaml.example",
+      "../../requirements-slim.txt": "requirements-slim.txt",
+      "../../src": "src",
+      "../../cron_tool": "cron_tool",
+      "../../skills": "skills",
+      "pyembed/python": "python"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+# Hermes Lite desktop — 忽略构建/依赖产物
+# 关键源码（Cargo.toml/Cargo.lock、tauri 配置、*.rs、scripts、web、icons、capabilities）保留跟踪
+
+# Node / Tauri CLI
+node_modules/
+dist/
+
+# Rust 编译产物
+src-tauri/target/
+
+# Tauri 自动生成 schema（每次 dev/build 重新生成，不进 git）
+src-tauri/gen/schemas/
+
+# 嵌入的 Python 运行时（fetch-python.ps1 下载；不打包进 git）
+src-tauri/pyembed/python/
+src-tauri/pyembed/python-build-standalone/
+
+# 安装/运行日志
+install-rust.log
+*.log
+
+# IDE / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
