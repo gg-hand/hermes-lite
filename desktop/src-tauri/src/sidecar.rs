@@ -57,6 +57,14 @@ impl SidecarHandle {
             .stderr(Stdio::from(stderr_file))
             .stdin(Stdio::null());
 
+        // Windows: 抑制控制台窗口闪现（python.exe 默认会弹黑框）
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         let child = cmd
             .spawn()
             .with_context(|| format!("spawn python failed: {}", python_path))?;

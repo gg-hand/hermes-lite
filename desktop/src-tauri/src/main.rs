@@ -106,11 +106,18 @@ fn main() {
         ])
         // 页面刷新/导航后注入的脚本会被销毁。每次 PageLoadEvent::Finished
         // 时重新注入 titlebar 与 init_script，确保 chat-settings.js 的
-        // window.location.reload() 后标题栏仍在。
+        // window.location.reload() 后标题栏仍在。同时当 sidecar 的 chat 页
+        // 加载完成时显示主窗口（窗口启动时隐藏，避免介绍页闪现）。
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                log::info!("on_page_load: page finished, re-injecting bridge scripts");
+                let url = payload.url();
+                log::info!("on_page_load: page finished, url={}", url);
                 bridge::reinject(webview, port);
+                let needle = format!("127.0.0.1:{}", port);
+                if url.as_str().contains(needle.as_str()) {
+                    let _ = webview.window().show();
+                    let _ = webview.window().set_focus();
+                }
             }
         })
         .setup(move |app| {
@@ -123,20 +130,40 @@ fn main() {
                 log::info!("setup: waiting for sidecar ready...");
                 let state = app_handle.state::<AppState>();
                 let mut guard = state.sidecar.lock().await;
+                let mut sidecar_ready = true;
                 if let Some(ref mut sc) = *guard {
                     match sc.wait_for_ready(port, Duration::from_secs(60)).await {
-                        Ok(()) => {
-                            log::info!("setup: sidecar ready, showing main window");
-                        }
+                        Ok(()) => log::info!("setup: sidecar ready, navigating to chat page"),
                         Err(e) => {
                             log::error!("setup: sidecar not ready: {}", e);
+                            sidecar_ready = false;
                         }
                     }
                 }
                 drop(guard);
+
                 if let Some(w) = app_handle.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    if sidecar_ready {
+                        // 导航到 sidecar：同源访问避免 CORS，HERMES_DESKTOP=1
+                        // 在根路径直接返回 chat.html（跳过介绍页）。
+                        // 窗口保持隐藏，由 on_page_load 在 chat.html 加载完成后显示。
+                        let url = format!("http://127.0.0.1:{}/", port);
+                        let js = format!("window.location.replace({:?});", url);
+                        if let Err(e) = w.eval(&js) {
+                            log::error!("setup: navigate to sidecar failed: {}", e);
+                        }
+                        // 兜底：3 秒后仍未显示则强制显示，防止 on_page_load 未触发的边界情况
+                        let w_fallback = w.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            let _ = w_fallback.show();
+                            let _ = w_fallback.set_focus();
+                        });
+                    } else {
+                        // sidecar 未就绪：直接显示窗口（展示报错状态）
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
             });
 
