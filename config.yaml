@@ -147,7 +147,7 @@ guardrails:
     enabled: false
     enable_bank_card: true
 web_search:
-  bing_api_key: ''
+  bing_api_key: ${BING_API_KEY}
   baidu_api_key: ${BAIDU_API_KEY}
 tasks: {}
 schedules: []
