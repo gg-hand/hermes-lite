@@ -24,12 +24,18 @@ def _get_grace_period(config: dict) -> int:
 
 
 CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
-    "llm":        ["llm_client"],
-    "security":   ["policy_engine"],
-    "storage":    ["chroma_store", "sqlite_log", "history_buffer"],
-    "memory":     [],
-    "tasks":      [],
-    "guardrails": [],
+    "llm":        ["orchestrator"],
+    "security":   ["approval_manager", "orchestrator"],
+    "storage":    ["session_logger", "orchestrator"],
+    "memory":     ["orchestrator"],
+    "monitoring": ["metrics_collector", "metrics_store", "audit_logger"],
+    "tasks":      ["task_manager", "cron_scheduler"],
+    "skills":     ["mcp_manager"],
+    "files":      ["upload_manager", "etl_engine"],
+    "guardrails": ["orchestrator"],
+    "cron":       ["orchestrator"],
+    "history":    ["orchestrator"],
+    "tools":      ["orchestrator"],
     "server":     [],
 }
 

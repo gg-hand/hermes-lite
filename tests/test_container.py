@@ -59,21 +59,17 @@ class TestValidation:
 
 class TestHotReload:
     def test_reload_rebuilds_component(self):
+        """llm 配置变更时，orchestrator（方案B整体注册）被重建。"""
         c = Container({"llm": {"model": "v1"}})
-        c.register("llm_client", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=True)
-        c.register("orchestrator", lambda c: FakeOrchestrator(c.get("llm_client")),
-                   deps=["llm_client"], hot_reloadable=False)
+        c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
+                   deps=[], hot_reloadable=False)
         old_orch = c.get("orchestrator")
-        old_llm = c.get("llm_client")
 
         c.reload({"llm"}, {"llm": {"model": "v2"}})
 
         new_orch = c.get("orchestrator")
-        new_llm = c.get("llm_client")
-        assert new_llm is not old_llm
         assert new_orch is not old_orch
-        assert new_llm.config == {"model": "v2"}
+        assert new_orch.config == {"model": "v2"}
 
     def test_reload_atomic_rollback(self):
         class FailingLLM:
@@ -88,24 +84,24 @@ class TestHotReload:
             return FailingLLM(c.config["llm"])
 
         c = Container({"llm": {"model": "v1"}})
-        c.register("llm_client", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=True)
-        original = c.get("llm_client")
+        c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
+                   deps=[], hot_reloadable=False)
+        original = c.get("orchestrator")
 
         # 替换 factory 为会失败的版本
-        c._factories["llm_client"] = factory
+        c._factories["orchestrator"] = factory
         with pytest.raises(ConfigReloadError):
             c.reload({"llm"}, {"llm": {"model": "v2"}})
 
         # 旧实例不变
-        assert c.get("llm_client") is original
+        assert c.get("orchestrator") is original
         assert c.config["llm"] == {"model": "v1"}
 
     def test_delayed_close(self):
         c = Container({"llm": {"model": "v1"}, "server": {"hot_reload_grace_period": 0}})
-        c.register("llm_client", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=True)
-        old = c.get("llm_client")
+        c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
+                   deps=[], hot_reloadable=False)
+        old = c.get("orchestrator")
 
         c.reload({"llm"}, {"llm": {"model": "v2"}, "server": {"hot_reload_grace_period": 0}})
         # grace period=0,等待短暂时间后旧实例应被关闭
@@ -116,10 +112,40 @@ class TestHotReload:
 class TestComponentRef:
     def test_ref_forwards_to_latest(self):
         c = Container({"llm": {"model": "v1"}})
-        c.register("llm_client", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=True)
-        ref = ComponentRef(c, "llm_client")
+        c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
+                   deps=[], hot_reloadable=False)
+        ref = ComponentRef(c, "orchestrator")
         assert ref.config == {"model": "v1"}
 
         c.reload({"llm"}, {"llm": {"model": "v2"}})
         assert ref.config == {"model": "v2"}
+
+
+class TestConfigMapping:
+    """验证 CONFIG_TO_COMPONENTS 映射覆盖所有配置段。"""
+
+    def test_llm_maps_to_orchestrator(self):
+        """llm 配置变更应触发 orchestrator 重建。"""
+        from container import CONFIG_TO_COMPONENTS
+        assert "orchestrator" in CONFIG_TO_COMPONENTS.get("llm", [])
+
+    def test_monitoring_section_exists(self):
+        """monitoring 配置段应映射到 metrics 组件。"""
+        from container import CONFIG_TO_COMPONENTS
+        assert "metrics_collector" in CONFIG_TO_COMPONENTS.get("monitoring", [])
+        assert "metrics_store" in CONFIG_TO_COMPONENTS.get("monitoring", [])
+        assert "audit_logger" in CONFIG_TO_COMPONENTS.get("monitoring", [])
+
+    def test_all_config_sections_covered(self):
+        """所有配置段都应在 CONFIG_TO_COMPONENTS 中有映射。"""
+        from container import CONFIG_TO_COMPONENTS
+        expected = {"llm", "security", "storage", "memory", "monitoring",
+                    "tasks", "skills", "files", "guardrails", "cron",
+                    "history", "tools", "server"}
+        missing = expected - set(CONFIG_TO_COMPONENTS.keys())
+        assert not missing, f"缺少配置段映射: {missing}"
+
+    def test_llm_does_not_map_to_llm_client(self):
+        """方案B：llm 不再映射到独立的 llm_client，而是 orchestrator 整体。"""
+        from container import CONFIG_TO_COMPONENTS
+        assert "llm_client" not in CONFIG_TO_COMPONENTS.get("llm", [])
