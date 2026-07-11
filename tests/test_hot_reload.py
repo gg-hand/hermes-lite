@@ -55,72 +55,64 @@ class TestDetectChangedSections:
 
 
 # ---------------------------------------------------------------------------
-# LLM 热重载
+# LLM 热重载（方案B：llm 映射到 orchestrator 整体）
 # ---------------------------------------------------------------------------
 
 class TestLLMHotReload:
-    def test_llm_reload_rebuilds_client_and_orchestrator(self):
+    def test_llm_reload_rebuilds_orchestrator(self):
+        """llm 配置变更时，orchestrator（方案B整体注册）被重建。"""
         c = Container({"llm": {"model": "v1"}, "server": {"hot_reload_grace_period": 0}})
 
-        class FakeLLM:
+        class FakeOrch:
             def __init__(self, config):
-                self.model = config["model"]
+                self.model = config["llm"]["model"]
                 self.closed = False
 
             def close(self):
                 self.closed = True
 
-        class FakeOrch:
-            def __init__(self, llm):
-                self.llm = llm
+        c.register("orchestrator", lambda c: FakeOrch(c.config),
+                   deps=[], hot_reloadable=False)
 
-            def close(self):
-                pass
-
-        c.register("llm_client", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=True)
-        c.register("orchestrator", lambda c: FakeOrch(c.get("llm_client")),
-                   deps=["llm_client"], hot_reloadable=False)
-
-        old_llm = c.get("llm_client")
         old_orch = c.get("orchestrator")
 
         reloaded = c.reload({"llm"}, {"llm": {"model": "v2"},
                                       "server": {"hot_reload_grace_period": 0}})
 
-        assert "llm_client" in reloaded
         assert "orchestrator" in reloaded
-        assert c.get("llm_client").model == "v2"
         assert c.get("orchestrator") is not old_orch
+        assert c.get("orchestrator").model == "v2"
         time.sleep(0.5)
-        assert old_llm.closed is True
+        assert old_orch.closed is True
 
 
 # ---------------------------------------------------------------------------
-# 安全策略热重载
+# 安全策略热重载（security 映射到 approval_manager + orchestrator）
 # ---------------------------------------------------------------------------
 
 class TestSecurityHotReload:
-    def test_security_reload_rebuilds_policy_engine(self):
+    def test_security_reload_rebuilds_approval_manager(self):
+        """security 配置变更时，approval_manager 被重建。"""
         c = Container({"security": {"enabled": True},
                        "server": {"hot_reload_grace_period": 0}})
 
-        class FakePolicy:
+        class FakeApproval:
             def __init__(self, config):
-                self.enabled = config["enabled"]
+                self.enabled = config["security"]["enabled"]
 
             def close(self):
                 pass
 
-        c.register("policy_engine", lambda c: FakePolicy(c.config["security"]),
+        c.register("approval_manager", lambda c: FakeApproval(c.config),
                    deps=[], hot_reloadable=True)
         c.register("orchestrator", lambda c: object(),
-                   deps=["policy_engine"], hot_reloadable=False)
+                   deps=["approval_manager"], hot_reloadable=False)
 
         reloaded = c.reload({"security"}, {"security": {"enabled": False},
                                            "server": {"hot_reload_grace_period": 0}})
-        assert "policy_engine" in reloaded
-        assert c.get("policy_engine").enabled is False
+        assert "approval_manager" in reloaded
+        assert "orchestrator" in reloaded
+        assert c.get("approval_manager").enabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +242,119 @@ class TestLifespanContainerInjection:
         assert container.get("orchestrator") is fake_orch
         assert container.get("session_logger") is fake_session_logger
         assert container.get("metrics_collector") is fake_metrics
+
+
+# ---------------------------------------------------------------------------
+# 端到端热重载：验证 CONFIG_TO_COMPONENTS 映射（Task 5）
+# ---------------------------------------------------------------------------
+
+class TestHotReloadEndToEnd:
+    """验证各配置段变更触发正确的组件重建。"""
+
+    def _make_container(self):
+        """创建带全部组件注册的容器（使用 Fake 工厂）。"""
+        c = Container({
+            "llm": {"model": "v1"}, "security": {"enabled": True},
+            "storage": {"sqlite_path": "x"}, "memory": {}, "monitoring": {"enabled": True},
+            "tasks": {}, "skills": {}, "files": {}, "guardrails": {},
+            "cron": {}, "history": {}, "tools": {}, "server": {"hot_reload_grace_period": 0},
+        })
+
+        class FakeComp:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+                self.closed = False
+            def close(self):
+                self.closed = True
+
+        for name in ["session_logger", "metrics_collector", "metrics_store",
+                      "audit_logger", "approval_manager", "task_manager",
+                      "stream_manager", "skill_loader", "mcp_manager",
+                      "upload_manager", "etl_engine", "cron_scheduler",
+                      "proposal_store", "health_checker"]:
+            c.register(name, lambda cnt, n=name: FakeComp(name=n, config=cnt.config),
+                       deps=[], hot_reloadable=True)
+
+        c.register("orchestrator",
+                   lambda cnt: FakeComp(name="orch", config=cnt.config),
+                   deps=["metrics_collector", "audit_logger", "approval_manager", "task_manager"],
+                   hot_reloadable=False)
+        return c
+
+    def test_llm_change_rebuilds_orchestrator_only(self):
+        """llm 配置变更只重建 orchestrator，不重建其他组件。"""
+        c = self._make_container()
+        old_orch = c.get("orchestrator")
+        old_metrics = c.get("metrics_collector")
+
+        new_config = dict(c.config)
+        new_config["llm"] = {"model": "v2"}
+        reloaded = c.reload({"llm"}, new_config)
+
+        assert "orchestrator" in reloaded
+        assert "metrics_collector" not in reloaded
+        assert c.get("orchestrator") is not old_orch
+        assert c.get("metrics_collector") is old_metrics
+
+    def test_monitoring_change_rebuilds_metrics_and_cascades_to_orchestrator(self):
+        """monitoring 配置变更重建 metrics 组件，级联重建 orchestrator。"""
+        c = self._make_container()
+        old_orch = c.get("orchestrator")
+        old_metrics = c.get("metrics_collector")
+
+        new_config = dict(c.config)
+        new_config["monitoring"] = {"enabled": False}
+        reloaded = c.reload({"monitoring"}, new_config)
+
+        assert "metrics_collector" in reloaded
+        assert "metrics_store" in reloaded
+        assert "audit_logger" in reloaded
+        # orchestrator 依赖 metrics_collector/audit_logger，级联重建
+        assert "orchestrator" in reloaded
+        assert c.get("orchestrator") is not old_orch
+        assert c.get("metrics_collector") is not old_metrics
+
+    def test_security_change_rebuilds_approval_and_orchestrator(self):
+        """security 配置变更重建 approval_manager 和 orchestrator。"""
+        c = self._make_container()
+        old_approval = c.get("approval_manager")
+        old_orch = c.get("orchestrator")
+
+        new_config = dict(c.config)
+        new_config["security"] = {"enabled": False}
+        reloaded = c.reload({"security"}, new_config)
+
+        assert "approval_manager" in reloaded
+        assert "orchestrator" in reloaded
+        assert c.get("approval_manager") is not old_approval
+        assert c.get("orchestrator") is not old_orch
+
+    def test_server_change_rebuilds_nothing(self):
+        """server 配置变更不重建任何组件（映射为空列表）。"""
+        c = self._make_container()
+        old_orch = c.get("orchestrator")
+
+        new_config = dict(c.config)
+        new_config["server"] = {"port": 9999, "hot_reload_grace_period": 0}
+        reloaded = c.reload({"server"}, new_config)
+
+        assert reloaded == []
+        assert c.get("orchestrator") is old_orch
+
+    def test_storage_change_rebuilds_session_logger_and_orchestrator(self):
+        """storage 配置变更重建 session_logger 和 orchestrator。"""
+        c = self._make_container()
+        old_logger = c.get("session_logger")
+        old_orch = c.get("orchestrator")
+
+        new_config = dict(c.config)
+        new_config["storage"] = {"sqlite_path": "new.db"}
+        reloaded = c.reload({"storage"}, new_config)
+
+        assert "session_logger" in reloaded
+        assert "orchestrator" in reloaded
+        assert c.get("session_logger") is not old_logger
+        assert c.get("orchestrator") is not old_orch
 
 
 if __name__ == "__main__":
