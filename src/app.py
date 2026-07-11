@@ -134,10 +134,12 @@ async def log_requests(request: Request, call_next):
 from routes.misc import router as misc_router  # noqa: E402
 from routes.health import router as health_router  # noqa: E402
 from routes.sessions import router as sessions_router  # noqa: E402
+from routes.config import router as config_router  # noqa: E402
 
 app.include_router(misc_router)
 app.include_router(health_router)
 app.include_router(sessions_router)
+app.include_router(config_router)
 
 
 # ---------------------------------------------------------------------------
