@@ -30,6 +30,7 @@ try:
     from .agent.session_manager import SessionManager
     from .agent.skill_manager import SkillManager
     from .agent.cron_isolator import CronIsolator
+    from .agent.context_builder import ContextBuilder
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
@@ -46,6 +47,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from agent.session_manager import SessionManager  # type: ignore
     from agent.skill_manager import SkillManager  # type: ignore
     from agent.cron_isolator import CronIsolator  # type: ignore
+    from agent.context_builder import ContextBuilder  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
 # 可选模块：记忆 / 工具子系统。
@@ -748,6 +750,9 @@ class Orchestrator:
 
         # CronIsolator: cron 上下文隔离委托（方法对象模式，持有 self 引用）
         self.cron_isolator = CronIsolator(orchestrator=self)
+
+        # ContextBuilder: 环境信息 + TODO 格式化 + 续接消息委托
+        self.context_builder = ContextBuilder()
 
     def _build_archive_callback(
         self,
@@ -1698,187 +1703,21 @@ class Orchestrator:
         self.session_mgr.ensure_session(session_id)
 
     def _build_environment_section(self) -> str:
-        """构造运行环境信息段（跨平台自适应）。
-
-        采集当前进程的运行时环境信息（OS、工作目录、Shell、Python 启动
-        命令与路径），用于注入到 messages[0] 顶部（缓存失效区，不污染
-        system_text），帮助 LLM 感知运行环境以生成更贴合环境的指令
-        （例如 Windows 下用 PowerShell 命令、Linux 下用 bash 命令）。
-
-        跨平台自适应策略：
-        - 操作系统：``platform.system() + platform.release()``（如
-          ``Windows 10`` / ``Linux 5.15.0`` / ``Darwin 23.4.0``）
-        - Shell：Windows 优先检测 ``powershell``，缺失时降级到 ``cmd``；
-          Linux/Mac 优先检测 ``bash``，缺失时降级到 ``sh``
-        - Python 启动命令：优先 ``python3``，缺失时降级到 ``python``
-        - Python 路径：``sys.executable``（当前解释器绝对路径）
-        - 工作目录：``os.getcwd()``（当前进程工作目录）
-
-        所有字段均为运行时真实值（非快照锁定），同一进程多次调用结果
-        一致；不同进程（如 cron 调度 fork 出的子进程）可能不同。
-
-        返回:
-            markdown 格式的运行环境信息段，固定以 ``## 运行环境`` 开头。
-        """
-        import platform
-        import shutil
-        import sys as _sys
-        import os as _os
-
-        # 操作系统（如 "Windows 10" / "Linux 5.15.0-91-generic"）
-        os_name = f"{platform.system()} {platform.release()}"
-
-        # Shell 检测：subprocess.Popen(shell=True) 在 Windows 默认走 cmd.exe，
-        # 仅当 pwsh (PowerShell 7) 实测存在时才标注
-        if platform.system() == "Windows":
-            shell = "PowerShell 7 (pwsh)" if shutil.which("pwsh") else "cmd.exe"
-        else:
-            shell = "bash" if shutil.which("bash") else "sh"
-
-        # Python 启动命令：实测 python --version（避免 MS Store stub 误命中）
-        try:
-            import subprocess as _sp
-            _sp.check_output(
-                ["python", "--version"], stderr=_sp.STDOUT, timeout=3
-            ).decode().strip()
-            python_cmd = "python"
-        except (FileNotFoundError, _sp.SubprocessError, OSError):
-            python_cmd = "python3"
-
-        # Python 解释器绝对路径
-        python_path = _sys.executable
-
-        # 当前工作目录
-        cwd = _os.getcwd()
-
-        env_lines = [
-            "## 运行环境",
-            f"- 操作系统: {os_name}",
-            f"- 工作目录: {cwd}",
-            f"- Shell: {shell}",
-            f"- Python 启动命令: {python_cmd}",
-            f"- Python 路径: {python_path}",
-            f"- 当前日期: {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (UTC)",
-        ]
-        # Windows 下追加跨盘 cd 提示
-        if platform.system() == "Windows":
-            env_lines.append("- 提示: 跨盘切换目录请用 `cd /d <路径>`（如 cd /d E:\\proj）")
-        return "\n".join(env_lines)
+        """构造运行环境信息段。委托给 ContextBuilder。"""
+        return self.context_builder.build_environment()
 
     def _format_todo_for_injection(self, todo_dict: Optional[dict]) -> str:
-        """将 TodoList dict 格式化为可注入 messages[0] 的"## 当前计划进度"段。
+        """将 TodoList dict 格式化为"## 当前计划进度"段。委托给 ContextBuilder。"""
+        return self.context_builder.format_todo(todo_dict)
 
-        Phase 9 Task 5: 让 LLM 每轮看到 TodoList 状态自然更新，避免多轮
-        工具调用后忘记调用 update_todo 标记进度。注入位置在 TaskManager
-        进度段之后（缓存失效区，不污染 system_text）。
-
-        step 状态映射规则（与 plan 工具状态机一致）：
-        - ``completed`` → ``[x]``
-        - ``pending`` / ``in_progress`` / ``failed`` → ``[ ]``
-          （``failed`` 也用 ``[ ]`` 表示未完成，避免 LLM 误判为已完成而
-          跳过重试；具体失败原因可通过 step.result 查询。）
-
-        参数:
-            todo_dict: ``TodoListRegistry.get_todo_dict`` 返回的 dict，
-                形如 ``{"goal": str, "steps": [...], "completed": bool}``，
-                每个 step 含 ``id`` / ``content`` / ``status`` /
-                ``depends_on`` / ``result``。``None`` 或缺字段时返回空串。
-
-        返回:
-            markdown 格式的"## 当前计划进度"段；``todo_dict`` 为 ``None``
-            或无 steps 时返回空串（跳过注入）。
-        """
-        if not todo_dict:
-            return ""
-        steps = todo_dict.get("steps") or []
-        if not steps:
-            return ""
-
-        goal = todo_dict.get("goal", "") or ""
-        completed_count = sum(1 for s in steps if s.get("status") == "completed")
-        total = len(steps)
-
-        # 步骤渲染：completed → [x]，其他状态（pending/in_progress/failed）→ [ ]
-        step_lines = []
-        for s in steps:
-            mark = "[x]" if s.get("status") == "completed" else "[ ]"
-            content = s.get("content", "") or ""
-            step_lines.append(f"{mark} {content}")
-        steps_block = "\n".join(step_lines)
-
-        return (
-            "## 当前计划进度\n\n"
-            f"**目标**: {goal}\n\n"
-            f"**总进度**: {completed_count}/{total}\n\n"
-            "**步骤**:\n"
-            f"{steps_block}\n\n"
-            "提醒：每完成一个步骤，必须调用 update_todo 标记为 completed"
-        )
-
-    # ------------------------------------------------------------------
-    # Phase 9 Task 7.6-7.8: 自动续接辅助方法
-    # ------------------------------------------------------------------
     @staticmethod
     def _has_unfinished_steps(todo_dict: Optional[dict]) -> bool:
-        """检查 TodoList 是否有未完成步骤。
-
-        Phase 9 Task 7.6: 自动续接决策依据。``todo_dict`` 为 ``None`` 或
-        无 steps 时返回 ``False``（不续接）；有任意 step 状态非
-        ``completed`` 时返回 ``True``（需续接）。``failed`` 步骤也算
-        未完成（允许 LLM 重试或换路径）。
-
-        参数:
-            todo_dict: ``TodoListRegistry.get_todo_dict`` 返回的 dict。
-
-        返回:
-            有未完成步骤返回 ``True``，否则 ``False``。
-        """
-        if not todo_dict:
-            return False
-        steps = todo_dict.get("steps") or []
-        if not steps:
-            return False
-        return any(s.get("status") != "completed" for s in steps)
+        """检查 TodoList 是否有未完成步骤。委托给 ContextBuilder。"""
+        return ContextBuilder.has_unfinished_steps(todo_dict)
 
     def _build_continuation_message(self, todo_dict: Optional[dict]) -> str:
-        """构造自动续接消息（Phase 9 Task 7.8）。
-
-        当 ``react_loop.run`` 返回 ``is_complete=False`` 且 TodoList 有
-        未完成步骤时，用此消息作为下一轮 ``user_input`` 继续 React 循环。
-        不重置 messages（保留全部上下文）。
-
-        参数:
-            todo_dict: ``TodoListRegistry.get_todo_dict`` 返回的 dict，
-                为 ``None`` 时降级为通用续接消息。
-
-        返回:
-            续接消息字符串，格式：
-            ``"上一轮已达循环上限。当前进度：{todo_summary}。请继续完成剩余步骤，无需重复已完成的工作。"``
-        """
-        if not todo_dict or not todo_dict.get("steps"):
-            return (
-                "上一轮已达循环上限。请继续完成剩余步骤，无需重复已完成的工作。"
-            )
-        goal = todo_dict.get("goal", "") or ""
-        steps = todo_dict.get("steps") or []
-        completed_count = sum(
-            1 for s in steps if s.get("status") == "completed"
-        )
-        total = len(steps)
-        unfinished = [
-            s.get("content", "")
-            for s in steps
-            if s.get("status") != "completed"
-        ]
-        unfinished_block = "\n".join(
-            f"- {c}" for c in unfinished if c
-        )
-        return (
-            "上一轮已达循环上限。"
-            f"当前进度：目标「{goal}」，已完成 {completed_count}/{total}。"
-            f"未完成步骤：\n{unfinished_block}\n"
-            "请继续完成剩余步骤，无需重复已完成的工作。"
-        )
+        """构造自动续接消息。委托给 ContextBuilder。"""
+        return self.context_builder.build_continuation_message(todo_dict)
 
     # ------------------------------------------------------------------
     # P1-3: Skill 激活状态管理（L2 body 注入）
