@@ -24,3 +24,4 @@ upload_manager: Optional[Any] = None
 etl_engine: Optional[Any] = None
 file_context_injector: Optional[Any] = None
 soft_restart_in_progress: bool = False
+metrics_baseline_reset: bool = False
