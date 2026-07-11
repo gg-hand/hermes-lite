@@ -51,6 +51,8 @@ from src.tasks.cron_tool_loader import (  # noqa: E402
     load_tool,
 )
 from src.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +796,9 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         # Phase 9 Task 5: _build_enhanced_context 现访问 todo_registry，
         # 此测试不验证 plan 模式注入，置 None 走降级路径。
         self.orch.todo_registry = None
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        self.orch.context_builder = ContextBuilder()
+        self.orch.cron_isolator = CronIsolator(orchestrator=self.orch)
 
     def tearDown(self):
         self.sandbox.cleanup()
@@ -1117,6 +1122,9 @@ class TestEndToEndIntegration(unittest.TestCase):
         react_loop.cron_tool_registry = None
         react_loop.tool_registry = global_reg
         orch.react_loop = react_loop
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
 
         # _build_cron_tools 过滤 + 合并
         tools_override = orch._build_cron_tools("cron:e2e")

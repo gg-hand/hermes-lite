@@ -35,6 +35,8 @@ install_mocks()
 
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.memory.cron_isolation import CronIsolation  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
 
 
 def _make_orchestrator(
@@ -73,6 +75,10 @@ def _make_orchestrator(
 
     # _build_cron_tools: 返回 None（隔离工具过滤逻辑）
     orch._build_cron_tools = MagicMock(return_value=None)
+
+    # 委托管理器（方法对象模式，持有 orch 引用）
+    orch.context_builder = ContextBuilder()
+    orch.cron_isolator = CronIsolator(orchestrator=orch)
 
     return orch
 

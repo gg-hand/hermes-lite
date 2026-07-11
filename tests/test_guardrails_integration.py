@@ -40,6 +40,11 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.agent.audit import AuditLogger  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
+from src.agent.msg_persistence import MessagePersistence  # noqa: E402
+from src.agent.session_manager import SessionManager  # noqa: E402
+from src.agent.skill_manager import SkillManager  # noqa: E402
 from src.guardrails import GuardrailEngine  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 
@@ -240,6 +245,17 @@ def _make_orchestrator(
     orch.metrics = None
     orch._last_session_id = None
     orch._current_session_id = None
+    orch._pending_interrupt_notices = {}
+    orch.llm_client = None
+    orch._consecutive_empty_runs = {}
+    # 委托管理器（方法对象模式，持有 orch 引用）
+    orch.context_builder = ContextBuilder()
+    orch.cron_isolator = CronIsolator(orchestrator=orch)
+    orch.msg_persistence = MessagePersistence(orchestrator=orch)
+    orch.session_mgr = SessionManager(
+        llm_client=None, session_logger=session_logger
+    )
+    orch.skill_mgr = SkillManager()
     return orch
 
 

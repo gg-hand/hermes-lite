@@ -29,6 +29,11 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.agent.react_loop import ReactLoop  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
+from src.agent.msg_persistence import MessagePersistence  # noqa: E402
+from src.agent.session_manager import SessionManager  # noqa: E402
+from src.agent.skill_manager import SkillManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -446,9 +451,9 @@ class TestOrchestratorContinuation(unittest.TestCase):
         """构造续接消息含 goal + 进度 + 未完成步骤。"""
         from src.orchestrator import Orchestrator
         # 需要一个 Orchestrator 实例来调用实例方法（或用 unbound 调用）
-        # _build_continuation_message 是实例方法但不依赖 self 状态，
-        # 可通过 Mock 创建实例
+        # _build_continuation_message 委托到 context_builder
         orch = object.__new__(Orchestrator)
+        orch.context_builder = ContextBuilder()
         todo_dict = {
             "goal": "完成报告",
             "steps": [
@@ -470,6 +475,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
         """todo_dict 为 None 时降级为通用续接消息。"""
         from src.orchestrator import Orchestrator
         orch = object.__new__(Orchestrator)
+        orch.context_builder = ContextBuilder()
         msg = orch._build_continuation_message(None)
         self.assertIn("上一轮已达循环上限", msg)
         self.assertIn("无需重复已完成的工作", msg)
@@ -505,10 +511,17 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch._pending_interrupt_notices = {}
         # chat() 空回复计数路径访问 _consecutive_empty_runs
         orch._consecutive_empty_runs = {}
+        orch.llm_client = None
         # Phase 1 反馈监控：chat() 调用 self.metrics.observe_termination
         orch.metrics = None
         # react_loop.run 已 async（spec Task 4），用 AsyncMock
         orch.react_loop.run = AsyncMock()
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.msg_persistence = MessagePersistence(orchestrator=orch)
+        orch.session_mgr = SessionManager(llm_client=None, session_logger=None)
+        orch.skill_mgr = SkillManager()
         return orch
 
     async def test_auto_continuation_when_todo_unfinished(self):

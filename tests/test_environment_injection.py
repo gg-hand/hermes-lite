@@ -34,6 +34,8 @@ install_mocks()
 from src.llm.prompts import SYSTEM_PROMPT  # noqa: E402
 from src.memory.context_manager import ContextManager  # noqa: E402
 from src.memory.cron_isolation import CronIsolation  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 
 
@@ -113,7 +115,8 @@ class TestBuildEnvironmentSection(unittest.TestCase):
     def _make_orchestrator(self):
         """通过 __new__ 构造 Orchestrator，仅设置测试需要的属性。"""
         orch = Orchestrator.__new__(Orchestrator)
-        # _build_environment_section 不依赖任何实例属性，无需装配
+        # _build_environment_section 委托到 context_builder
+        orch.context_builder = ContextBuilder()
         return orch
 
     def test_method_exists(self):
@@ -248,6 +251,9 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
         # Phase 9 Task 5: _build_enhanced_context 现访问 todo_registry，
         # 此测试不验证 plan 模式注入，置 None 走降级路径。
         orch.todo_registry = None
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     async def test_user_session_messages_zero_contains_env_section(self):
@@ -355,6 +361,9 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
         # Phase 9 Task 5: _build_enhanced_context 现访问 todo_registry，
         # cron 路径不应注入 plan todo，置 None 走降级路径。
         orch.todo_registry = None
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     async def test_cron_session_messages_zero_contains_env_section(self):

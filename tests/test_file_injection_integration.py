@@ -27,6 +27,8 @@ install_mocks()
 from src.files.upload_manager import UploadManager
 from src.files.context_injector import FileContextInjector
 from src.memory.context_manager import ContextManager
+from src.agent.context_builder import ContextBuilder
+from src.agent.cron_isolator import CronIsolator
 from src.orchestrator import Orchestrator
 
 
@@ -56,6 +58,9 @@ def _make_orchestrator(cm: ContextManager) -> Orchestrator:
     orch.memory_retriever = None
     orch.task_manager = None
     orch.todo_registry = None
+    # 委托管理器（方法对象模式，持有 orch 引用）
+    orch.context_builder = ContextBuilder()
+    orch.cron_isolator = CronIsolator(orchestrator=orch)
     return orch
 
 

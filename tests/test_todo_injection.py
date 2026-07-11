@@ -39,6 +39,8 @@ install_mocks()
 
 from src.llm.prompts import SYSTEM_PROMPT  # noqa: E402
 from src.memory.context_manager import ContextManager  # noqa: E402
+from src.agent.context_builder import ContextBuilder  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.tasks.todo_list import TodoListRegistry  # noqa: E402
 
@@ -103,7 +105,8 @@ class TestFormatTodoForInjection(unittest.TestCase):
     def _make_orchestrator(self):
         """通过 __new__ 构造 Orchestrator，仅设置测试需要的属性。"""
         orch = Orchestrator.__new__(Orchestrator)
-        # _format_todo_for_injection 不依赖任何实例属性
+        # _format_todo_for_injection 委托到 context_builder
+        orch.context_builder = ContextBuilder()
         return orch
 
     def test_method_exists(self):
@@ -272,6 +275,9 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         orch.todo_registry = (
             TodoListRegistry() if with_todo_registry else None
         )
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     def _init_plan(self, orch, session_id: str):
@@ -429,6 +435,9 @@ class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
         orch.todo_registry = (
             TodoListRegistry() if with_todo_registry else None
         )
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     async def test_no_todo_registry_no_exception(self):
@@ -507,6 +516,9 @@ class TestTodoInjectionStateUpdate(unittest.IsolatedAsyncioTestCase):
         orch.metrics = None
         orch.task_manager = None
         orch.todo_registry = TodoListRegistry()
+        # 委托管理器（方法对象模式，持有 orch 引用）
+        orch.context_builder = ContextBuilder()
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     async def test_progress_reflects_state_change(self):

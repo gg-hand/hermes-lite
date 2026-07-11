@@ -31,6 +31,7 @@ try:
     from .agent.skill_manager import SkillManager
     from .agent.cron_isolator import CronIsolator
     from .agent.context_builder import ContextBuilder
+    from .agent.msg_persistence import MessagePersistence
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
@@ -48,6 +49,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from agent.skill_manager import SkillManager  # type: ignore
     from agent.cron_isolator import CronIsolator  # type: ignore
     from agent.context_builder import ContextBuilder  # type: ignore
+    from agent.msg_persistence import MessagePersistence  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
 # 可选模块：记忆 / 工具子系统。
@@ -753,6 +755,10 @@ class Orchestrator:
 
         # ContextBuilder: 环境信息 + TODO 格式化 + 续接消息委托
         self.context_builder = ContextBuilder()
+
+        # MessagePersistence: 消息持久化 + 中断通知 + 历史清理 + 沉淀触发委托
+        # （方法对象模式，持有 self 引用）
+        self.msg_persistence = MessagePersistence(orchestrator=self)
 
     def _build_archive_callback(
         self,
@@ -1970,126 +1976,28 @@ class Orchestrator:
         user_input: str,
         response_text: str,
     ) -> None:
-        """将本轮 React 循环新增的完整 messages 持久化到 history_buffer。
-
-        ``new_messages`` 为 ``messages_used[enhanced_history_len:]``，即本次
-        循环产生的消息（user_input + assistant tool_use + user tool_result +
-        assistant final），content 可为 str 或 Anthropic content block 列表。
-
-        ``new_messages`` 为空（流中断或异常）时降级为仅存 user_input +
-        response_text，保证至少保留本轮纯文本对话。
-        """
-        if not new_messages:
-            self.history_buffer.add_message(session_id, "user", user_input)
-            self.history_buffer.add_message(
-                session_id, "assistant", response_text
-            )
-            return
-        for msg in new_messages:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role is None or content is None:
-                continue
-            self.history_buffer.add_message(session_id, role, content)
+        """委托到 MessagePersistence.persist_new_messages。"""
+        self.msg_persistence.persist_new_messages(
+            session_id, new_messages, user_input, response_text
+        )
 
     def _save_interrupt_notice(
         self, session_id: str, new_message: Optional[str] = None
     ) -> None:
-        """中断发生时，暂存 InterruptNotice 到内存。
-
-        规范 3 Task 8.1: 改用结构化 dict 存储（含 timestamp，供 TTL 清理）。
-        通知将在下次 chat()/chat_stream() 开始时作为独立 system 消息注入到
-        enhanced_history，不再字符串拼接到 user_input（Task 8.3-8.5）。
-        """
-        if new_message:
-            content = (
-                "【系统通知：用户中断了回复】\n"
-                f"用户的新消息如下：\n{new_message}\n\n"
-                "请直接响应用户的新消息，不要续写被中断的内容。"
-            )
-        else:
-            content = "【系统通知：用户中断了回复】请等待用户的下一条指令。不要续写被中断的内容。"
-
-        self._pending_interrupt_notices[session_id] = {
-            "content": content,
-            "timestamp": time.time(),
-        }
-        logger.info("InterruptNotice 已暂存: %s", session_id)
+        """委托到 MessagePersistence.save_interrupt_notice。"""
+        self.msg_persistence.save_interrupt_notice(session_id, new_message)
 
     @staticmethod
     def _sanitize_history_alternation(
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """清理历史消息，确保 user/assistant 交替约束。
-
-        规范 3 Task 9 增强：
-        1. ``[..., user, user]`` → 合并（现有逻辑，兼容旧 JSONL）
-        2. ``[..., user, system_notice, user]`` → 保留（Task 9.1）
-           system_notice 为 role=system 的中断通知，不与相邻 user 合并
-        3. ``[..., assistant(空/半截), user]`` → 弹出空 assistant（Task 9.2）
-           避免空 assistant 污染上下文（Task 5 守卫已拦截新增，此处清理旧数据）
-        """
-        if not history or len(history) < 2:
-            return history
-        cleaned: List[Dict[str, Any]] = [history[0]]
-        for msg in history[1:]:
-            last = cleaned[-1]
-            # Task 9.2: 弹出末尾空 assistant（content 为 None/""/[]/纯空 text 块）
-            # 当下一条是 user 消息且上一条是空 assistant 时，弹出空 assistant
-            if (
-                msg.get("role") == "user"
-                and last.get("role") == "assistant"
-                and Orchestrator._is_empty_assistant_content(last.get("content"))
-            ):
-                cleaned.pop()
-                last = cleaned[-1] if cleaned else None
-                if last is None:
-                    cleaned.append(msg)
-                    continue
-            # 现有逻辑：合并连续 user 消息（兼容旧 JSONL 中遗留的连续 user）
-            # Task 9.1: user → system → user 模式不合并（system_notice 隔开）
-            if (
-                msg.get("role") == "user"
-                and last.get("role") == "user"
-                and isinstance(last.get("content"), str)
-                and isinstance(msg.get("content"), str)
-            ):
-                cleaned[-1] = {
-                    **last,
-                    "content": f"{last['content']}\n{msg['content']}",
-                }
-            else:
-                cleaned.append(msg)
-        return cleaned
+        """委托到 MessagePersistence.sanitize_history。"""
+        return MessagePersistence.sanitize_history(history)
 
     @staticmethod
     def _is_empty_assistant_content(content: Any) -> bool:
-        """判断 assistant content 是否为空（None / "" / [] / 纯空 text 块）。
-
-        用于 _sanitize_history_alternation 清理残留的空 assistant。
-        含 tool_use 块的不算空（应由 _drop_trailing_orphan_tool_calls 处理）。
-        """
-        if content is None or content == "":
-            return True
-        if isinstance(content, list):
-            has_tool_use = any(
-                isinstance(b, dict) and b.get("type") == "tool_use"
-                for b in content
-            )
-            if has_tool_use:
-                return False
-            has_substance = any(
-                isinstance(b, dict)
-                and (
-                    b.get("type") != "text"
-                    or (isinstance(b.get("text"), str) and b.get("text").strip())
-                )
-                for b in content
-            )
-            return not has_substance
-        if isinstance(content, str):
-            return not content.strip()
-        return False
+        """委托到 MessagePersistence.is_empty_assistant。"""
+        return MessagePersistence.is_empty_assistant(content)
 
     def apply_condenser_config(
         self, condenser_cfg: Dict[str, Any]
@@ -2128,89 +2036,16 @@ class Orchestrator:
         return new_condenser
 
     async def _maybe_flush_on_session_switch(self, session_id: str) -> None:
-        """会话切换时自动 flush 旧会话的沉淀。
-
-        若 ``_last_session_id`` 与当前 ``session_id`` 不同，且
-        ``consolidation_engine.pending_messages`` 非空，则调用
-        :meth:`flush_consolidation` 强制沉淀上一个会话的对话，
-        避免短会话的消息因达不到阈值而丢失。
-
-        无论如何都会更新 ``_last_session_id`` 为当前 session_id。
-
-        参数:
-            session_id: 当前会话 ID。
-        """
-        if self.consolidation_engine is None:
-            self._last_session_id = session_id
-            return
-
-        # 仅当 session_id 真正切换且缓冲区非空时才 flush
-        if (
-            self._last_session_id is not None
-            and self._last_session_id != session_id
-            and self.consolidation_engine.pending_messages
-        ):
-            logger.info(
-                "检测到会话切换 %s -> %s，flush 旧会话的沉淀缓冲（%d 条消息）",
-                self._last_session_id,
-                session_id,
-                self.consolidation_engine.info_counter,
-            )
-            # flush 旧会话：按旧 session_id 路由 namespace
-            # flush_consolidation 内部调用 consolidation_engine.force_consolidate
-            # （同步 LLM 调用），通过 to_thread 在线程中执行避免阻塞事件循环
-            await asyncio.to_thread(
-                self.flush_consolidation, session_id=self._last_session_id
-            )
-
-        self._last_session_id = session_id
+        """委托到 MessagePersistence.maybe_flush_on_switch。"""
+        await self.msg_persistence.maybe_flush_on_switch(session_id)
 
     def flush_consolidation(self, session_id: Optional[str] = None) -> Dict[str, int]:
-        """强制触发记忆沉淀（不判断阈值）。
-
-        用于会话切换 / 会话结束 / 前端手动触发等场景，将
-        ``pending_messages`` 缓冲的对话立即交给 LLM 提取事实并写入
-        长期记忆。若缓冲为空则跳过。
-
-        参数:
-            session_id: 当前会话 ID。``cron:`` 前缀触发 cron 命名空间路由
-                （Phase 8 Task 1.2）；其他值或 None 走 user 命名空间
-                （向后兼容）。
-
-        返回:
-            与 :meth:`ConsolidationEngine.consolidate` 相同的统计字典。
-            若 ConsolidationEngine 未启用，返回空字典。
-        """
-        if self.consolidation_engine is None:
-            logger.debug("ConsolidationEngine 未启用，跳过 flush")
-            return {}
-        try:
-            return self.consolidation_engine.force_consolidate(session_id=session_id)
-        except Exception as e:
-            logger.warning("flush consolidation 失败: %s", e)
-            return {}
+        """委托到 MessagePersistence.flush_consolidation。"""
+        return self.msg_persistence.flush_consolidation(session_id)
 
     async def _trigger_consolidation(self, session_id: Optional[str] = None) -> None:
-        """触发记忆沉淀流程。
-
-        ConsolidationEngine.consolidate() 使用内部 pending_messages 缓冲；
-        consolidate 内部会重置 info_counter 与 pending_messages。
-        若 ConsolidationEngine 未启用，则跳过。
-
-        参数:
-            session_id: 当前会话 ID。``cron:`` 前缀触发 cron 命名空间路由
-                （Phase 8 Task 1.2）；其他值或 None 走 user 命名空间
-                （向后兼容）。
-        """
-        if self.consolidation_engine is None:
-            logger.debug("ConsolidationEngine 未启用，跳过 consolidation")
-            return
-        try:
-            await asyncio.to_thread(
-                self.consolidation_engine.consolidate, session_id=session_id
-            )
-        except Exception as e:
-            logger.warning("consolidation 执行失败: %s", e)
+        """委托到 MessagePersistence.trigger_consolidation。"""
+        await self.msg_persistence.trigger_consolidation(session_id)
 
     def close(self) -> None:
         """关闭所有资源。
