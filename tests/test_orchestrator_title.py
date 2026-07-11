@@ -26,6 +26,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.agent.session_manager import SessionManager  # noqa: E402
 
 
 def _make_llm_response(text: str) -> MagicMock:
@@ -44,10 +45,11 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
     """
 
     def _make_orchestrator(self) -> Orchestrator:
-        """构造最小化 Orchestrator，仅设置标题生成所需属性。"""
+        """构造最小化 Orchestrator，仅设置标题生成所需属性。
+
+        委托模式：orch._maybe_generate_title_async → orch.session_mgr.generate_title_async
+        """
         orch = Orchestrator.__new__(Orchestrator)
-        orch._titled_sessions = set()
-        orch._pending_title_tasks = set()
         orch.session_logger = MagicMock()
         orch.session_logger.get_session_title.return_value = None  # DB 中无标题
 
@@ -57,6 +59,10 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
             return_value=_make_llm_response("测试标题")
         )
         orch.llm_client = llm_client
+        # 创建 SessionManager，orch 委托给它
+        orch.session_mgr = SessionManager(
+            llm_client=llm_client, session_logger=orch.session_logger,
+        )
         return orch
 
     async def test_title_task_reference_held_during_execution(self):
@@ -65,14 +71,14 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
 
         orch._maybe_generate_title_async("sess-123", "帮我查一下雷电将军的周边价格")
 
-        # task 应已被加入 _pending_title_tasks（强引用持有）
-        self.assertEqual(len(orch._pending_title_tasks), 1)
+        # task 应已被加入 session_mgr._pending_title_tasks（强引用持有）
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 1)
 
         # 等待 task 完成执行
-        await asyncio.gather(*orch._pending_title_tasks)
+        await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 
         # task 完成后由 add_done_callback 自动从 set 中移除
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
 
         # session_logger.update_session_title 被调用，标题被写入
         orch.session_logger.update_session_title.assert_called_once_with(
@@ -80,7 +86,7 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
         )
 
         # _titled_sessions 缓存命中
-        self.assertIn("sess-123", orch._titled_sessions)
+        self.assertIn("sess-123", orch.session_mgr._titled_sessions)
 
     async def test_title_task_not_created_for_cron_session(self):
         """cron 会话跳过标题生成。"""
@@ -89,18 +95,18 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
         orch._maybe_generate_title_async("cron:sched_X", "some input")
 
         # cron session 不应创建 task
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
         orch.llm_client.chat_consolidation.assert_not_called()
 
     async def test_title_task_skipped_when_already_titled(self):
         """已有标题的会话跳过生成。"""
         orch = self._make_orchestrator()
         # 模拟已有标题：_titled_sessions 缓存命中
-        orch._titled_sessions.add("sess-already")
+        orch.session_mgr._titled_sessions.add("sess-already")
 
         orch._maybe_generate_title_async("sess-already", "some input")
 
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
         orch.llm_client.chat_consolidation.assert_not_called()
 
     async def test_title_task_skipped_when_db_has_title(self):
@@ -111,9 +117,9 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
 
         orch._maybe_generate_title_async("sess-in-db", "some input")
 
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
         # 缓存回填
-        self.assertIn("sess-in-db", orch._titled_sessions)
+        self.assertIn("sess-in-db", orch.session_mgr._titled_sessions)
         orch.llm_client.chat_consolidation.assert_not_called()
 
     async def test_title_task_failure_does_not_leak_reference(self):
@@ -123,16 +129,17 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
         orch.llm_client.chat_consolidation = AsyncMock(
             side_effect=RuntimeError("LLM down")
         )
+        # session_mgr 持有同一个 llm_client 引用，更新 mock 自动生效
 
         orch._maybe_generate_title_async("sess-fail", "some input")
 
-        self.assertEqual(len(orch._pending_title_tasks), 1)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 1)
 
         # 等待 task 完成（异常会被 _generate_title_task 内部 try/except 捕获）
-        await asyncio.gather(*orch._pending_title_tasks)
+        await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 
         # task 完成后引用被清理
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
         # 标题未被写入
         orch.session_logger.update_session_title.assert_not_called()
 
@@ -147,11 +154,11 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
         with patch(
             "asyncio.create_task", side_effect=RuntimeError("no running loop")
         ):
-            with self.assertLogs("src.orchestrator", level="WARNING") as cm:
+            with self.assertLogs("src.agent.session_manager", level="WARNING") as cm:
                 orch._maybe_generate_title_async("sess-runtime", "some input")
 
         # task 未创建
-        self.assertEqual(len(orch._pending_title_tasks), 0)
+        self.assertEqual(len(orch.session_mgr._pending_title_tasks), 0)
         # 日志含 RuntimeError 信息
         self.assertTrue(
             any("创建标题生成任务失败" in msg for msg in cm.output),
@@ -169,9 +176,9 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
             return_value=_make_llm_response("")
         )
 
-        with self.assertLogs("src.orchestrator", level="INFO") as cm:
+        with self.assertLogs("src.agent.session_manager", level="INFO") as cm:
             orch._maybe_generate_title_async("sess-empty", "some input")
-            await asyncio.gather(*orch._pending_title_tasks)
+            await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 
         # 标题未写入
         orch.session_logger.update_session_title.assert_not_called()
@@ -193,9 +200,9 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
             side_effect=asyncio.TimeoutError()
         )
 
-        with self.assertLogs("src.orchestrator", level="WARNING") as cm:
+        with self.assertLogs("src.agent.session_manager", level="WARNING") as cm:
             orch._maybe_generate_title_async("sess-timeout", "some input")
-            await asyncio.gather(*orch._pending_title_tasks)
+            await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 
         # 标题未写入
         orch.session_logger.update_session_title.assert_not_called()

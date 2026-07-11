@@ -27,6 +27,7 @@ try:
     from .llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT
     from .llm.reasoning_profiles import ReasoningConfig
     from .agent.react_loop import ReactLoop
+    from .agent.session_manager import SessionManager
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from llm.prompts import SYSTEM_PROMPT, TITLE_GENERATION_PROMPT  # type: ignore
     from llm.reasoning_profiles import ReasoningConfig  # type: ignore
     from agent.react_loop import ReactLoop  # type: ignore
+    from agent.session_manager import SessionManager  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
 # 可选模块：记忆 / 工具子系统。
@@ -490,14 +492,9 @@ class Orchestrator:
         # count == 1 时追加纠偏提示到 system_text（不持久化）。
         self._consecutive_empty_runs: Dict[str, int] = {}
 
-        # 会话标题缓存：记录已知已有标题的 session_id，避免每次 chat() 都查
-        # SQLite 的 sessions.title 列。进程内 dict，服务重启后重新从 DB 回填。
-        # 仅缓存"已有标题"状态，不缓存标题内容本身（避免与 DB 不一致）。
-        self._titled_sessions: set = set()
-        # 异步生成标题任务强引用容器：asyncio.create_task 返回的 Task 仅被事件
-        # 循环持弱引用，未保存会被 GC 回收导致任务从未执行。任务完成后由
-        # add_done_callback 自动从 set 中移除，避免内存泄漏。
-        self._pending_title_tasks: set = set()
+        # 会话标题缓存和异步任务管理已迁移到 SessionManager（session_mgr）。
+        # 以下字段保留为向后兼容属性（property 代理到 session_mgr），
+        # 避免外部访问 orch._titled_sessions 时 AttributeError。
 
         # 4.5 Condenser（可选模块，缺失时降级为 None，history 原样传入）
         # 在 LLM 调用前对 history 做压缩（masking 旧 tool_result / LLM 摘要），
@@ -736,6 +733,12 @@ class Orchestrator:
         # 会话切换检测：记录上一次对话的 session_id，
         # 若本次 session_id 不同且 pending_messages 非空，先 flush 旧会话的沉淀
         self._last_session_id: Optional[str] = None
+
+        # SessionManager: 会话管理（创建/标题生成）委托
+        self.session_mgr = SessionManager(
+            llm_client=self.llm_client,
+            session_logger=self.session_logger,
+        )
 
     def _build_archive_callback(
         self,
@@ -1672,93 +1675,18 @@ class Orchestrator:
     def _maybe_generate_title_async(
         self, session_id: str, user_input: str
     ) -> None:
-        """异步生成会话标题（fire-and-forget）。
-
-        首次对话后调用 LLM 生成 5-10 字标题。cron 会话跳过（由
-        CronScheduler 直接设置 schedule.name）。已生成标题的会话跳过。
-
-        参数:
-            session_id: 会话 ID。
-            user_input: 用户首条输入（用于生成标题）。
-        """
-        if not session_id or session_id.startswith("cron:"):
-            return
-        if self.session_logger is None or self.llm_client is None:
-            return
-        # 进程内缓存命中：已知有标题，直接返回，零 IO
-        if session_id in self._titled_sessions:
-            return
-        try:
-            existing = self.session_logger.get_session_title(session_id)
-            if existing:
-                # 缓存回填：服务重启后首次查到已有标题，加入 set 避免后续重复查 DB
-                self._titled_sessions.add(session_id)
-                return
-        except Exception as e:
-            logger.warning("查询会话标题失败: %s", e)
-            return
-        try:
-            task = asyncio.create_task(self._generate_title_task(session_id, user_input))
-            self._pending_title_tasks.add(task)
-            task.add_done_callback(self._pending_title_tasks.discard)
-        except RuntimeError as e:
-            logger.warning("创建标题生成任务失败: %s", e)
+        """异步生成会话标题（fire-and-forget）。委托给 SessionManager。"""
+        self.session_mgr.generate_title_async(session_id, user_input)
 
     async def _generate_title_task(
         self, session_id: str, user_input: str
     ) -> None:
-        """生成标题并写入 session_logger（内部 task 实现）。
-
-        截取 user_input 前 500 字符避免 prompt 过长；max_tokens=50 限制
-        输出长度。失败时仅记录 warning，不影响主流程。
-        """
-        try:
-            prompt = TITLE_GENERATION_PROMPT.replace(
-                "{user_message}", user_input[:500]
-            )
-            messages = [{"role": "user", "content": prompt}]
-            try:
-                response = await asyncio.wait_for(
-                    self.llm_client.chat_consolidation(
-                        messages=messages, system=None, max_tokens=50,
-                        reasoning_cfg=ReasoningConfig(enabled=False),
-                    ),
-                    timeout=15.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("会话 %s 标题生成超时（15s），跳过", session_id)
-                return
-            text_parts = []
-            for block in response.content or []:
-                if block.get("type") == "text":
-                    t = block.get("text", "")
-                    if t:
-                        text_parts.append(t)
-            title = "".join(text_parts).strip()
-            # 清理可能的引号、换行、首尾空白
-            title = title.split("\n")[0].strip('「」""\' \t')
-            if title and self.session_logger is not None:
-                self.session_logger.update_session_title(session_id, title)
-                # 写入成功后缓存，后续该会话的 chat() 直接跳过，零 IO
-                self._titled_sessions.add(session_id)
-                logger.info("已为会话 %s 生成标题: %s", session_id, title)
-            else:
-                logger.info("会话 %s 标题生成返回空响应，未写入", session_id)
-        except Exception as e:
-            logger.warning("生成会话标题失败: %s", e)
+        """生成标题任务。委托给 SessionManager。"""
+        await self.session_mgr._generate_title_task(session_id, user_input)
 
     def _ensure_session(self, session_id: str) -> None:
-        """确保 session 存在，不存在则创建。
-
-        Phase 9 优化：使用 SessionLogger.ensure_session() 的 INSERT OR IGNORE
-        原子操作，替代先 list_sessions() 全表扫描再 create_session() 的 O(n) 方式。
-        """
-        if self.session_logger is None:
-            return
-        try:
-            self.session_logger.ensure_session(session_id)
-        except Exception as e:
-            logger.warning("创建 session 失败: %s", e)
+        """确保 session 存在，不存在则创建。委托给 SessionManager。"""
+        self.session_mgr.ensure_session(session_id)
 
     def _build_environment_section(self) -> str:
         """构造运行环境信息段（跨平台自适应）。
