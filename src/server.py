@@ -354,248 +354,24 @@ etl_engine: Optional[Any] = None
 file_context_injector: Optional[Any] = None
 
 
-# ---------- Pydantic 请求/响应模型 ----------
-
-class ChatRequest(BaseModel):
-    """对话请求体。"""
-
-    session_id: Optional[str] = Field(
-        default=None, description="会话 ID，不传则新建会话"
-    )
-    message: str = Field(..., description="用户输入文本")
-
-
-class CancelRequest(BaseModel):
-    """中断请求体。"""
-
-    session_id: str = Field(..., description="要中断的会话 ID")
-    mode: str = Field(
-        default="immediate",
-        description="中断模式：immediate（立即中断）或 graceful（等待断点）",
-    )
-    new_message: Optional[str] = Field(
-        default=None, description="graceful 模式下用户的新消息"
-    )
-
-
-class ChatResponse(BaseModel):
-    """对话响应体。"""
-
-    session_id: str
-    response: str
-    timestamp: str
-
-
-class HealthResponse(BaseModel):
-    """健康检查响应体。
-
-    含 overall status、summary 计数与各子系统检测结果 detail。
-    """
-
-    status: str
-    timestamp: str
-    version: str
-    summary: Dict[str, int]
-    checks: Dict[str, Dict[str, Any]]
-
-
-class SessionItem(BaseModel):
-    """会话条目。
-
-    ``title`` 为可空字段，未生成标题的会话返回 None，前端回退到 id 前 24 字符。
-    cron 会话的 title 取 schedule.name；用户会话的 title 由 LLM 首轮异步生成。
-    """
-
-    id: str
-    created_at: str
-    updated_at: str
-    title: Optional[str] = None
-
-
-class SessionListResponse(BaseModel):
-    """会话列表响应体。"""
-
-    sessions: List[SessionItem]
-
-
-class SessionTitleUpdate(BaseModel):
-    """更新会话标题请求体（Task 0 PATCH 端点）。
-
-    ``title`` 长度 1-100 字符（包含两端），由 FastAPI 自动校验，越界返回 422。
-    """
-
-    title: str = Field(..., min_length=1, max_length=100)
-
-
-class MessageItem(BaseModel):
-    """消息条目。
-
-    ``tool_name`` / ``tool_call_id`` 为可选字段，老消息（未持久化工具
-    调用元数据）或纯文本对话时为 None；工具调用卡片渲染依赖这两个字段
-    与 ``role`` 联合判断（详见前端 loadMessages 渲染逻辑）。
-    ``is_error`` 仅对 tool_result 有意义，标识工具执行是否出错；
-    老消息（无此列）或非工具消息返回 None。
-    ``attachments`` 为附件 JSON 字符串（如文件上传消息），老消息为 None。
-    ``message_type`` 为消息类型标记（如 'file_upload'），普通消息为 None。
-    ``reasoning`` 为 LLM 思考内容（reasoning/thinking），仅 assistant 消息有值。
-    """
-
-    role: str
-    content: str
-    created_at: str
-    tool_name: Optional[str] = None
-    tool_call_id: Optional[str] = None
-    is_error: Optional[bool] = None
-    attachments: Optional[str] = None
-    message_type: Optional[str] = None
-    reasoning: Optional[str] = None
-
-
-class MessageListResponse(BaseModel):
-    """消息列表响应体。"""
-
-    messages: List[MessageItem]
-
-
-class DeleteSessionResponse(BaseModel):
-    """删除会话响应体。"""
-
-    status: str
-    session_id: str
-
-
-class ConfigResponse(BaseModel):
-    """配置读取响应体。"""
-
-    config: Dict[str, Any]
-
-
-class ConfigUpdateRequest(BaseModel):
-    """配置更新请求体。"""
-
-    config: Dict[str, Any]
-
-
-class ConfigUpdateResponse(BaseModel):
-    """配置更新响应体。"""
-
-    status: str
-    message: str
-    needs_restart: bool
-
-
-class ApprovalResolveRequest(BaseModel):
-    """审批决定请求体。"""
-
-    decision: str = Field(..., description="approve 或 deny")
-    reason: Optional[str] = Field(None, description="决定原因（用户拒绝时的备注），可选")
-
-
-class ApprovalResolveResponse(BaseModel):
-    """审批决定响应体。"""
-
-    status: str
-    approval_id: str
-    decision: str
-
-
-class ApprovalListItem(BaseModel):
-    """审批队列中的 pending 条目。"""
-
-    approval_id: str
-    tool_name: str
-    tool_input: Dict[str, Any]
-    reason: str
-    created_at: str
-
-
-class ApprovalListResponse(BaseModel):
-    """审批列表响应体。"""
-
-    pending: List[ApprovalListItem]
-
-
-# Phase 6: 调度模型
-class ScheduleCreateRequest(BaseModel):
-    """调度项创建请求体。
-
-    支持可选 ``workflow`` 字段（声明式 workflow 配置），结构遵循
-    ``WorkflowSpec.from_dict``：
-    - 简易模式: ``{"template": "research", "template_config": {...}}``
-    - 多步模式: ``{"name": "...", "steps": [{...}, ...]}``
-    """
-
-    name: str
-    cron: str
-    task: str
-    enabled: bool = True
-    id: Optional[str] = None
-    workflow: Optional[Dict[str, Any]] = None
-
-
-class ScheduleUpdateRequest(BaseModel):
-    """调度项更新请求体。
-
-    ``workflow`` 字段变更需重启调度器才能生效（与 cron/task/name 一致）。
-    """
-
-    name: Optional[str] = None
-    cron: Optional[str] = None
-    task: Optional[str] = None
-    enabled: Optional[bool] = None
-    workflow: Optional[Dict[str, Any]] = None
-
-
-class ScheduleListResponse(BaseModel):
-    """调度项列表响应体。"""
-
-    schedules: List[dict] = Field(default_factory=list)
-
-
-class ScheduleResponse(BaseModel):
-    """调度项操作响应体。"""
-
-    schedule_id: str
-    message: str
-
-
-# 文件上传响应模型
-class FileUploadResponse(BaseModel):
-    """文件上传响应体。"""
-
-    file_id: str
-    is_dup: bool = False
-    message: str = ""
-
-
-class FileItem(BaseModel):
-    """文件条目。"""
-
-    file_id: str
-    original_name: str
-    size: int
-    type: str
-    etl_status: str
-    summary: str = ""
-    chunk_count: int = 0
-    uploaded_at: str
-    last_accessed: str
-    version_seq: Optional[int] = None
-    is_latest: Optional[bool] = None
-
-
-class FileListResponse(BaseModel):
-    """文件列表响应体。"""
-
-    files: List[FileItem]
-
-
-class FileDeleteResponse(BaseModel):
-    """文件删除响应体。"""
-
-    status: str
-    file_id: str
-    details: dict = {}
+# ---------- Pydantic 请求/响应模型（从 schemas/ 导入） ----------
+from schemas.chat import ChatRequest, CancelRequest, ChatResponse
+from schemas.common import (
+    HealthResponse, SessionItem, SessionListResponse,
+    SessionTitleUpdate, MessageItem, MessageListResponse,
+    DeleteSessionResponse, FlushResponse,
+)
+from schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
+from schemas.approvals import (
+    ApprovalResolveRequest, ApprovalResolveResponse,
+    ApprovalListItem, ApprovalListResponse,
+)
+from schemas.schedules import (
+    ScheduleCreateRequest, ScheduleUpdateRequest,
+    ScheduleListResponse, ScheduleResponse,
+)
+from schemas.files import FileUploadResponse, FileItem, FileListResponse, FileDeleteResponse
+from schemas.proposals import ProposalModifyRequest
 
 
 # ---------- 生命周期管理 ----------
@@ -1884,13 +1660,6 @@ async def cancel_stream(req: CancelRequest):
     return {"status": status, "session_id": req.session_id}
 
 
-class FlushResponse(BaseModel):
-    status: str
-    message: str
-    pending_count: int = 0
-    timestamp: str
-
-
 @app.post("/consolidation/flush", response_model=FlushResponse)
 def flush_consolidation(background_tasks: BackgroundTasks):
     """强制触发记忆沉淀（会话切换 / 手动 flush）。
@@ -2544,24 +2313,6 @@ def delete_schedule_memory(schedule_id: str, memory_id: str):
 
 
 # ---------- Phase 8 Task 3.8: 提议-确认协议端点 ----------
-
-
-class ProposalModifyRequest(BaseModel):
-    """提议修改请求体（修改并确认）。
-
-    用户在前端确认卡片上修改 cron 表达式 / granted_tools 后点击「修改并确认」
-    时提交。所有字段可选，仅提供的字段会被更新（浅合并到原 schedule_config；
-    requested_tools 整体替换）。
-    """
-
-    schedule_config_updates: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="调度配置更新字段（浅合并到原配置），可含 name/cron/task/enabled/workflow 等",
-    )
-    requested_tools: Optional[List[Dict[str, Any]]] = Field(
-        default=None,
-        description="新的请求工具列表（整体替换），每项含 tool/scope/allowed_paths",
-    )
 
 
 @app.get("/proposals")
