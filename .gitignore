@@ -70,3 +70,6 @@ deploy/
 # ── Windows 工件 ──
 $null
 Thumbs.db
+
+# ── Desktop 桌面端（由 feature/desktop-v0.1.0 分支管理，dev 不介入） ──
+desktop/
