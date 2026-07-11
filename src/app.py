@@ -141,6 +141,8 @@ from routes.skills import router as skills_router  # noqa: E402
 from routes.cron_tools import router as cron_tools_router  # noqa: E402
 from routes.files import router as files_router  # noqa: E402
 from routes.memory import router as memory_router  # noqa: E402
+from routes.chat import router as chat_router  # noqa: E402
+from routes.schedules import router as schedules_router  # noqa: E402
 
 app.include_router(misc_router)
 app.include_router(health_router)
@@ -152,6 +154,8 @@ app.include_router(skills_router)
 app.include_router(cron_tools_router)
 app.include_router(files_router)
 app.include_router(memory_router)
+app.include_router(chat_router)
+app.include_router(schedules_router)
 
 
 # ---------------------------------------------------------------------------
