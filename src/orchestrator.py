@@ -28,6 +28,7 @@ try:
     from .llm.reasoning_profiles import ReasoningConfig
     from .agent.react_loop import ReactLoop
     from .agent.session_manager import SessionManager
+    from .agent.skill_manager import SkillManager
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from llm.reasoning_profiles import ReasoningConfig  # type: ignore
     from agent.react_loop import ReactLoop  # type: ignore
     from agent.session_manager import SessionManager  # type: ignore
+    from agent.skill_manager import SkillManager  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
 # 可选模块：记忆 / 工具子系统。
@@ -354,10 +356,7 @@ class Orchestrator:
         # orchestrator_ref 弱引用访问。
         self._current_intent_result: Optional["IntentClassificationResult"] = None
 
-        # P1-3: 已激活 Skill 表（session_id → 已激活 skill 名称有序列表）
-        # LLM 调用 skill__{name}() 后，activate_skill 将 name 追加到此表，
-        # 下一轮 _build_enhanced_context 末位注入 body。
-        self._active_skills: Dict[str, List[str]] = {}
+        # P1-3: Skill 激活状态管理已迁移到 SkillManager（skill_mgr）。
 
         # 注册 plan 工具到 ToolRegistry（plan_task / update_todo，Core Tier）
         # get_session_id 回调通过闭包捕获 self，执行时读取 self._current_session_id
@@ -738,6 +737,11 @@ class Orchestrator:
         self.session_mgr = SessionManager(
             llm_client=self.llm_client,
             session_logger=self.session_logger,
+        )
+
+        # SkillManager: 技能激活/停用/上下文构建委托
+        self.skill_mgr = SkillManager(
+            skill_loader=getattr(self, "skill_loader", None),
         )
 
     def _build_archive_callback(
@@ -1876,58 +1880,16 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def activate_skill(self, skill_name: str, session_id: str = "default") -> None:
-        """标记 Skill 为已激活（下一轮注入 body 到 messages[0] 末位）。
-
-        重复激活同一 Skill 不重复追加（去重），但保留首次激活顺序。
-
-        参数:
-            skill_name: Skill 名称。
-            session_id: 会话 ID（隔离不同会话的激活状态）。
-        """
-        active = self._active_skills.setdefault(session_id, [])
-        if skill_name not in active:
-            active.append(skill_name)
-            logger.info("Skill 已激活: %s (session=%s)", skill_name, session_id)
+        """标记 Skill 为已激活。委托给 SkillManager。"""
+        self.skill_mgr.activate(skill_name, session_id)
 
     def deactivate_skill(self, skill_name: str, session_id: str = "default") -> None:
-        """取消激活指定 Skill。
-
-        参数:
-            skill_name: Skill 名称。
-            session_id: 会话 ID。
-        """
-        active = self._active_skills.get(session_id, [])
-        if skill_name in active:
-            active.remove(skill_name)
-            logger.info("Skill 已取消激活: %s (session=%s)", skill_name, session_id)
+        """取消激活指定 Skill。委托给 SkillManager。"""
+        self.skill_mgr.deactivate(skill_name, session_id)
 
     def _build_active_skills_section(self, session_id: str) -> str:
-        """构建已激活 Skill body 段（注入 injection_text 末位）。
-
-        参数:
-            session_id: 会话 ID。
-
-        返回:
-            拼接好的 skill body 段字符串。无激活 Skill 返回空串。
-        """
-        active = self._active_skills.get(session_id, [])
-        if not active:
-            return ""
-        # skill_loader 可能未注入（纯内置工具模式），降级返回空
-        skill_loader = getattr(self, "skill_loader", None)
-        if skill_loader is None:
-            return ""
-        sections = []
-        for name in active:
-            try:
-                body = skill_loader.load_body(name)
-                if body:
-                    sections.append(f"## 已激活 Skill: {name}\n{body}")
-                else:
-                    sections.append(f"## 已激活 Skill: {name}\n(body 为空)")
-            except Exception as e:
-                logger.warning("加载 Skill %s body 失败: %s", name, e)
-        return "\n\n".join(sections)
+        """构建已激活 Skill body 段。委托给 SkillManager。"""
+        return self.skill_mgr.build_active_section(session_id)
 
     async def _build_enhanced_context(
         self,
