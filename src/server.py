@@ -1201,119 +1201,12 @@ async def lifespan(app: FastAPI):
         logger.info("Hermes Lite HTTP 服务已停止")
 
 
-# ---------- FastAPI 应用 ----------
+# ---------- FastAPI 应用（Task 7: app 实例在 app.py 中创建） ----------
 
-app = FastAPI(
-    title="Hermes Lite",
-    description="个人 AI Agent 长驻 HTTP 服务",
-    version=VERSION,
-    lifespan=lifespan,
-)
+from app import app  # noqa: E402, F401
 
 
-# ---------- CORS 配置 ----------
-# 首次加载时从配置读取 CORS 允许来源，热更新需重启。
-
-_cors_origins = ["http://localhost:3000"]
-try:
-    _cfg = load_config(CONFIG_PATH)
-    _cors_origins = _cfg.get("server", {}).get("cors_origins", ["http://localhost:3000"])
-    if not isinstance(_cors_origins, list) or not _cors_origins:
-        _cors_origins = ["http://localhost:3000"]
-except Exception:
-    pass
-
-from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-logger.info("CORS 已配置，允许来源: %s", _cors_origins)
-
-
-# ---------- API 认证中间件 ----------
-# 优先于 log_requests 执行（先认证，后记录日志）。
-
-_security_api_key: Optional[str] = None
-try:
-    _sec_cfg = load_config(CONFIG_PATH).get("security", {})
-    _security_api_key = _sec_cfg.get("api_key", "") or None
-except Exception:
-    pass
-
-if _security_api_key:
-    logger.info("API 认证已启用（security.api_key 已配置）")
-
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
-        """API 认证中间件：检查 Authorization: Bearer <key> 头。
-
-        /health 端点跳过认证（供负载均衡健康检查）。
-        API Key 不存在时（配置为空）跳过认证。
-        """
-        # 健康检查端点跳过认证
-        if request.url.path == "/health":
-            return await call_next(request)
-
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        else:
-            token = ""
-
-        if not token or token != _security_api_key:
-            return JSONResponse(
-                status_code=401,
-                content={"error": "Unauthorized", "detail": "请提供有效的 API Key（Authorization: Bearer <key>）"},
-            )
-
-        return await call_next(request)
-else:
-    logger.warning(
-        "API 认证未启用（security.api_key 未配置）。"
-        "生产环境建议设置 HERMES_API_KEY 环境变量。"
-    )
-
-
-# ---------- 中间件：请求日志 ----------
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """记录每个请求的方法、路径、状态码与耗时。
-
-    通过 ``extra`` 注入请求上下文，供 :class:`JSONLogFormatter`
-    输出结构化字段（method/path/status_code/duration_ms）。
-    """
-    start_time = time.time()
-    method = request.method
-    path = request.url.path
-
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        duration_ms = (time.time() - start_time) * 1000
-        logger.error(
-            "%s %s -> 500 (%.2f ms) 异常: %s", method, path, duration_ms, e,
-            extra={"method": method, "path": path, "status_code": 500, "duration_ms": duration_ms},
-        )
-        raise
-
-    duration_ms = (time.time() - start_time) * 1000
-    # 跳过健康检查成功响应的 INFO 日志，减少刷屏；
-    # 健康检查异常时已在 except 中记录 ERROR，不会漏
-    if not (method == "GET" and path == "/health" and response.status_code == 200):
-        logger.info(
-            "%s %s -> %d (%.2f ms)", method, path, response.status_code, duration_ms,
-            extra={
-                "method": method, "path": path,
-                "status_code": response.status_code, "duration_ms": duration_ms,
-            },
-        )
-    return response
+# Task 7: 认证与日志中间件已迁移至 app.py，避免重复注册
 
 
 # ---------- 工具函数 ----------

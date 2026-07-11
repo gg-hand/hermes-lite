@@ -1,15 +1,131 @@
 """FastAPI 应用入口。
 
-过渡期:app 从 server.py 导入,后续阶段将逐步迁移路由到 routes/ 包。
-Task 5: 增加 DI 容器初始化 + get_container() 供热重载使用。
+Task 7: app 实例在此创建，lifespan 通过 lazy wrapper 延迟导入避免循环依赖。
+后续 Task 8-19 将逐步迁移路由到 routes/ 包。
+Task 5: DI 容器初始化 + get_container() 供热重载使用。
 """
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 from typing import Optional
 
-# 过渡期:app 和 lifespan 仍在 server.py 中
-# 后续 Task 3-5 完成后,将迁移 lifespan 和路由注册到此文件
-from server import app  # noqa: F401
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+VERSION = "0.1.0"
+CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
+logger = logging.getLogger("hermes.server")
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan wrapper：延迟导入 server.lifespan 避免循环依赖。
+
+    app.py 创建 FastAPI 实例时需要 lifespan，但 server.py 需要 app 实例。
+    通过 wrapper 在运行时（而非模块加载时）导入 lifespan，打破循环。
+    """
+    from server import lifespan as _server_lifespan
+    async with _server_lifespan(app):
+        yield
+
+
+app = FastAPI(
+    title="Hermes Lite",
+    description="个人 AI Agent 长驻 HTTP 服务",
+    version=VERSION,
+    lifespan=lifespan,
+)
+
+# CORS 配置（首次加载时从配置读取，热更新需重启）
+_cors_origins = ["http://localhost:3000"]
+try:
+    from config import load_config
+    _cfg = load_config(CONFIG_PATH)
+    _cors_origins = _cfg.get("server", {}).get("cors_origins", ["http://localhost:3000"])
+    if not isinstance(_cors_origins, list) or not _cors_origins:
+        _cors_origins = ["http://localhost:3000"]
+except Exception:
+    pass
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+logger.info("CORS 已配置，允许来源: %s", _cors_origins)
+
+# ---------- API 认证中间件 ----------
+from fastapi import Request  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+import time  # noqa: E402
+
+_security_api_key: Optional[str] = None
+try:
+    _sec_cfg = load_config(CONFIG_PATH).get("security", {})
+    _security_api_key = _sec_cfg.get("api_key", "") or None
+except Exception:
+    pass
+
+if _security_api_key:
+    logger.info("API 认证已启用（security.api_key 已配置）")
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = ""
+
+        if not token or token != _security_api_key:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Unauthorized", "detail": "请提供有效的 API Key（Authorization: Bearer <key>）"},
+            )
+
+        return await call_next(request)
+else:
+    logger.warning(
+        "API 认证未启用（security.api_key 未配置）。"
+        "生产环境建议设置 HERMES_API_KEY 环境变量。"
+    )
+
+
+# ---------- 中间件：请求日志 ----------
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    method = request.method
+    path = request.url.path
+
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        logger.error(
+            "%s %s -> 500 (%.2f ms) 异常: %s", method, path, duration_ms, e,
+            extra={"method": method, "path": path, "status_code": 500, "duration_ms": duration_ms},
+        )
+        raise
+
+    duration_ms = (time.time() - start_time) * 1000
+    if not (method == "GET" and path == "/health" and response.status_code == 200):
+        logger.info(
+            "%s %s -> %d (%.2f ms)", method, path, response.status_code, duration_ms,
+            extra={
+                "method": method, "path": path,
+                "status_code": response.status_code, "duration_ms": duration_ms,
+            },
+        )
+    return response
 
 # ---------------------------------------------------------------------------
 # DI 容器（Task 5）
