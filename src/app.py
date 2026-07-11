@@ -50,6 +50,259 @@ def close_container() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 组件注册（Task 3: 注册15个外部组件到容器）
+# ---------------------------------------------------------------------------
+
+def _create_session_logger(config: dict):
+    """从 storage 配置创建 SessionLogger。"""
+    from monitoring.session_logger import SessionLogger
+    storage_cfg = config.get("storage", {})
+    sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
+    return SessionLogger(db_path=sqlite_path)
+
+
+def _create_metrics_collector(config: dict):
+    """从 monitoring 配置创建 MetricsCollector。"""
+    from monitoring.metrics import MetricsCollector
+    monitoring_cfg = config.get("monitoring", {})
+    if not monitoring_cfg.get("enabled", True):
+        return None
+    return MetricsCollector()
+
+
+def _create_metrics_store(config: dict, session_logger=None):
+    """从 monitoring 配置创建 MetricsStore。"""
+    monitoring_cfg = config.get("monitoring", {})
+    if not monitoring_cfg.get("enabled", True):
+        return None
+    if not monitoring_cfg.get("daily_persistence", True):
+        return None
+    try:
+        from monitoring.metrics import MetricsStore
+        storage_cfg = config.get("storage", {})
+        sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
+        return MetricsStore(db_path=sqlite_path)
+    except Exception:
+        return None
+
+
+def _create_audit_logger(config: dict):
+    """从 monitoring 配置创建 AuditLogger。"""
+    from monitoring.audit import AuditLogger
+    monitoring_cfg = config.get("monitoring", {})
+    if not monitoring_cfg.get("enabled", True):
+        return None
+    audit_log_path = monitoring_cfg.get("audit_log_path", "data/audit.jsonl")
+    audit_buffer_size = int(monitoring_cfg.get("audit_buffer_size", 1000))
+    return AuditLogger(log_path=audit_log_path, buffer_size=audit_buffer_size)
+
+
+def _create_approval_manager(config: dict, metrics_collector=None):
+    """从 security 配置创建 ApprovalManager。"""
+    try:
+        from security.approval_manager import ApprovalManager
+        security_cfg = config.get("security", {})
+        approval_timeout = float(security_cfg.get("approval_timeout_seconds", 300))
+        return ApprovalManager(timeout=approval_timeout, metrics=metrics_collector)
+    except Exception:
+        return None
+
+
+def _create_task_manager(config: dict):
+    """从 tasks 配置创建 TaskManager。"""
+    try:
+        from tasks.task_manager import TaskManager
+        tasks_cfg = config.get("tasks", {})
+        return TaskManager(file_path=tasks_cfg.get("file_path", "data/tasks.md"))
+    except Exception:
+        return None
+
+
+def _create_stream_manager():
+    """创建 StreamManager（无配置依赖）。"""
+    from agent.stream_manager import StreamManager
+    return StreamManager()
+
+
+def _create_skill_loader():
+    """创建 SkillLoader（无配置依赖）。"""
+    try:
+        from skills.skill_loader import SkillLoader
+        return SkillLoader()
+    except Exception:
+        return None
+
+
+def _create_proposal_store():
+    """创建 ProposalStore（无配置依赖）。"""
+    try:
+        from cron.proposal_store import ProposalStore
+        return ProposalStore()
+    except Exception:
+        return None
+
+
+def _create_mcp_manager(config: dict, skill_loader=None):
+    """从 skills 配置创建 MCPManager。"""
+    try:
+        from skills.mcp_manager import MCPManager
+        return MCPManager()
+    except Exception:
+        return None
+
+
+def _create_upload_manager(config: dict):
+    """从 files 配置创建 UploadManager。"""
+    try:
+        from files.upload_manager import UploadManager
+        files_cfg = config.get("files", {}) or {}
+        storage_cfg = config.get("storage", {})
+        sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
+        return UploadManager(
+            db_path=sqlite_path,
+            upload_dir=files_cfg.get("upload_dir", "data/uploads"),
+            max_upload_size_mb=float(files_cfg.get("max_upload_size_mb", 50)),
+            max_files_per_session=int(files_cfg.get("max_files_per_session", 50)),
+            allowed_extensions=files_cfg.get("allowed_extensions", None),
+            ocr_enabled=bool(files_cfg.get("ocr_enabled", False)),
+        )
+    except Exception:
+        return None
+
+
+def _create_etl_engine(config: dict, upload_manager=None, orchestrator=None):
+    """从 files 配置创建 ETLEngine。"""
+    try:
+        from files.etl_engine import ETLEngine
+        from files.waterfall_parser import WaterfallParser
+        from files.document_chunker import DocumentChunker
+        files_cfg = config.get("files", {}) or {}
+        llm_fallback = bool(files_cfg.get("llm_fallback_enabled", False))
+        water_parser = WaterfallParser(
+            llm_fallback_enabled=llm_fallback,
+            llm_client=orchestrator.llm_client if llm_fallback and orchestrator else None,
+            parse_timeouts=files_cfg.get("parse_timeout_seconds", {}),
+            ocr_config=files_cfg.get("ocr", {}) or {},
+            metrics_collector=orchestrator.metrics if orchestrator else None,
+        )
+        doc_chunker = DocumentChunker(
+            chunk_size=int(files_cfg.get("chunk_size", 512)),
+            chunk_overlap=int(files_cfg.get("chunk_overlap", 64)),
+        )
+        return ETLEngine(
+            upload_manager=upload_manager,
+            chroma_store=orchestrator.chroma_store if orchestrator else None,
+            session_logger=None,  # 由 lifespan 补注入
+            parser=water_parser,
+            chunker=doc_chunker,
+            llm_client=orchestrator.llm_client if orchestrator else None,
+            config=files_cfg,
+        )
+    except Exception:
+        return None
+
+
+def _create_cron_scheduler(config: dict, orchestrator=None):
+    """从 tasks 配置创建 CronScheduler。"""
+    try:
+        from cron.cron_scheduler import CronScheduler
+        return CronScheduler()
+    except Exception:
+        return None
+
+
+def _create_health_checker(orchestrator=None, session_logger=None, mcp_manager=None):
+    """创建 HealthChecker（无配置依赖，依赖运行时组件）。"""
+    try:
+        from monitoring.health import HealthChecker
+        return HealthChecker()
+    except Exception:
+        return None
+
+
+def register_components(container) -> None:
+    """向容器注册所有 lifespan 组件。
+
+    组件按依赖顺序注册。工厂函数中使用延迟导入避免循环依赖。
+    Orchestrator 作为整体注册（方案B），内部组件对容器透明。
+
+    参数:
+        container: DI 容器实例。
+    """
+    # 1. 无依赖组件
+    container.register("session_logger",
+        lambda c: _create_session_logger(c.config),
+        deps=[], hot_reloadable=True)
+
+    container.register("metrics_collector",
+        lambda c: _create_metrics_collector(c.config),
+        deps=[], hot_reloadable=True)
+
+    container.register("audit_logger",
+        lambda c: _create_audit_logger(c.config),
+        deps=[], hot_reloadable=True)
+
+    container.register("task_manager",
+        lambda c: _create_task_manager(c.config),
+        deps=[], hot_reloadable=True)
+
+    container.register("stream_manager",
+        lambda c: _create_stream_manager(),
+        deps=[], hot_reloadable=False)
+
+    container.register("skill_loader",
+        lambda c: _create_skill_loader(),
+        deps=[], hot_reloadable=False)
+
+    container.register("proposal_store",
+        lambda c: _create_proposal_store(),
+        deps=[], hot_reloadable=False)
+
+    # 2. 依赖其他组件
+    container.register("metrics_store",
+        lambda c: _create_metrics_store(c.config, c.get("session_logger")),
+        deps=["session_logger"], hot_reloadable=True)
+
+    container.register("approval_manager",
+        lambda c: _create_approval_manager(c.config, c.get("metrics_collector")),
+        deps=["metrics_collector"], hot_reloadable=True)
+
+    container.register("mcp_manager",
+        lambda c: _create_mcp_manager(c.config, c.get("skill_loader")),
+        deps=["skill_loader"], hot_reloadable=True)
+
+    container.register("upload_manager",
+        lambda c: _create_upload_manager(c.config),
+        deps=[], hot_reloadable=True)
+
+    # 3. Orchestrator（依赖外部组件，整体注册）
+    from orchestrator import Orchestrator
+    container.register("orchestrator",
+        lambda c: Orchestrator(
+            config_path=c.config.get("_config_path", "config.yaml"),
+            metrics=c.get("metrics_collector"),
+            audit_logger=c.get("audit_logger"),
+            approval_manager=c.get("approval_manager"),
+            task_manager=c.get("task_manager"),
+        ),
+        deps=["metrics_collector", "audit_logger", "approval_manager", "task_manager"],
+        hot_reloadable=False)
+
+    # 4. 依赖 Orchestrator
+    container.register("etl_engine",
+        lambda c: _create_etl_engine(c.config, c.get("upload_manager"), c.get("orchestrator")),
+        deps=["upload_manager", "orchestrator"], hot_reloadable=True)
+
+    container.register("cron_scheduler",
+        lambda c: _create_cron_scheduler(c.config, c.get("orchestrator")),
+        deps=["orchestrator"], hot_reloadable=False)
+
+    container.register("health_checker",
+        lambda c: _create_health_checker(c.get("orchestrator"), c.get("session_logger"), c.get("mcp_manager")),
+        deps=["orchestrator", "session_logger", "mcp_manager"], hot_reloadable=False)
+
+
+# ---------------------------------------------------------------------------
 # 全局异常处理器（Task 6）
 # ---------------------------------------------------------------------------
 

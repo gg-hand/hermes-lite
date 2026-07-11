@@ -149,3 +149,41 @@ class TestConfigMapping:
         """方案B：llm 不再映射到独立的 llm_client，而是 orchestrator 整体。"""
         from container import CONFIG_TO_COMPONENTS
         assert "llm_client" not in CONFIG_TO_COMPONENTS.get("llm", [])
+
+
+class TestRegisterComponents:
+    """验证 register_components 注册所有外部组件。"""
+
+    def test_register_components_exists(self):
+        """register_components 函数应存在于 app 模块。"""
+        from app import register_components
+        assert callable(register_components)
+
+    def test_register_all_external_components(self):
+        """register_components 应注册15个组件工厂。"""
+        from app import register_components
+        c = Container({"storage": {}, "monitoring": {}, "security": {},
+                       "tasks": {}, "skills": {}, "files": {}, "llm": {},
+                       "memory": {}, "guardrails": {}, "cron": {},
+                       "history": {}, "tools": {}, "server": {},
+                       "_config_path": "config.yaml"})
+        register_components(c)
+        expected = {"session_logger", "metrics_collector", "metrics_store",
+                    "audit_logger", "approval_manager", "task_manager",
+                    "orchestrator", "stream_manager", "skill_loader",
+                    "mcp_manager", "upload_manager", "etl_engine",
+                    "cron_scheduler", "proposal_store", "health_checker"}
+        registered = set(c._factories.keys())
+        missing = expected - registered
+        assert not missing, f"缺少组件注册: {missing}"
+
+    def test_container_validate_no_cycles(self):
+        """注册后容器应通过循环依赖检测。"""
+        from app import register_components
+        c = Container({"storage": {}, "monitoring": {}, "security": {},
+                       "tasks": {}, "skills": {}, "files": {}, "llm": {},
+                       "memory": {}, "guardrails": {}, "cron": {},
+                       "history": {}, "tools": {}, "server": {},
+                       "_config_path": "config.yaml"})
+        register_components(c)
+        c.validate()  # 不抛异常即通过
