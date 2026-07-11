@@ -1187,7 +1187,7 @@ class CronScheduler:
             schedule_id=schedule.id,
             llm_client=llm_client,
             chroma_store=chroma_store,
-            report_dir="data/reports",
+            report_dir=os.environ.get("HERMES_REPORTS_DIR", "data/reports"),
             current_time=started_at_dt,
             last_run_time=last_run_dt,
         )

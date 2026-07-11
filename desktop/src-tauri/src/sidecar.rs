@@ -23,6 +23,7 @@ const PROVIDER_ENV_MAP: &[(&str, &str)] = &[
 pub struct SidecarHandle {
     child: Option<Child>,
     pid: u32,
+    port: u16,
 }
 
 impl SidecarHandle {
@@ -62,6 +63,7 @@ impl SidecarHandle {
             .env("HERMES_ROOT", hermes_root)
             .env("HERMES_PYTHON_PATH", python_path)
             .env("HERMES_PORT", port.to_string())
+            .env("HERMES_SERVER_LOG", data_dir.join("server.log"))
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONHOME", &python_home)
             .env("PYTHONPATH", python_home.join("Lib").join("site-packages"));
@@ -100,6 +102,7 @@ impl SidecarHandle {
         Ok(Self {
             child: Some(child),
             pid,
+            port,
         })
     }
 
@@ -134,7 +137,7 @@ impl SidecarHandle {
                     Err(_) => {}
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Err(anyhow::anyhow!(
             "sidecar health check timeout after {:?}",
@@ -142,10 +145,63 @@ impl SidecarHandle {
         ))
     }
 
+    /// 优雅关闭：先 HTTP /shutdown 触发 Python lifespan cleanup，
+    /// 等待最多 5 秒；超时后 fallback 到 taskkill /F /T 强杀进程树。
+    pub async fn shutdown(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+
+        let url = format!("http://127.0.0.1:{}/shutdown", self.port);
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                self.kill();
+                return;
+            }
+        };
+
+        match client.post(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                log::info!("sidecar: /shutdown accepted, waiting for graceful exit...");
+            }
+            _ => {
+                log::warn!("sidecar: /shutdown failed, force killing");
+                self.kill();
+                return;
+            }
+        }
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(child) = self.child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        log::info!(
+                            "sidecar: graceful exit after {}ms",
+                            start.elapsed().as_millis()
+                        );
+                        self.child = None;
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        log::warn!("sidecar: graceful shutdown timeout (5s), force killing");
+        self.kill();
+    }
+
     pub fn kill(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let pid = self.pid;
-            log::info!("sidecar: killing pid={}", pid);
+            log::info!("sidecar: force killing pid={}", pid);
 
             #[cfg(windows)]
             {

@@ -536,6 +536,7 @@
   flex-shrink: 0;
 }
 .status-dot.offline { background: var(--danger); }
+.status-dot.degraded { background: var(--warning); }
 
 /* ========== Task 3: 顶栏上下文（模型 / 会话名 / 连接状态） ========== */
 .topbar-context {
@@ -605,6 +606,10 @@
 .topbar-connection.disconnected .topbar-connection-dot {
   background: var(--danger);
   box-shadow: 0 0 6px var(--danger);
+}
+.topbar-connection.degraded .topbar-connection-dot {
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
 }
 
 /* 主题切换器（顶栏） */

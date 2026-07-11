@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use tauri::{Manager, State, WebviewWindow};
 use tokio::sync::Mutex as AsyncMutex;
 
+use std::sync::Arc;
+
 pub struct AppState {
-    pub sidecar: AsyncMutex<Option<SidecarHandle>>,
+    pub sidecar: Arc<AsyncMutex<Option<SidecarHandle>>>,
     pub port: u16,
     pub data_dir: PathBuf,
     pub hermes_root: PathBuf,
@@ -103,9 +105,15 @@ pub fn get_app_version(app: tauri::AppHandle) -> String {
 }
 
 #[tauri::command]
-pub fn quit_app(app: tauri::AppHandle) {
-    log::info!("commands: quit_app requested");
+pub async fn quit_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("commands: quit_app requested, graceful shutdown sidecar first");
+    let mut guard = state.sidecar.lock().await;
+    if let Some(mut sc) = guard.take() {
+        sc.shutdown().await;
+    }
+    drop(guard);
     app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]

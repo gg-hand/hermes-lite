@@ -368,7 +368,7 @@ _DESKTOP_PATH_MAP: List[tuple] = [
     (("monitoring", "audit_log_path"), "data/audit.jsonl"),
 ]
 # 注：data/schedules.yaml 和 data/schedules/ (runs_store base_dir) 在 CronScheduler 中硬编码默认值，
-# 不通过 config 读取。桌面端通过设置 sidecar 的 cwd 指向 HERMES_DATA_DIR 让这些相对路径自然解析。
+# 不通过 config 读取。桌面端通过 HERMES_SCHEDULES_DIR / HERMES_REPORTS_DIR 环境变量重定向到 data_dir。
 
 
 def _override_data_paths(cfg: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
@@ -894,13 +894,21 @@ async def lifespan(app: FastAPI):
 
     # === Hermes-Lite Desktop 数据目录覆盖 ===
     # 仅当 HERMES_DATA_DIR 已设置时生效；未设置时 dev/EC2 行为完全不变。
-    # 同时设置 sidecar 的 cwd 指向此目录，让 CronScheduler 硬编码的
-    # data/schedules.yaml 等相对路径也自然解析到这里（见 _DESKTOP_PATH_MAP 注释）。
+    # sidecar 的 cwd 仍是 hermes_root（让 src/ 包和 config.yaml 可被找到），
+    # 此处通过环境变量将 CronScheduler / directory_watch 等硬编码的 data/* 路径
+    # 重定向到 data_dir，避免数据写入安装目录在卸载时丢失。
     if os.environ.get("HERMES_DATA_DIR"):
         _hermes_data_dir = Path(os.environ["HERMES_DATA_DIR"]).resolve()
         _hermes_data_dir.mkdir(parents=True, exist_ok=True)
         logger.info("[desktop] HERMES_DATA_DIR = %s", _hermes_data_dir)
         config = _override_data_paths(config, _hermes_data_dir)
+        _schedules_dir = _hermes_data_dir / "data" / "schedules"
+        _schedules_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["HERMES_SCHEDULES_DIR"] = str(_schedules_dir)
+        os.environ["HERMES_REPORTS_DIR"] = str(_hermes_data_dir / "data" / "reports")
+        _schedules_file = str(_hermes_data_dir / "data" / "schedules.yaml")
+    else:
+        _schedules_file = "data/schedules.yaml"
 
     # Phase X: 校验关键环境变量（API Key 等）是否已正确配置
     try:
@@ -909,18 +917,20 @@ async def lifespan(app: FastAPI):
         logger.critical("配置校验失败: %s", e)
         raise RuntimeError(str(e)) from e
 
-    # 预加载 ONNX 嵌入模型（all-MiniLM-L6-v2），避免首次对话时
-    # 临时下载模型权重导致 20+ 秒等待。模型约 80MB，首次启动时
-    # 自动下载到 ~/.cache/chroma/onnx_models/，后续启动直接加载。
-    # 注意：_get_onnx_embedder() 只初始化包装类，不会触发模型下载；
-    # 必须实际调用一次嵌入才能触发 _download_model_if_not_exists。
-    try:
-        logger.info("正在预加载 ONNX 嵌入模型...")
-        model = _get_onnx_embedder()
-        model(["warmup"])  # 触发模型下载/解压
-        logger.info("ONNX 嵌入模型已就绪")
-    except Exception as e:
-        logger.warning("ONNX 嵌入模型预加载失败（首次使用时将按需加载）: %s", e)
+    # ONNX 嵌入模型后台预热（不阻塞 lifespan 启动）
+    # 模型约 80MB，首次启动时自动下载到 ~/.cache/chroma/onnx_models/，
+    # 后续启动直接加载。后台线程异步执行，用户首次对话时大概率已就绪。
+    def _preload_onnx():
+        try:
+            logger.info("后台预加载 ONNX 嵌入模型...")
+            model = _get_onnx_embedder()
+            model(["warmup"])  # 触发模型下载/解压
+            logger.info("ONNX 嵌入模型已就绪")
+        except Exception as e:
+            logger.warning("ONNX 嵌入模型预加载失败（首次使用时将按需加载）: %s", e)
+
+    import threading
+    threading.Thread(target=_preload_onnx, daemon=True, name="onnx-preload").start()
 
     server_cfg = config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")
@@ -1225,7 +1235,7 @@ async def lifespan(app: FastAPI):
     if CronScheduler is not None and orchestrator is not None:
         try:
             schedules_cfg = config.get("schedules", []) or []
-            cron_scheduler = CronScheduler()
+            cron_scheduler = CronScheduler(schedules_file=_schedules_file)
             if schedules_cfg:
                 cron_scheduler.load_from_config(schedules_cfg)
                 logger.info("CronScheduler 已加载 %d 个调度项", len(schedules_cfg))
@@ -1366,6 +1376,19 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # 强杀 execute_command 运行中的子进程（避免 sidecar 退出后子进程变孤儿）
+        try:
+            from agent.builtin_tools import kill_running_process
+            kill_running_process()
+        except Exception:
+            pass
+        # 取消文件清理任务
+        if file_cleanup_task is not None:
+            file_cleanup_task.cancel()
+            try:
+                await file_cleanup_task
+            except asyncio.CancelledError:
+                pass
         # 取消清理任务
         cleanup_task.cancel()
         try:
@@ -2070,6 +2093,22 @@ def reasoning_status():
         },
         "persist_thinking": orchestrator.llm_client.persist_thinking,
     }
+
+
+@app.post("/shutdown")
+async def graceful_shutdown():
+    """触发 uvicorn 优雅关闭。
+
+    Rust 端在 kill sidecar 前调用此端点，让 FastAPI lifespan 执行 shutdown：
+    取消所有后台任务、关闭 MCP 子进程、停止 CronScheduler、释放资源。
+    """
+    server = getattr(app.state, "uvicorn_server", None)
+    if server is not None:
+        server.should_exit = True
+        logger.info("/shutdown: uvicorn should_exit=True, graceful shutdown initiated")
+        return {"status": "shutting_down"}
+    logger.warning("/shutdown: uvicorn server reference not found")
+    return {"status": "no_server"}
 
 
 @app.get("/health")
@@ -4661,7 +4700,6 @@ elif os.path.isdir(_WEB_DIR):
 
 
 if __name__ == "__main__":
-    # 直接运行本模块时通过 uvicorn 启动；生产环境建议使用 start.sh
     import uvicorn
 
     try:
@@ -4670,9 +4708,12 @@ if __name__ == "__main__":
     except Exception:
         server_cfg = {}
 
-    uvicorn.run(
+    _config = uvicorn.Config(
         "src.server:app",
         host=server_cfg.get("host", "0.0.0.0"),
         port=int(os.environ.get("HERMES_PORT") or server_cfg.get("port", 8000)),
         workers=1,
     )
+    _server = uvicorn.Server(_config)
+    app.state.uvicorn_server = _server
+    _server.run()

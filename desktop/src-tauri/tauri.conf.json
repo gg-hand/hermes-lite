@@ -13,7 +13,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Hermes Lite",
+        "url": "loading.html",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -23,7 +25,7 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "visible": false
+        "visible": true
       }
     ],
     "security": {
@@ -46,6 +48,7 @@
       "../../src": "src",
       "../../cron_tool": "cron_tool",
       "../../skills": "skills",
+      "../../_onnx_model": "_onnx_model",
       "pyembed/python": "python"
     },
     "windows": {

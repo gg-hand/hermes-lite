@@ -1,6 +1,7 @@
 # ── 敏感文件 ──
 # API Key 使用 ${VAR} 环境变量注入，不存明文
 # 本地覆盖配置放 config.yaml.bak（自动忽略）
+config.yaml
 config.yaml.bak
 .env
 .env.example

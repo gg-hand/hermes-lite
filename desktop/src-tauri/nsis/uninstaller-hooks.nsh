@@ -1,13 +1,14 @@
-; uninstaller-hooks.nsh — Hermes Lite NSIS 卸载清理钩子
+; uninstaller-hooks.nsh — Hermes Lite NSIS 安装/卸载清理钩子
 ;
 ; 由 tauri.conf.json 的 bundle.windows.nsis.installerHooks 引用。
-; 在 NSIS 卸载流程中插入自定义逻辑，确保卸载后无残留。
+; 在 NSIS 安装/卸载流程中插入自定义逻辑，确保无进程残留、无文件残留。
 ;
 ; 清理目标：
-;   0. 残留进程                       — 强制终止 Hermes Lite.exe 和孤立的 sidecar (python src.server)
-;   1. %APPDATA%\hermes-lite        — 用户数据目录（config.yaml、sidecar.log、向量库、用户画像）
+;   0. 残留进程 — 主进程 / WebView2 子进程 / Python sidecar / MCP 服务器 / execute_command 子进程
+;   1. %APPDATA%\hermes-lite        — 用户数据目录（config、向量库、用户画像、schedules、logs）
 ;   2. %APPDATA%\Hermes Lite        — Tauri 应用配置目录（window-state、store、EBWebView 缓存）
-;   3. Windows Credential Manager   — API 密钥条目（service = com.hermeslite.desktop.apikeys）
+;   3. %PROFILE%\.cache\chroma       — chromadb ONNX 模型缓存（仅完全清除时删除）
+;   4. Windows Credential Manager   — API 密钥条目（service = com.hermeslite.desktop.apikeys）
 ;
 ; NSIS 自动处理（无需手动）：
 ;   - 程序文件目录 (%LOCALAPPDATA%\Hermes Lite)
@@ -17,11 +18,30 @@
 ; NSIS 转义规则：$$ → $, $\r$\n → CRLF, $\n → LF, $\" → "
 ; PowerShell 变量用 $$ 前缀转义（如 $$matches → $matches）
 
+; ---------------------------------------------------------------------------
+; 进程清理宏（安装前 & 卸载前共用）
+; 策略：
+;   1. taskkill 杀主进程及其进程树（/T 递归杀子进程）
+;   2. PowerShell 按路径匹配杀安装目录下所有进程（python.exe 等）
+;   3. PowerShell 按命令行匹配杀 WebView2 子进程和 MCP 服务器进程
+;      （命令行包含 "Hermes Lite" 路径的进程，覆盖 --user-data-dir 参数）
+; ---------------------------------------------------------------------------
+
+!macro _KILL_HERMES_PROCESSES
+  DetailPrint "Hermes Lite: terminating all related processes..."
+  ; 1. 杀主进程及其进程树（WebView2 直接子进程随之退出）
+  nsExec::ExecToLog 'taskkill /F /IM "hermes-lite-desktop.exe" /T 2>nul'
+  ; 2. 杀安装目录下的所有进程 + 命令行包含 "Hermes Lite" 的进程
+  ;    覆盖：python.exe（sidecar）、msedgewebview2.exe（WebView2 子进程）、
+  ;          node.exe（MCP 服务器）、execute_command 启动的子进程等
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.CommandLine -like ''*Hermes Lite*'' -or $$_.ExecutablePath -like ''*Hermes Lite*'' } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  ; 等待文件句柄释放
+  Sleep 1000
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
-  ; 安装前杀死残留 sidecar 进程，避免文件锁定导致覆盖失败
-  DetailPrint "Hermes Lite: killing residual sidecar processes before install..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-Process python -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like ''*Hermes Lite*\python\python.exe'' } | Stop-Process -Force -ErrorAction SilentlyContinue"'
-  Sleep 500
+  ; 安装前杀死残留进程，避免文件锁定导致覆盖失败
+  !insertmacro _KILL_HERMES_PROCESSES
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -32,39 +52,34 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; 0. 强制终止残留进程，避免文件锁定导致删除失败
-  ;    NSIS 会提示用户关闭应用，但 sidecar (python) 可能被孤立
-  DetailPrint "Hermes Lite: terminating residual processes..."
-  ; 终止 Tauri 主进程（NSIS 兜底）
-  nsExec::ExecToLog 'taskkill /F /IM "Hermes Lite.exe" /T 2>nul'
-  ; 终止孤立的 sidecar：匹配安装目录下的 python.exe（精确路径，避免误杀系统 Python）
-  ;    PowerShell 变量 $$ → $, '' → '
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-Process python -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like ''*Hermes Lite*\python\python.exe'' } | Stop-Process -Force -ErrorAction SilentlyContinue"'
-  ; 等待文件句柄释放
-  Sleep 500
+  ; 0. 强制终止所有相关进程
+  !insertmacro _KILL_HERMES_PROCESSES
 
   ; 卸载前提示：是否同时删除用户数据
-  ; 用「」替代""避免引号转义问题，用反引号定界消息文本
-  MessageBox MB_YESNO `是否同时删除用户数据（配置、向量库、API 密钥）?$\n$\n选择「是」将完全清除所有痕迹，选择「否」仅卸载程序文件。` IDYES _wipe_data IDNO _keep_data
+  MessageBox MB_YESNO `是否同时删除用户数据（配置、向量库、API 密钥、模型缓存）?$\n$\n选择「是」将完全清除所有痕迹，选择「否」仅卸载程序文件。` IDYES _wipe_data IDNO _keep_data
 
   _wipe_data:
     SetShellVarContext current
 
-    ; 1. 删除用户数据目录（config / sidecar.log / 向量库 / 用户画像）
+    ; 1. 删除用户数据目录（config / sidecar.log / 向量库 / 用户画像 / schedules / server.log）
     IfFileExists "$APPDATA\hermes-lite" 0 _skip_data_dir
       DetailPrint "Hermes Lite: deleting user data directory $APPDATA\hermes-lite"
       RMDir /r "$APPDATA\hermes-lite"
     _skip_data_dir:
 
-    ; 2. 删除 Tauri 应用配置目录（window-state / store / EBWebView）
+    ; 2. 删除 Tauri 应用配置目录（window-state / store / EBWebView 缓存）
     IfFileExists "$APPDATA\Hermes Lite" 0 _skip_appconfig
       DetailPrint "Hermes Lite: deleting app config directory $APPDATA\Hermes Lite"
       RMDir /r "$APPDATA\Hermes Lite"
     _skip_appconfig:
 
-    ; 3. 清理 Windows Credential Manager 中的 API 密钥
-    ;    keyring crate 以 service 名存储凭据，枚举 cmdkey /list 并删除匹配项
-    ;    PowerShell 变量 $$ 前缀转义为 NSIS 字面 $，'' 转义为 NSIS 字面 '
+    ; 3. 删除 chromadb ONNX 模型缓存（~80MB）
+    IfFileExists "$PROFILE\.cache\chroma\onnx_models" 0 _skip_chroma_cache
+      DetailPrint "Hermes Lite: deleting chromadb ONNX model cache"
+      RMDir /r "$PROFILE\.cache\chroma\onnx_models"
+    _skip_chroma_cache:
+
+    ; 4. 清理 Windows Credential Manager 中的 API 密钥
     Push $0
     nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$ErrorActionPreference=''SilentlyContinue''; $$out = cmdkey /list 2>$$null; if ($$out) { $$out | ForEach-Object { if ($$_ -match ''Target:\s*(.+)'' ) { $$t = $$matches[1].Trim(); if ($$t -like ''*com.hermeslite.desktop.apikeys*'') { cmdkey /delete:$$t 2>$$null } } } }"'
     Pop $0

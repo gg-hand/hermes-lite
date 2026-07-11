@@ -180,10 +180,9 @@ class DirectoryWatchTemplate(WorkflowTemplate):
         return snapshot
 
     def _get_snapshot_path(self, schedule_id: str) -> str:
-        """返回快照文件路径 ``data/schedules/{id}/snapshot.json``。"""
-        return os.path.join(
-            "data", "schedules", schedule_id, "snapshot.json"
-        )
+        """返回快照文件路径 ``{HERMES_SCHEDULES_DIR}/{id}/snapshot.json``。"""
+        base = os.environ.get("HERMES_SCHEDULES_DIR", os.path.join("data", "schedules"))
+        return os.path.join(base, schedule_id, "snapshot.json")
 
     def _load_snapshot(self, snapshot_path: str) -> Dict[str, Dict[str, Any]]:
         """加载上次快照。文件不存在时返回空 dict。"""

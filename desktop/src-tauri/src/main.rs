@@ -13,6 +13,7 @@ mod sidecar;
 
 use commands::AppState;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
@@ -66,7 +67,7 @@ fn main() {
     };
 
     let app_state = AppState {
-        sidecar: AsyncMutex::new(sidecar),
+        sidecar: Arc::new(AsyncMutex::new(sidecar)),
         port,
         data_dir: data_dir.clone(),
         hermes_root: hermes_root.clone(),
@@ -106,22 +107,14 @@ fn main() {
             commands::toggle_maximize,
         ])
         // 页面刷新/导航后注入的脚本会被销毁。每次 PageLoadEvent::Finished
-        // 时重新注入 titlebar 与 init_script，确保 chat-settings.js 的
-        // window.location.reload() 后标题栏仍在。同时当 sidecar 的 chat 页
-        // 加载完成时显示主窗口（窗口启动时隐藏，避免介绍页闪现）。
+        // 时重新注入 titlebar 与 init_script。窗口启动时立即可见（visible: true），
+        // 加载 loading.html 显示启动动画，sidecar 就绪后导航到聊天页。
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let url = payload.url();
                 log::info!("on_page_load: page finished, url={}", url);
-                // 只对 main 窗口注入 bridge（titlebar + fetch 改写）
-                // settings 窗口有原生标题栏，不需要注入
                 if webview.window().label() == "main" {
                     bridge::reinject(webview, port);
-                }
-                let needle = format!("127.0.0.1:{}", port);
-                if url.as_str().contains(needle.as_str()) {
-                    let _ = webview.window().show();
-                    let _ = webview.window().set_focus();
                 }
             }
         })
@@ -149,32 +142,17 @@ fn main() {
 
                 if let Some(w) = app_handle.get_webview_window("main") {
                     if sidecar_ready {
-                        // 导航到 sidecar：同源访问避免 CORS，HERMES_DESKTOP=1
-                        // 在根路径直接返回 chat.html（跳过介绍页）。
-                        // 窗口保持隐藏，由 on_page_load 在 chat.html 加载完成后显示。
                         let url = format!("http://127.0.0.1:{}/", port);
                         let js = format!("window.location.replace({:?});", url);
                         if let Err(e) = w.eval(&js) {
                             log::error!("setup: navigate to sidecar failed: {}", e);
                         }
-                        // 兜底：3 秒后仍未显示则强制显示，防止 on_page_load 未触发的边界情况
-                        let w_fallback = w.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            let _ = w_fallback.show();
-                            let _ = w_fallback.set_focus();
-                        });
                     } else {
-                        // sidecar 未就绪：仅显示主窗口，不弹窗。
-                        // 桌面端进入即是聊天页，设置通过聊天页内的模态框完成。
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                        let w_fallback = w.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            let _ = w_fallback.show();
-                            let _ = w_fallback.set_focus();
-                        });
+                        // sidecar 未就绪：在 loading.html 上显示错误提示
+                        let js = "window.__loadingError('后端服务启动失败，请重启应用')";
+                        if let Err(e) = w.eval(js) {
+                            log::error!("setup: show error on loading page failed: {}", e);
+                        }
                     }
                 }
             });
@@ -311,8 +289,17 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "quit" => {
-                log::info!("tray: quit requested");
-                app.exit(0);
+                log::info!("tray: quit requested, graceful shutdown sidecar first");
+                let sidecar = app.state::<AppState>().sidecar.clone();
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut guard = sidecar.lock().await;
+                    if let Some(mut sc) = guard.take() {
+                        sc.shutdown().await;
+                    }
+                    drop(guard);
+                    app_handle.exit(0);
+                });
             }
             _ => {}
         })

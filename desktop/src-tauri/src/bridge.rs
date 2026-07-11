@@ -36,73 +36,9 @@ pub fn init_script(port: u16) -> String {
         return originalOpen.apply(this, arguments);
     }};
 
-    // 3. 文件选择器拦截：monkey-patch HTMLInputElement.prototype.click
-    //    当 input[type=file] 被点击时，改用 Tauri dialog API
-    var __TAURI__ = window.__TAURI__;
-    var originalClick = HTMLInputElement.prototype.click;
-    HTMLInputElement.prototype.click = function() {{
-        if (this.tagName === 'INPUT' && this.type === 'file' && __TAURI__ && __TAURI__.dialog) {{
-            __handleFileInputClick(this);
-            return;
-        }}
-        return originalClick.apply(this, arguments);
-    }};
-
-    function __handleFileInputClick(inputEl) {{
-        if (!__TAURI__ || !__TAURI__.dialog || !__TAURI__.dialog.open) {{
-            console.warn('[desktop-bridge] Tauri dialog API not available, falling back to native click');
-            return originalClick.call(inputEl);
-        }}
-        // 调用 Tauri dialog.open 选择文件
-        __TAURI__.dialog.open({{
-            multiple: inputEl.hasAttribute('multiple'),
-            filters: []
-        }}).then(function(selected) {{
-            if (!selected) return;  // 用户取消
-            var paths = Array.isArray(selected) ? selected : [selected];
-            __uploadFilesAndSetInput(inputEl, paths);
-        }}).catch(function(err) {{
-            console.error('[desktop-bridge] dialog.open failed:', err);
-        }});
-    }}
-
-    async function __uploadFilesAndSetInput(inputEl, paths) {{
-        try {{
-            var files = [];
-            for (var i = 0; i < paths.length; i++) {{
-                var p = paths[i];
-                // 通过 sidecar 的 /files/from-path 端点上传
-                var body = new URLSearchParams();
-                body.set('path', p);
-                var resp = await fetch('/files/from-path', {{
-                    method: 'POST',
-                    body: body
-                }});
-                if (!resp.ok) {{
-                    console.error('[desktop-bridge] upload failed for', p, resp.status);
-                    continue;
-                }}
-                var result = await resp.json();
-                // 构造 File 对象（从路径提取文件名）
-                var filename = p.split(/[\\\\\/]/).pop();
-                var file = new File([''], filename, {{ type: 'application/octet-stream' }});
-                file.__file_id = result.file_id || result.id;
-                file.__path = p;
-                files.push(file);
-            }}
-            if (files.length > 0) {{
-                // 构造 DataTransfer 合成 FileList
-                var dt = new DataTransfer();
-                files.forEach(function(f) {{ dt.items.add(f); }});
-                inputEl.files = dt.files;
-                // 触发 change 事件
-                var event = new Event('change', {{ bubbles: true }});
-                inputEl.dispatchEvent(event);
-            }}
-        }} catch (e) {{
-            console.error('[desktop-bridge] upload error:', e);
-        }}
-    }}
+    // 3. 文件选择器：WebView2 原生支持 <input type="file">，无需拦截。
+    //    前端 chat-files.js 的 uploadFile() 通过 /files/upload (multipart) 上传，
+    //    用户可选择任意位置的文件。
 
     console.log('[desktop-bridge] injected, sidecar base:', window.__HERMES_SIDECAR_BASE__);
 }})();

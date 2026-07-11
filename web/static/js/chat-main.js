@@ -38,12 +38,25 @@ function autoResize() {
 // ========== 健康检查 ==========
 async function checkHealth() {
   try {
-    await api('/health');
-    if (statusDotEl) statusDotEl.classList.remove('offline');
-    if (topbarConnectionEl) topbarConnectionEl.classList.remove('disconnected');
+    // /health 在 unhealthy 时返回 503，但服务本身仍在运行。
+    // 不能用 api()（它对非 2xx 抛错），需区分 503（服务降级）和网络失败（真正离线）。
+    const resp = await fetch('/health', { cache: 'no-store' });
+    if (resp.ok) {
+      // healthy: 绿色
+      if (statusDotEl) { statusDotEl.classList.remove('offline', 'degraded'); }
+      if (topbarConnectionEl) { topbarConnectionEl.classList.remove('disconnected', 'degraded'); }
+    } else if (resp.status === 503) {
+      // unhealthy: 服务在线但降级（如 LLM 未配置）
+      if (statusDotEl) { statusDotEl.classList.remove('offline'); statusDotEl.classList.add('degraded'); }
+      if (topbarConnectionEl) { topbarConnectionEl.classList.remove('disconnected'); topbarConnectionEl.classList.add('degraded'); }
+    } else {
+      if (statusDotEl) { statusDotEl.classList.add('offline'); statusDotEl.classList.remove('degraded'); }
+      if (topbarConnectionEl) { topbarConnectionEl.classList.add('disconnected'); topbarConnectionEl.classList.remove('degraded'); }
+    }
   } catch {
-    if (statusDotEl) statusDotEl.classList.add('offline');
-    if (topbarConnectionEl) topbarConnectionEl.classList.add('disconnected');
+    // 网络错误：服务真正离线
+    if (statusDotEl) { statusDotEl.classList.add('offline'); statusDotEl.classList.remove('degraded'); }
+    if (topbarConnectionEl) { topbarConnectionEl.classList.add('disconnected'); topbarConnectionEl.classList.remove('degraded'); }
   }
 }
 
@@ -337,6 +350,9 @@ function bindEvents() {
 function start() {
   initGlobals();
   bindEvents();
+  if (window.HermesChatFiles && window.HermesChatFiles.bindPasteUpload) {
+    window.HermesChatFiles.bindPasteUpload();
+  }
   checkHealth();
   setInterval(checkHealth, 30000);
 

@@ -1184,11 +1184,23 @@
     const runsLimit = $('runsLimit').value;
 
     const tasks = [
-      fetchJson('/health').then(renderHealth).catch((e) => {
-        $('overallStatus').textContent = '错误';
-        $('overallStatus').className = 'section-status is-unhealthy';
-        console.error('health error:', e);
-      }),
+      // /health 在服务 unhealthy 时返回 503，但响应体仍包含完整检查 JSON。
+      // 不能用 fetchJson（它对非 2xx 直接抛错），需独立处理。
+      fetch('/health', { cache: 'no-store' })
+        .then(async (resp) => {
+          const data = await resp.json().catch(() => null);
+          if (data) {
+            renderHealth(data);
+          } else {
+            $('overallStatus').textContent = '错误';
+            $('overallStatus').className = 'section-status is-unhealthy';
+          }
+        })
+        .catch((e) => {
+          $('overallStatus').textContent = '错误';
+          $('overallStatus').className = 'section-status is-unhealthy';
+          console.error('health error:', e);
+        }),
       fetchJson('/metrics').then(renderMetrics).catch((e) => {
         console.error('metrics error:', e);
       }),

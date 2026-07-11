@@ -1746,19 +1746,23 @@ class LLMClient:
                     f"{_PROVIDER_DEFAULT_ENV_KEY.get(self.consolidation_provider, 'API_KEY')} 中配置"
                 )
 
-        # 创建 Backend 实例
-        self._main_backend: AsyncBaseBackend = _create_backend(
-            provider=self.main_provider,
-            model=self.main_model,
-            api_key=self.main_api_key,
-            base_url=self.main_base_url,
-        )
-        self._consolidation_backend: AsyncBaseBackend = _create_backend(
-            provider=self.consolidation_provider,
-            model=self.consolidation_model,
-            api_key=self.consolidation_api_key,
-            base_url=self.consolidation_base_url,
-        )
+        # 创建 Backend 实例（桌面端 API Key 未配置时跳过，延迟到配置后重启）
+        if self.main_api_key == "sk-not-configured":
+            self._main_backend: Optional[AsyncBaseBackend] = None
+            self._consolidation_backend: Optional[AsyncBaseBackend] = None
+        else:
+            self._main_backend: AsyncBaseBackend = _create_backend(
+                provider=self.main_provider,
+                model=self.main_model,
+                api_key=self.main_api_key,
+                base_url=self.main_base_url,
+            )
+            self._consolidation_backend: AsyncBaseBackend = _create_backend(
+                provider=self.consolidation_provider,
+                model=self.consolidation_model,
+                api_key=self.consolidation_api_key,
+                base_url=self.consolidation_base_url,
+            )
 
         logger.info(
             "LLMClient 初始化完成: main=%s/%s, consolidation=%s/%s, "
@@ -1885,6 +1889,8 @@ class LLMClient:
             reasoning_cfg = (
                 self._cron_reasoning_cfg if is_cron else self._main_reasoning_cfg
             )
+        if self._main_backend is None:
+            raise RuntimeError("API Key 未配置，请通过设置页面配置 API Key 后重启服务")
         t0 = time.perf_counter()
         response = await self._main_backend.chat(
             messages=messages,
@@ -1948,6 +1954,8 @@ class LLMClient:
             else:
                 reasoning_cfg = self._main_reasoning_cfg
 
+        if self._main_backend is None:
+            raise RuntimeError("API Key 未配置，请通过设置页面配置 API Key 后重启服务")
         t0 = time.perf_counter()
         async for event in self._main_backend.chat_stream(
             messages=messages,
@@ -1994,6 +2002,8 @@ class LLMClient:
             reasoning_cfg = self._consolidation_reasoning_cfg
         else:
             reasoning_cfg = _dataclass_replace(reasoning_cfg, enabled=False)
+        if self._consolidation_backend is None:
+            raise RuntimeError("API Key 未配置，请通过设置页面配置 API Key 后重启服务")
         return await self._consolidation_backend.chat(
             messages=messages,
             tools=None,

@@ -1,5 +1,5 @@
 @echo off
-set PATH=C:\Users\f'gu'y\.cargo\bin;%PATH%
+where rustup >nul 2>nul || set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 echo === uninstalling existing toolchain ===
 rustup toolchain uninstall stable-x86_64-pc-windows-msvc
 echo === installing stable-msvc minimal ===

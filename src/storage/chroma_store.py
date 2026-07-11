@@ -16,9 +16,6 @@ from typing import Optional
 
 import numpy as np
 
-import chromadb
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
-
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +45,7 @@ def _get_embedding_fn():
         with _embedding_fn_lock:
             if _embedding_fn is None:
                 try:
+                    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
                     _embedding_fn = DefaultEmbeddingFunction()
                 except Exception as e:
                     raise RuntimeError(
@@ -76,6 +74,9 @@ def _get_onnx_embedder():
     如果 ONNX 模型加载失败（如 chromadb 未安装），回退到
     DefaultEmbeddingFunction。
 
+    桌面端打包时，_onnx_model 目录随安装包分发，此处将
+    ONNXMiniLM_L6_V2.DOWNLOAD_PATH 指向本地路径，避免首次启动联网下载。
+
     Returns:
         可调用的嵌入函数，接受 list[str] 返回 list[list[float]]。
     """
@@ -87,6 +88,16 @@ def _get_onnx_embedder():
                     from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
                         ONNXMiniLM_L6_V2,
                     )
+                    _hermes_root = os.environ.get("HERMES_ROOT")
+                    if _hermes_root:
+                        _local_model = os.path.join(_hermes_root, "_onnx_model")
+                        if os.path.isdir(os.path.join(_local_model, "onnx")):
+                            ONNXMiniLM_L6_V2.DOWNLOAD_PATH = type(
+                                ONNXMiniLM_L6_V2.DOWNLOAD_PATH
+                            )(_local_model)
+                            logger.info(
+                                "使用本地 ONNX 模型: %s", _local_model
+                            )
                     _onnx_embedder = ONNXMiniLM_L6_V2()
                 except Exception:
                     # 回退到 DefaultEmbeddingFunction（测试环境或 chromadb 版本不兼容时）
@@ -153,6 +164,7 @@ class ChromaMemoryStore:
         os.makedirs(self.persist_path, exist_ok=True)
 
         # 创建 PersistentClient，数据落盘到 persist_path
+        import chromadb
         self.client = chromadb.PersistentClient(path=self.persist_path)
 
         # 获取或创建集合，使用 cosine 距离度量

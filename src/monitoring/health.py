@@ -141,6 +141,13 @@ class HealthChecker:
         consol_ok = getattr(client, "_consolidation_backend", None) is not None
         detail = {"main_backend": main_ok, "consolidation_backend": consol_ok}
         if not main_ok:
+            import os
+            if os.environ.get("HERMES_DESKTOP") == "1":
+                return CheckResult(
+                    "critical",
+                    "LLM 主对话后端未初始化（API Key 未配置），请通过设置模态框配置 API Key 后重启服务",
+                    detail,
+                )
             return CheckResult("critical", "LLM 主对话后端客户端未初始化", detail)
         if not consol_ok:
             return CheckResult("warning", "LLM 沉淀专用后端客户端未初始化，将使用主客户端替代", detail)

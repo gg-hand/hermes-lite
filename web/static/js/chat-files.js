@@ -140,8 +140,9 @@ if (uploadQueueEl) {
   });
 }
 
-// 粘贴图片上传
-if (messageInputEl) {
+// 粘贴图片上传（延迟绑定：messageInputEl 由 chat-main.js initGlobals() 赋值）
+function bindPasteUpload() {
+  if (!messageInputEl) return;
   messageInputEl.addEventListener('paste', (e) => {
     const items = e.clipboardData.items;
     for (const item of items) {
@@ -200,4 +201,5 @@ window.HermesChatFiles = {
   addToQueue,
   removeFromQueue,
   renderQueue,
+  bindPasteUpload,
 };
