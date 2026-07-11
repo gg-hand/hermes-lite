@@ -29,6 +29,7 @@ try:
     from .agent.react_loop import ReactLoop
     from .agent.session_manager import SessionManager
     from .agent.skill_manager import SkillManager
+    from .agent.cron_isolator import CronIsolator
     from .storage.sqlite_log import SessionLogger
 except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     from agent.react_loop import ReactLoop  # type: ignore
     from agent.session_manager import SessionManager  # type: ignore
     from agent.skill_manager import SkillManager  # type: ignore
+    from agent.cron_isolator import CronIsolator  # type: ignore
     from storage.sqlite_log import SessionLogger  # type: ignore
 
 # 可选模块：记忆 / 工具子系统。
@@ -743,6 +745,9 @@ class Orchestrator:
         self.skill_mgr = SkillManager(
             skill_loader=getattr(self, "skill_loader", None),
         )
+
+        # CronIsolator: cron 上下文隔离委托（方法对象模式，持有 self 引用）
+        self.cron_isolator = CronIsolator(orchestrator=self)
 
     def _build_archive_callback(
         self,
@@ -2061,24 +2066,8 @@ class Orchestrator:
     def _build_cron_isolation(
         self, session_id: Optional[str]
     ) -> Optional["CronIsolation"]:
-        """从 session_id 解析 CronIsolation context。
-
-        Phase 8 Task 1.4: ``session_id`` 以 ``cron:`` 开头时返回
-        CronIsolation 实例（cron_id 取前缀之后的部分）；其他值或 None
-        返回 None（表示用户会话，不走隔离路径）。
-
-        CronIsolation 模块不可用时（可选依赖缺失）返回 None，降级到
-        用户会话路径（向后兼容）。
-
-        参数:
-            session_id: 会话 ID。
-
-        返回:
-            CronIsolation 实例（cron 会话）或 None（用户会话）。
-        """
-        if CronIsolation is None:
-            return None
-        return CronIsolation.from_session_id(session_id)
+        """从 session_id 解析 CronIsolation context。委托给 CronIsolator。"""
+        return self.cron_isolator.build_isolation(session_id)
 
     async def _build_cron_enhanced_context(
         self,
@@ -2087,249 +2076,27 @@ class Orchestrator:
         history: List[Dict[str, Any]],
         cron_isolation: "CronIsolation",
     ) -> tuple:
-        """构建 cron 调度会话的隔离上下文。
-
-        Phase 8 Task 1.4: cron 路径专用上下文构建，与用户会话路径隔离：
-        - system_text 只含 SYSTEM_PROMPT，**不注入 memory.md 用户画像**
-          （``inject_profile=False``，缓存硬约束：system_text 禁含动态变量）
-        - 检索记忆按 ``namespace="cron"`` + ``cron_id`` 过滤，与用户会话
-          记忆互不可见
-        - **不注入 TaskManager 进度**（``inject_todo=False``），避免动态
-          变量破坏缓存稳定性
-        - 工作流数据注入接口预留（``extra_injection``，Task 2 填充）
-
-        Phase 8 Task 5.7: 额外返回 ``tools_override``（请求级过滤后的工具
-        schema 列表），由 :meth:`_build_cron_tools` 从调度项的
-        ``active_tools_snapshot`` 字段锁定 + 合并 cron_tool_registry schema
-        得到。``tools_override`` 非 None 时透传给
-        :meth:`ReactLoop.run` / :meth:`ReactLoop.run_stream`，覆盖默认的
-        ``tool_registry.get_tools_schema()``（缓存约束 1+2：用户会话 tools
-        schema 字节级稳定，不修改全局 ToolRegistry）。
-
-        参数:
-            session_id: 会话 ID（形如 ``cron:<cron_id>``）。
-            user_input: 当前用户输入文本。
-            history: 原始对话历史。
-            cron_isolation: cron 隔离上下文。
-
-        返回:
-            (system_text, enhanced_history, tools_override) 三元组：
-            - system_text: 仅 SYSTEM_PROMPT（不含画像）
-            - enhanced_history: 含 cron namespace 检索注入的 history
-            - tools_override: 请求级过滤后的工具 schema 列表（None 表示
-              未启用过滤，由 react_loop 走默认 registry 路径）
-        """
-        # cron system_text：仅 SYSTEM_PROMPT，不注入 memory.md 用户画像
-        # （inject_profile=False，缓存硬约束：system_text 禁含动态变量）
-        system_text = SYSTEM_PROMPT
-
-        injection_text = ""
-
-        # 0. 注入运行环境信息到 messages[0] 顶部（缓存失效区，不污染 system_text）
-        # 与用户会话路径保持一致，便于 LLM 感知 cron 调度执行环境的 OS /
-        # Shell / Python 路径，生成贴合环境的指令。环境信息为运行时真实值，
-        # 同一进程内多次调用稳定。
-        try:
-            env_section = self._build_environment_section()
-            if env_section:
-                injection_text = env_section
-        except Exception as e:
-            logger.warning("cron 运行环境信息注入失败，跳过: %s", e)
-
-        # 1. 检索 cron namespace 长期记忆（按 cron_id 过滤）
-        # ops-reliability-uplift Task 7: inject_history=false 时跳过检索，
-        # 不注入任何上次 run 摘要（messages[0] 仅含运行环境段）。
-        # 默认 true（注入 type=summary/fact 摘要，已通过 exclude_types
-        # 过滤掉完整 conversation_turn 避免原文污染）。
-        # 用 getattr 兼容 Orchestrator.__new__ 绕过 __init__ 的测试场景
-        # （与 self.decay 的兜底处理方式一致）
-        inject_history_enabled = getattr(self, "cron_inject_history_enabled", True)
-        if self.memory_retriever is not None and inject_history_enabled:
-            try:
-                memory_text = await asyncio.to_thread(
-                    self.memory_retriever.get_injection_text,
-                    user_input,
-                    namespace=cron_isolation.namespace,
-                    cron_id=cron_isolation.cron_id,
-                    exclude_types={"conversation_turn"},
-                )
-                # 上报记忆检索命中/未命中指标
-                if self.metrics is not None:
-                    self.metrics.observe_memory_retrieval(hit=bool(memory_text))
-                if memory_text:
-                    if injection_text:
-                        injection_text = f"{injection_text}\n\n{memory_text}"
-                    else:
-                        injection_text = memory_text
-            except Exception as e:
-                logger.warning("cron 长期记忆检索注入失败，跳过: %s", e)
-        elif self.memory_retriever is not None and not inject_history_enabled:
-            # inject_history=false 时仍上报指标（hit=False），便于监控区分
-            # "无相关记忆"与"配置关闭检索"
-            if self.metrics is not None:
-                self.metrics.observe_memory_retrieval(hit=False)
-            logger.debug(
-                "cron inject_history=false，跳过记忆检索 cron_id=%s",
-                cron_isolation.cron_id,
-            )
-
-        # 2. cron 路径不注入 TaskManager 进度（inject_todo=False）
-        #    避免动态变量破坏缓存稳定性
-
-        # 2.5 文件注入不适用于 cron 会话（无用户上传绑定）
-        #     cron session_id 形如 cron:<id>，upload_manager.get_session_files
-        #     对该 session_id 返回空列表，注入无意义且浪费 IO，故显式跳过。
-
-        # 3. 统一前置 injection_text 到 history（若存在）
-        condensed_history = await self._apply_condenser(history)
-        if injection_text:
-            enhanced_history = [
-                {"role": "user", "content": injection_text}
-            ] + condensed_history
-        else:
-            enhanced_history = condensed_history
-
-        # 4. Phase 8 Task 5.7: 构建请求级过滤后的 tools_override
-        tools_override = self._build_cron_tools(session_id)
-
-        return system_text, enhanced_history, tools_override
+        """构建 cron 调度会话的隔离上下文。委托给 CronIsolator。"""
+        return await self.cron_isolator.build_enhanced_context(
+            session_id, user_input, history, cron_isolation
+        )
 
     def _build_cron_tools(
         self, session_id: Optional[str]
     ) -> Optional[List[Dict[str, Any]]]:
-        """构建 cron 调度会话的请求级工具过滤列表（Phase 8 Task 5.7）。
-
-        从调度项的 ``active_tools_snapshot`` 字段读取锁定的工具名列表，
-        在全局 ``tool_registry.get_tools_schema()`` 上做请求级过滤（不修改
-        全局 ToolRegistry），并合并 ``cron_tool_registry`` 的 schema（cron_tool
-        始终对 cron 会话可见，不受 snapshot 限制——snapshot 仅约束内置工具集）。
-
-        缓存约束：
-        - 用户会话路径（``session_id`` 不以 ``cron:`` 开头）：本方法返回
-          ``None``，react_loop 走默认 ``tool_registry.get_tools_schema()``
-          路径，tools schema 字节级稳定。
-        - cron 会话路径：返回过滤后的列表，仅本次请求生效，不污染全局
-          registry。同一调度项多次触发时 snapshot 不变，过滤结果稳定。
-
-        降级策略：
-        - ``cron_scheduler`` 未注入（lifespan 未装配）→ 返回 None（向后兼容）
-        - ``session_id`` 非 cron 会话 → 返回 None
-        - 调度项不存在 → 返回 None（用完整工具集）
-        - ``active_tools_snapshot`` 为 None 或空 → 返回完整工具集 + cron_tool
-          schema（不限制内置工具）
-        - ``tool_registry`` 为 None → 仅返回 cron_tool schema
-
-        参数:
-            session_id: 会话 ID（形如 ``cron:<cron_id>``）。
-
-        返回:
-            过滤后的工具 schema 列表，或 ``None``（表示未启用过滤，由
-            react_loop 走默认 registry 路径）。
-        """
-        # 1. 仅 cron 会话路径启用过滤
-        if not session_id or not session_id.startswith("cron:"):
-            return None
-
-        # 2. cron_scheduler 未注入时降级（向后兼容：未装配 lifespan 时
-        #    无法读取调度项配置，返回 None 让 react_loop 走默认路径）
-        cron_scheduler = getattr(self, "cron_scheduler", None)
-        if cron_scheduler is None:
-            return None
-
-        # 3. 解析 cron_id（session_id 去掉 "cron:" 前缀）
-        cron_id = session_id[5:]
-        try:
-            sched_dict = cron_scheduler.get_schedule(cron_id)
-        except Exception as e:
-            logger.warning(
-                "读取调度项 %s 失败，cron 工具过滤降级为 None: %s",
-                cron_id,
-                e,
-            )
-            return None
-        if sched_dict is None:
-            # 调度项不存在（如手动构造的 cron:xxx 测试会话），用完整工具集
-            logger.debug(
-                "调度项 %s 不存在，cron 工具过滤返回完整工具集", cron_id
-            )
-            return None
-
-        snapshot = sched_dict.get("active_tools_snapshot")
-        # 4. 收集过滤后的工具 schema
-        filtered: List[Dict[str, Any]] = []
-
-        # 4.1 全局 tool_registry 按 snapshot 过滤
-        tool_registry = getattr(self, "tool_registry", None)
-        if tool_registry is not None:
-            try:
-                full_schema = tool_registry.get_tools_schema()
-            except Exception as e:
-                logger.warning(
-                    "获取全局工具 schema 失败，cron 工具过滤跳过内置工具: %s",
-                    e,
-                )
-                full_schema = []
-            if snapshot:
-                # 请求级过滤：仅保留 snapshot 中列出的工具名
-                snapshot_set = set(snapshot)
-                filtered = [
-                    t for t in full_schema if t.get("name") in snapshot_set
-                ]
-            else:
-                # snapshot 为 None 或空：不限制内置工具集，全量纳入
-                filtered = list(full_schema)
-
-        # 4.2 合并 cron_tool_registry schema（始终对 cron 会话可见）
-        cron_tool_registry = getattr(self, "cron_tool_registry", None)
-        if cron_tool_registry is not None:
-            try:
-                cron_tool_schema = cron_tool_registry.get_tools_schema()
-                if cron_tool_schema:
-                    filtered = filtered + list(cron_tool_schema)
-            except Exception as e:
-                logger.warning(
-                    "获取 cron_tool schema 失败，跳过合并: %s", e
-                )
-
-        # 5. 注入 cron_tool_registry 到 react_loop（若尚未注入）
-        #    使工具调用派发能路由到 cron_tool 子进程执行路径
-        react_loop = getattr(self, "react_loop", None)
-        if (
-            react_loop is not None
-            and cron_tool_registry is not None
-            and getattr(react_loop, "cron_tool_registry", None) is None
-        ):
-            react_loop.cron_tool_registry = cron_tool_registry
-
-        return filtered
+        """构建 cron 调度会话的请求级工具过滤列表。委托给 CronIsolator。"""
+        return self.cron_isolator.build_cron_tools(session_id)
 
     def set_cron_dependencies(
         self,
         cron_scheduler: Optional[Any] = None,
         cron_tool_registry: Optional[Any] = None,
     ) -> None:
-        """注入 cron 调度路径所需的依赖（Phase 8 Task 5.7）。
-
-        由 server.py lifespan 在装配 CronScheduler / CronToolRegistry 后
-        调用。注入后 cron 会话路径（``session_id`` 以 ``cron:`` 开头）会
-        启用请求级工具过滤；用户会话路径不受影响（``cron_scheduler`` /
-        ``cron_tool_registry`` 仅在 cron 会话路径读取）。
-
-        参数:
-            cron_scheduler: ``CronScheduler`` 实例，用于读取调度项的
-                ``active_tools_snapshot`` 字段。为 ``None`` 时禁用过滤。
-            cron_tool_registry: ``CronToolRegistry`` 实例，提供 cron_tool
-                schema 与子进程执行。为 ``None`` 时 cron 会话不可用
-                cron_tool（但仍可过滤内置工具集）。同时注入到
-                ``react_loop.cron_tool_registry`` 用于工具调用派发。
-        """
-        if cron_scheduler is not None:
-            self.cron_scheduler = cron_scheduler
-        if cron_tool_registry is not None:
-            self.cron_tool_registry = cron_tool_registry
-            # 同步注入到 react_loop，使工具调用派发能路由到 cron_tool
-            if getattr(self, "react_loop", None) is not None:
-                self.react_loop.cron_tool_registry = cron_tool_registry
+        """注入 cron 调度路径所需的依赖。委托给 CronIsolator。"""
+        self.cron_isolator.set_dependencies(
+            cron_scheduler=cron_scheduler,
+            cron_tool_registry=cron_tool_registry,
+        )
 
     async def _apply_condenser(
         self, history: List[Dict[str, Any]]

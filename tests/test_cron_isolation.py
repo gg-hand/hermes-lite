@@ -32,6 +32,7 @@ install_mocks()
 from src.llm.prompts import SYSTEM_PROMPT  # noqa: E402
 from src.memory.context_manager import ContextManager  # noqa: E402
 from src.memory.cron_isolation import CronIsolation  # noqa: E402
+from src.agent.cron_isolator import CronIsolator  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 
 
@@ -165,6 +166,8 @@ class TestOrchestratorCronRouting(unittest.IsolatedAsyncioTestCase):
         # Phase 9 Task 5: _build_enhanced_context 现访问 todo_registry，
         # 测试不验证 plan 模式注入，置 None 走降级路径。
         orch.todo_registry = None
+        # CronIsolator 委托（方法对象模式，持有 orch 引用）
+        orch.cron_isolator = CronIsolator(orchestrator=orch)
         return orch
 
     async def test_cron_session_uses_cron_namespace_for_retrieval(self):
