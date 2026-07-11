@@ -82,6 +82,17 @@ class Container:
                 self._instances[name] = self._factories[name](self)
             return self._instances[name]
 
+    def set_instance(self, name: str, instance: Any) -> None:
+        """注入已创建的实例，绕过工厂创建。
+
+        用于 lifespan 已完成复杂初始化（ONNX 预加载、异步 MCP 设置等）
+        的组件，避免工厂重复创建。后续 reload 时仍通过工厂重建。
+        """
+        with self._lock:
+            if name not in self._factories:
+                raise KeyError(f"组件 '{name}' 未注册")
+            self._instances[name] = instance
+
     def validate(self) -> None:
         self._validate_no_cycles()
         self._validate_deps_registered()

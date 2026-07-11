@@ -187,3 +187,53 @@ class TestRegisterComponents:
                        "_config_path": "config.yaml"})
         register_components(c)
         c.validate()  # 不抛异常即通过
+
+
+class TestSetInstance:
+    """验证 set_instance 注入已创建的实例，绕过工厂。"""
+
+    def test_set_instance_returns_injected(self):
+        """set_instance 后 get 应返回注入的实例而非工厂创建的。"""
+        c = Container({})
+        c.register("orchestrator", lambda c: FakeLLM({"factory": True}),
+                   deps=[], hot_reloadable=False)
+        injected = FakeLLM({"injected": True})
+        c.set_instance("orchestrator", injected)
+        assert c.get("orchestrator") is injected
+
+    def test_set_instance_bypasses_factory(self):
+        """set_instance 后工厂不应被调用。"""
+        factory_called = [False]
+
+        def factory(c):
+            factory_called[0] = True
+            return FakeLLM({})
+
+        c = Container({})
+        c.register("orchestrator", factory, deps=[], hot_reloadable=False)
+        injected = FakeLLM({"real": True})
+        c.set_instance("orchestrator", injected)
+        result = c.get("orchestrator")
+        assert result is injected
+        assert factory_called[0] is False
+
+    def test_set_instance_unregistered_raises(self):
+        """set_instance 未注册的组件应抛 KeyError。"""
+        c = Container({})
+        with pytest.raises(KeyError, match="未注册"):
+            c.set_instance("nonexistent", object())
+
+    def test_set_instance_then_reload_rebuilds(self):
+        """set_instance 注入后，reload 仍应通过工厂重建。"""
+        c = Container({"llm": {"model": "v1"}, "server": {"hot_reload_grace_period": 0}})
+        c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
+                   deps=[], hot_reloadable=False)
+        injected = FakeLLM({"injected": True})
+        c.set_instance("orchestrator", injected)
+        assert c.get("orchestrator") is injected
+
+        c.reload({"llm"}, {"llm": {"model": "v2"},
+                            "server": {"hot_reload_grace_period": 0}})
+        rebuilt = c.get("orchestrator")
+        assert rebuilt is not injected
+        assert rebuilt.config == {"model": "v2"}

@@ -1313,11 +1313,36 @@ async def lifespan(app: FastAPI):
             host,
         )
 
-    # Task 5: 初始化 DI 容器（用于热重载，过渡期仅注册占位，不接管组件管理）
+    # Task 4: 初始化 DI 容器 + 注册组件 + 注入 lifespan 实例
+    # 容器接管热重载：PUT /config 时检测变更段并重建受影响组件。
+    # lifespan 已完成复杂初始化（ONNX/ChromaDB/MCP），通过 set_instance
+    # 注入实例避免工厂重复创建。热重载时工厂仍会被调用重建。
     try:
-        from app import init_container
+        from app import init_container, register_components, inject_lifespan_instances, get_container
+        config["_config_path"] = CONFIG_PATH
         init_container(config)
-        logger.info("DI 容器已初始化（热重载就绪）")
+        container = get_container()
+        register_components(container)
+        inject_lifespan_instances(
+            container,
+            orchestrator=orchestrator,
+            session_logger=session_logger,
+            metrics_collector=metrics_collector,
+            metrics_store=metrics_store,
+            audit_logger=audit_logger,
+            approval_manager=approval_manager,
+            task_manager=task_manager,
+            stream_manager=stream_manager,
+            skill_loader=skill_loader,
+            mcp_manager=mcp_manager,
+            upload_manager=upload_manager,
+            etl_engine=etl_engine,
+            cron_scheduler=cron_scheduler,
+            proposal_store=proposal_store,
+            health_checker=health_checker,
+        )
+        logger.info("DI 容器已初始化并注入 %d 个 lifespan 实例（热重载就绪）",
+                    sum(1 for v in container._instances.values() if v is not None))
     except Exception as e:
         logger.warning("DI 容器初始化失败（热重载降级）: %s", e)
 

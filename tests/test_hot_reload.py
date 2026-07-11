@@ -200,5 +200,57 @@ class TestSensitiveFieldSeparation:
         assert not env_path.exists() or "LLM_MAIN_API_KEY=" not in env_path.read_text(encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Lifespan 接入容器（Task 4）
+# ---------------------------------------------------------------------------
+
+class TestLifespanContainerInjection:
+    """验证 inject_lifespan_instances 将 lifespan 创建的实例注入容器。"""
+
+    def test_inject_lifespan_instances_exists(self):
+        """inject_lifespan_instances 函数应存在于 app 模块。"""
+        from app import inject_lifespan_instances
+        assert callable(inject_lifespan_instances)
+
+    def test_inject_all_instances_bypasses_factories(self):
+        """注入后 container.get() 应返回注入的实例而非工厂创建的。"""
+        from app import init_container, register_components, inject_lifespan_instances, get_container
+        config = {"storage": {}, "monitoring": {}, "security": {},
+                  "tasks": {}, "skills": {}, "files": {}, "llm": {},
+                  "memory": {}, "guardrails": {}, "cron": {},
+                  "history": {}, "tools": {}, "server": {},
+                  "_config_path": "config.yaml"}
+        init_container(config)
+        container = get_container()
+        register_components(container)
+
+        # 模拟 lifespan 创建的实例
+        fake_orch = object()
+        fake_session_logger = object()
+        fake_metrics = object()
+        inject_lifespan_instances(
+            container,
+            orchestrator=fake_orch,
+            session_logger=fake_session_logger,
+            metrics_collector=fake_metrics,
+            metrics_store=None,
+            audit_logger=None,
+            approval_manager=None,
+            task_manager=None,
+            stream_manager=None,
+            skill_loader=None,
+            mcp_manager=None,
+            upload_manager=None,
+            etl_engine=None,
+            cron_scheduler=None,
+            proposal_store=None,
+            health_checker=None,
+        )
+
+        assert container.get("orchestrator") is fake_orch
+        assert container.get("session_logger") is fake_session_logger
+        assert container.get("metrics_collector") is fake_metrics
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

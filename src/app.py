@@ -302,6 +302,53 @@ def register_components(container) -> None:
         deps=["orchestrator", "session_logger", "mcp_manager"], hot_reloadable=False)
 
 
+def inject_lifespan_instances(
+    container,
+    *,
+    orchestrator=None,
+    session_logger=None,
+    metrics_collector=None,
+    metrics_store=None,
+    audit_logger=None,
+    approval_manager=None,
+    task_manager=None,
+    stream_manager=None,
+    skill_loader=None,
+    mcp_manager=None,
+    upload_manager=None,
+    etl_engine=None,
+    cron_scheduler=None,
+    proposal_store=None,
+    health_checker=None,
+) -> None:
+    """将 lifespan 已创建的实例注入容器，绕过工厂创建。
+
+    lifespan 完成复杂初始化（ONNX 预加载、ChromaDB 预热、异步 MCP 连接等）
+    后调用此函数，将实例注入容器。None 值跳过（后续 get 时由工厂按需创建）。
+    热重载时工厂仍会被调用重建实例。
+    """
+    instances = {
+        "orchestrator": orchestrator,
+        "session_logger": session_logger,
+        "metrics_collector": metrics_collector,
+        "metrics_store": metrics_store,
+        "audit_logger": audit_logger,
+        "approval_manager": approval_manager,
+        "task_manager": task_manager,
+        "stream_manager": stream_manager,
+        "skill_loader": skill_loader,
+        "mcp_manager": mcp_manager,
+        "upload_manager": upload_manager,
+        "etl_engine": etl_engine,
+        "cron_scheduler": cron_scheduler,
+        "proposal_store": proposal_store,
+        "health_checker": health_checker,
+    }
+    for name, instance in instances.items():
+        if instance is not None:
+            container.set_instance(name, instance)
+
+
 # ---------------------------------------------------------------------------
 # 全局异常处理器（Task 6）
 # ---------------------------------------------------------------------------
