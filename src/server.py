@@ -1313,9 +1313,23 @@ async def lifespan(app: FastAPI):
             host,
         )
 
+    # Task 5: 初始化 DI 容器（用于热重载，过渡期仅注册占位，不接管组件管理）
+    try:
+        from app import init_container
+        init_container(config)
+        logger.info("DI 容器已初始化（热重载就绪）")
+    except Exception as e:
+        logger.warning("DI 容器初始化失败（热重载降级）: %s", e)
+
     try:
         yield
     finally:
+        # Task 5: 关闭 DI 容器
+        try:
+            from app import close_container
+            close_container()
+        except Exception:
+            pass
         # 取消清理任务
         cleanup_task.cancel()
         try:
@@ -4247,15 +4261,32 @@ def update_config(req: ConfigUpdateRequest):
             # 7. 检查是否需要重启（比较 old_config 与 merged_config）
             needs_restart = _check_needs_restart(old_config, merged_config)
 
+            # 8. Task 5: 容器热重载（若容器已初始化且变更段可热重载）
+            reloaded_components: list[str] = []
+            if not needs_restart:
+                try:
+                    from app import get_container
+                    from container import detect_changed_sections
+                    container = get_container()
+                    if container is not None:
+                        changed_sections = detect_changed_sections(old_config, merged_config)
+                        if changed_sections:
+                            reloaded_components = container.reload(changed_sections, merged_config)
+                except Exception as e:
+                    logger.warning("容器热重载失败（降级到原有热更新）: %s", e)
+
         # 锁外构造响应消息与日志，减少锁持有时长
         if needs_restart:
             message = "配置已保存。部分项（LLM/路径/端口）需重启服务生效。"
+        elif reloaded_components:
+            message = f"配置已保存。{len(reloaded_components)} 个组件已热重载。"
         elif applied:
             ok_count = sum(1 for v in applied.values() if v)
             message = f"配置已保存并即时生效（{ok_count} 项热更新）。"
         else:
             message = "配置已保存。"
-        logger.info("配置已通过 API 更新，needs_restart=%s, applied=%s", needs_restart, applied)
+        logger.info("配置已通过 API 更新，needs_restart=%s, applied=%s, reloaded=%s",
+                    needs_restart, applied, reloaded_components)
         return ConfigUpdateResponse(
             status="saved", message=message, needs_restart=needs_restart
         )

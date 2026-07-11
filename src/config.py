@@ -174,6 +174,85 @@ def get_llm_timeouts(config: dict) -> tuple[float, float]:
     return activity_timeout, stream_total_timeout
 
 
+# ---------------------------------------------------------------------------
+# 敏感字段分离（Task 5）：PUT /config 时将实际值写入 .env，config.yaml 保留占位符
+# ---------------------------------------------------------------------------
+
+# 配置路径 → 环境变量名 的映射
+SENSITIVE_FIELDS: dict[str, str] = {
+    "llm.main_api_key": "LLM_MAIN_API_KEY",
+    "llm.consolidation_api_key": "LLM_CONSOLIDATION_API_KEY",
+    "security.api_key": "HERMES_API_KEY",
+    "files.ocr.vision_llm.api_key": "FILES_OCR_VISION_LLM_API_KEY",
+    "web_search.bing_api_key": "BING_API_KEY",
+    "web_search.baidu_api_key": "BAIDU_API_KEY",
+}
+
+
+def _set_nested(config: dict, path: str, value: Any) -> None:
+    """设置嵌套配置值（点分隔路径）。"""
+    keys = path.split(".")
+    for key in keys[:-1]:
+        if key not in config or not isinstance(config[key], dict):
+            config[key] = {}
+        config = config[key]
+    config[keys[-1]] = value
+
+
+def _update_env_file(env_path: str, updates: dict[str, str]) -> None:
+    """更新 .env 文件（追加或覆盖对应行）。"""
+    from pathlib import Path
+    path = Path(env_path)
+    lines = []
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    existing_keys = {line.split("=")[0] for line in lines if "=" in line}
+    for key, value in updates.items():
+        if key in existing_keys:
+            lines = [f"{key}={value}" if line.startswith(f"{key}=") else line
+                     for line in lines]
+        else:
+            lines.append(f"{key}={value}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_config_with_sensitive_separation(
+    new_config: dict, config_path: str, env_path: str
+) -> None:
+    """非敏感字段写 config.yaml，敏感字段实际值写 .env。
+
+    遍历 ``SENSITIVE_FIELDS`` 中的配置路径，若值为实际值（非 ``${...}``
+    占位符、非空），则将其写入 .env 文件并在 config.yaml 中替换为
+    ``${ENV_VAR}`` 占位符。已是占位符的值保持不变。
+
+    参数:
+        new_config: 待写入的配置字典（不会被修改，内部 deepcopy）。
+        config_path: config.yaml 输出路径。
+        env_path: .env 输出路径。
+    """
+    from copy import deepcopy
+    import yaml as _yaml
+    config_to_write = deepcopy(new_config)
+    env_updates: dict[str, str] = {}
+
+    for field_path, env_var in SENSITIVE_FIELDS.items():
+        actual_value = _get_nested(config_to_write, field_path)
+        if actual_value and not str(actual_value).startswith("${"):
+            env_updates[env_var] = str(actual_value)
+            _set_nested(config_to_write, field_path, f"${{{env_var}}}")
+
+    if env_updates:
+        _update_env_file(env_path, env_updates)
+
+    from pathlib import Path
+    Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(config_path).write_text(
+        _yaml.dump(config_to_write, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
 def load_config(config_path: str = "config.yaml") -> dict:
     """读取 YAML 配置文件并返回解析后的 dict。
 
