@@ -49,6 +49,75 @@ def close_container() -> None:
         _container = None
 
 
+# ---------------------------------------------------------------------------
+# 全局异常处理器（Task 6）
+# ---------------------------------------------------------------------------
+
+def register_exception_handlers(app) -> None:
+    """注册统一异常处理器，将 ToolError/ConfigError 子类映射为 HTTP 响应。
+
+    在 server.py 的 lifespan 中调用（或测试中手动调用）。
+
+    映射表:
+    - ToolNotFoundError → 404 {"error": "tool_not_found"}
+    - ToolPermissionDenied → 403 {"error": "permission_denied"}
+    - ToolTimeoutError → 504 {"error": "tool_timeout"}
+    - ToolExecutionError → 500 {"error": "tool_execution_error"}
+    - ConfigValidationError → 400 {"error": "config_validation_error"}
+    - ConfigReloadError → 500 {"error": "config_reload_error"}
+    - ContainerConfigError → 500 {"error": "container_config_error"}
+    """
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+    from errors import (
+        ToolNotFoundError, ToolExecutionError, ToolPermissionDenied,
+        ToolTimeoutError, ConfigValidationError, ConfigReloadError,
+        ContainerConfigError,
+    )
+
+    @app.exception_handler(ToolNotFoundError)
+    async def _handle_tool_not_found(request: Request, exc: ToolNotFoundError):
+        return JSONResponse(status_code=404, content={
+            "error": "tool_not_found", "message": str(exc),
+        })
+
+    @app.exception_handler(ToolPermissionDenied)
+    async def _handle_permission_denied(request: Request, exc: ToolPermissionDenied):
+        return JSONResponse(status_code=403, content={
+            "error": "permission_denied", "message": str(exc),
+        })
+
+    @app.exception_handler(ToolTimeoutError)
+    async def _handle_timeout(request: Request, exc: ToolTimeoutError):
+        return JSONResponse(status_code=504, content={
+            "error": "tool_timeout", "message": str(exc),
+        })
+
+    @app.exception_handler(ToolExecutionError)
+    async def _handle_tool_execution(request: Request, exc: ToolExecutionError):
+        return JSONResponse(status_code=500, content={
+            "error": "tool_execution_error", "message": str(exc),
+        })
+
+    @app.exception_handler(ConfigValidationError)
+    async def _handle_config_validation(request: Request, exc: ConfigValidationError):
+        return JSONResponse(status_code=400, content={
+            "error": "config_validation_error", "message": str(exc),
+        })
+
+    @app.exception_handler(ConfigReloadError)
+    async def _handle_config_reload(request: Request, exc: ConfigReloadError):
+        return JSONResponse(status_code=500, content={
+            "error": "config_reload_error", "message": str(exc),
+        })
+
+    @app.exception_handler(ContainerConfigError)
+    async def _handle_container_config(request: Request, exc: ContainerConfigError):
+        return JSONResponse(status_code=500, content={
+            "error": "container_config_error", "message": str(exc),
+        })
+
+
 # 当作为主模块运行时
 if __name__ == "__main__":
     import uvicorn

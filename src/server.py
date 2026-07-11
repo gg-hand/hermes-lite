@@ -1321,6 +1321,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("DI 容器初始化失败（热重载降级）: %s", e)
 
+    # Task 6: 注册全局异常处理器
+    try:
+        from app import register_exception_handlers
+        register_exception_handlers(app)
+        logger.info("全局异常处理器已注册")
+    except Exception as e:
+        logger.warning("全局异常处理器注册失败: %s", e)
+
     try:
         yield
     finally:
