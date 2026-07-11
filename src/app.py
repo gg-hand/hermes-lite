@@ -135,11 +135,23 @@ from routes.misc import router as misc_router  # noqa: E402
 from routes.health import router as health_router  # noqa: E402
 from routes.sessions import router as sessions_router  # noqa: E402
 from routes.config import router as config_router  # noqa: E402
+from routes.approvals import router as approvals_router  # noqa: E402
+from routes.proposals import router as proposals_router  # noqa: E402
+from routes.skills import router as skills_router  # noqa: E402
+from routes.cron_tools import router as cron_tools_router  # noqa: E402
+from routes.files import router as files_router  # noqa: E402
+from routes.memory import router as memory_router  # noqa: E402
 
 app.include_router(misc_router)
 app.include_router(health_router)
 app.include_router(sessions_router)
 app.include_router(config_router)
+app.include_router(approvals_router)
+app.include_router(proposals_router)
+app.include_router(skills_router)
+app.include_router(cron_tools_router)
+app.include_router(files_router)
+app.include_router(memory_router)
 
 
 # ---------------------------------------------------------------------------
