@@ -126,13 +126,23 @@ class Container:
                     )
 
     def reload(self, changed_sections: set[str], new_config: dict) -> list[str]:
-        """原子性重建:先创建全部新实例,全部成功后才替换,失败则回滚。"""
+        """原子性重建:先创建全部新实例,全部成功后才替换,失败则回滚。
+
+        hot_reloadable=False 的组件不参与重建（由软重启手动处理）。
+        """
         with self._lock:
             directly_affected = set()
             for section in changed_sections:
                 directly_affected.update(CONFIG_TO_COMPONENTS.get(section, []))
 
-            to_rebuild = self._topo_sort_dependents(directly_affected)
+            # 过滤掉未注册或 hot_reloadable=False 的组件
+            reloadable_affected = {
+                name for name in directly_affected
+                if name in self._factories
+                and self._hot_reloadable.get(name, True)
+            }
+
+            to_rebuild = self._topo_sort_dependents(reloadable_affected)
             if not to_rebuild:
                 self._config = new_config
                 return []
