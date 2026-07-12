@@ -48,6 +48,7 @@ from src.agent.skill_manager import SkillManager  # noqa: E402
 from src.guardrails import GuardrailEngine  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from src.orchestrator.chat_handler import ChatHandler  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +259,7 @@ def _make_orchestrator(
     )
     orch.skill_mgr = SkillManager()
     orch.enhanced_context_builder = EnhancedContextBuilder(orch)
+    orch.chat_handler = ChatHandler(orch)
     return orch
 
 

@@ -492,6 +492,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
     def _make_orchestrator_with_mocks(self):
         """构造一个最小化的 Orchestrator 实例（跳过 __init__）。"""
         from src.orchestrator import Orchestrator
+        from src.orchestrator.chat_handler import ChatHandler
         orch = object.__new__(Orchestrator)
         # 注入 mock 依赖
         orch.todo_registry = MagicMock()
@@ -524,6 +525,8 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch.skill_mgr = SkillManager()
         # Phase 3 Task 9: EnhancedContextBuilder（Mock，build 方法由各用例单独 AsyncMock）
         orch.enhanced_context_builder = MagicMock()
+        # Phase 3 Task 10: ChatHandler（真实实例，chat 委托到 chat_handler.chat）
+        orch.chat_handler = ChatHandler(orch)
         return orch
 
     async def test_auto_continuation_when_todo_unfinished(self):
