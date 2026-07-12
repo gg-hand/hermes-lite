@@ -21,13 +21,14 @@ logger = logging.getLogger("hermes.server")
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan wrapper：延迟导入 server.lifespan 避免循环依赖。
+    """Lifespan wrapper：延迟导入 lifespan 模块避免循环依赖。
 
-    app.py 创建 FastAPI 实例时需要 lifespan，但 server.py 需要 app 实例。
+    app.py 创建 FastAPI 实例时需要 lifespan，但 lifespan 模块需要
+    通过 `import server` 设置全局变量，server.py 需要 app 实例。
     通过 wrapper 在运行时（而非模块加载时）导入 lifespan，打破循环。
     """
-    from server import lifespan as _server_lifespan
-    async with _server_lifespan(app):
+    from lifespan import lifespan as _lifespan
+    async with _lifespan(app):
         yield
 
 
