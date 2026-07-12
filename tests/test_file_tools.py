@@ -27,7 +27,7 @@ from src.files.upload_manager import UploadManager
 from src.files.etl_engine import ETLEngine
 from src.agent.tool_registry import ToolRegistry
 from src.agent.policy import PolicyEngine, DEFAULT_RULES
-from src.agent.builtin_tools import register_file_tools
+from src.agent.tools.file_tools import register_file_tools
 
 
 def _make_um(tmpdir):

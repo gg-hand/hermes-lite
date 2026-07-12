@@ -31,7 +31,7 @@ from tests._mock_deps import install_mocks
 install_mocks()
 
 from src.agent._cancel_context import current_session_id
-from src.agent.builtin_tools import _register_update_profile
+from src.agent.tools.memory_tools import _register_update_profile
 from src.agent.tool_registry import ToolRegistry
 from src.memory.consolidation import ConsolidationEngine
 from src.memory.memory_md import MemoryMdManager

@@ -308,7 +308,7 @@ async def cancel_stream(req: CancelRequest):
             status, msg = stream_manager.force_cancel(req.session_id)
             if msg and orchestrator is not None:
                 try:
-                    from agent.builtin_tools import kill_running_process
+                    from agent.tools.shell_tools import kill_running_process
                     kill_running_process()
                 except ImportError:
                     pass

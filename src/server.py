@@ -135,7 +135,7 @@ except ImportError:
 try:
     from .agent.cron_tool_registry import CronToolRegistry
     from .agent.cron_tool_writer import register_write_cron_tool
-    from .agent.builtin_tools import register_bash_tool
+    from .agent.tools.shell_tools import register_bash_tool
     from .tasks.cron_tool_loader import (
         CronToolError,
         DEFAULT_BASE_DIR as _CRON_TOOL_BASE_DIR,
@@ -915,9 +915,9 @@ async def lifespan(app: FastAPI):
                 # 注册文件工具到 ToolRegistry
                 if orchestrator.tool_registry is not None:
                     try:
-                        from .agent.builtin_tools import register_file_tools
+                        from .agent.tools.file_tools import register_file_tools
                     except ImportError:
-                        from agent.builtin_tools import register_file_tools  # type: ignore
+                        from agent.tools.file_tools import register_file_tools  # type: ignore
                     register_file_tools(
                         orchestrator.tool_registry,
                         etl_engine,

@@ -23,7 +23,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.agent.builtin_tools import (
+from src.agent.tools.shell_tools import (
     execute_command,
     _set_running_proc,
     _get_and_clear_running_proc,

@@ -27,11 +27,11 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.builtin_tools import (  # noqa: E402
+from src.agent.tools.file_tools import (  # noqa: E402
     delete_file,
     write_file,
-    register_builtin_tools,
 )
+from src.agent.tools import register_builtin_tools  # noqa: E402
 from src.agent.file_registry import FileOperationRegistry  # noqa: E402
 from src.agent.tool_registry import ToolRegistry  # noqa: E402
 
@@ -109,7 +109,7 @@ class TestWriteFileV2WithRegistry(unittest.TestCase):
 
     def _make_v2_write_file(self):
         """构造一个 v2 版 write_file closure，模拟 register_builtin_tools 注入。"""
-        from src.agent.builtin_tools import _register_write_file_v2
+        from src.agent.tools.file_tools import _register_write_file_v2
 
         # 用 ToolRegistry 注册 v2 版
         tr = ToolRegistry()
@@ -139,7 +139,7 @@ class TestWriteFileV2WithRegistry(unittest.TestCase):
 
     def test_write_file_no_session_id_skip_record(self):
         """session_id 为 None 时跳过记录（向后兼容）。"""
-        from src.agent.builtin_tools import _register_write_file_v2
+        from src.agent.tools.file_tools import _register_write_file_v2
 
         tr = ToolRegistry()
         # get_session_id 返回 None
@@ -182,7 +182,7 @@ class TestDeleteFileV2WithRegistry(unittest.TestCase):
 
     def _make_v2_delete_file(self):
         """构造一个 v2 版 delete_file closure。"""
-        from src.agent.builtin_tools import _register_delete_file_v2
+        from src.agent.tools.file_tools import _register_delete_file_v2
 
         tr = ToolRegistry()
         _register_delete_file_v2(tr, self.registry, lambda: self.session_id)
@@ -244,7 +244,7 @@ class TestDeleteFileV2WithRegistry(unittest.TestCase):
 
     def test_delete_file_no_session_id_skip_remove(self):
         """session_id 为 None 时跳过从 registry 移除（但文件仍被删除）。"""
-        from src.agent.builtin_tools import _register_delete_file_v2
+        from src.agent.tools.file_tools import _register_delete_file_v2
 
         tr = ToolRegistry()
         _register_delete_file_v2(tr, self.registry, lambda: None)

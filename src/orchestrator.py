@@ -82,11 +82,9 @@ try:
     from .memory.decay import MemoryDecay
     from .memory.signal_pool import SignalPool
     from .agent.tool_registry import ToolRegistry
-    from .agent.builtin_tools import (
-        register_builtin_tools,
-        register_plan_tools,
-        register_memory_tools,
-    )
+    from .agent.tools import register_builtin_tools
+    from .agent.tools.plan_tools import register_plan_tools
+    from .agent.tools.memory_tools import register_memory_tools
     from .agent.intent_classifier import (
         IntentClassificationResult,
         IntentType,
@@ -109,11 +107,9 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         from memory.decay import MemoryDecay  # type: ignore
         from memory.signal_pool import SignalPool  # type: ignore
         from agent.tool_registry import ToolRegistry  # type: ignore
-        from agent.builtin_tools import (  # type: ignore
-            register_builtin_tools,
-            register_plan_tools,
-            register_memory_tools,
-        )
+        from agent.tools import register_builtin_tools  # type: ignore
+        from agent.tools.plan_tools import register_plan_tools  # type: ignore
+        from agent.tools.memory_tools import register_memory_tools  # type: ignore
         from agent.intent_classifier import (  # type: ignore
             IntentClassificationResult,
             IntentType,

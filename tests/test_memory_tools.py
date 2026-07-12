@@ -49,7 +49,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.builtin_tools import register_memory_tools  # noqa: E402
+from src.agent.tools.memory_tools import register_memory_tools  # noqa: E402
 from src.agent.policy import DEFAULT_RULES, PolicyEngine  # noqa: E402
 from src.agent.tool_registry import ToolRegistry  # noqa: E402
 from src.memory.consolidation import ConsolidationEngine  # noqa: E402

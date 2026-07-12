@@ -27,7 +27,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.agent import builtin_tools  # noqa: E402
-from src.agent.builtin_tools import BUILTIN_TOOLS, register_plan_tools  # noqa: E402
+from src.agent.tools import BUILTIN_TOOLS  # noqa: E402
+from src.agent.tools.plan_tools import register_plan_tools  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
