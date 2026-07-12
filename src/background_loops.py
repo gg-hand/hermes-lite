@@ -1,14 +1,13 @@
 """后台定时清理循环。
 
 从 server.py 提取：cleanup_loop / file_cleanup_loop / metrics_persist_loop。
-通过 sys.modules 访问 server 模块的全局组件变量，兼容 src.server 和 server 两种导入路径。
+参数注入：循环通过参数接收组件引用，不再依赖 server 模块全局反射或 state 模块。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,25 +32,11 @@ except ImportError:
 CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
 
 
-def _get_server_globals():
-    """获取 server 模块的全局组件变量。
+async def cleanup_loop(session_logger=None, metrics_store=None, orchestrator=None):
+    """定时清理古早会话的后台任务。
 
-    兼容 src.server 和 server 两种导入路径。
+    参数注入：通过参数接收组件引用，不再反射 server 模块全局。
     """
-    server_mod = sys.modules.get("src.server") or sys.modules.get("server")
-    if server_mod is None:
-        return {}
-    return {
-        "orchestrator": getattr(server_mod, "orchestrator", None),
-        "session_logger": getattr(server_mod, "session_logger", None),
-        "metrics_collector": getattr(server_mod, "metrics_collector", None),
-        "metrics_store": getattr(server_mod, "metrics_store", None),
-        "upload_manager": getattr(server_mod, "upload_manager", None),
-    }
-
-
-async def cleanup_loop():
-    """定时清理古早会话的后台任务。"""
     try:
         config = load_config(CONFIG_PATH)
     except Exception as e:
@@ -65,11 +50,6 @@ async def cleanup_loop():
 
     while True:
         try:
-            sg = _get_server_globals()
-            session_logger = sg["session_logger"]
-            metrics_store = sg["metrics_store"]
-            orchestrator = sg["orchestrator"]
-
             if session_logger is not None:
                 deleted = session_logger.delete_old_sessions(ttl_days)
                 if deleted:
@@ -87,7 +67,7 @@ async def cleanup_loop():
                 and orchestrator.history_buffer.persistence_dir
             ):
                 persist_dir = Path(orchestrator.history_buffer.persistence_dir)
-                if persist_dir.exists():
+                if persist_dir.exists() and session_logger is not None:
                     existing_sessions = {
                         s["id"] for s in session_logger.list_sessions()
                     }
@@ -97,13 +77,9 @@ async def cleanup_loop():
                         if not (candidates & existing_sessions):
                             try:
                                 f.unlink()
-                                logger.info(
-                                    "清理过期 session 历史文件: %s", f.name
-                                )
+                                logger.info("清理过期 session 历史文件: %s", f.name)
                             except OSError as e:
-                                logger.warning(
-                                    "清理历史文件失败 %s: %s", f.name, e
-                                )
+                                logger.warning("清理历史文件失败 %s: %s", f.name, e)
                     todo_dir = persist_dir / "todo"
                     if todo_dir.exists():
                         for f in todo_dir.glob("*.json"):
@@ -112,22 +88,19 @@ async def cleanup_loop():
                             if not (candidates & existing_sessions):
                                 try:
                                     f.unlink()
-                                    logger.info(
-                                        "清理过期 session todo 文件: %s",
-                                        f.name,
-                                    )
+                                    logger.info("清理过期 session todo 文件: %s", f.name)
                                 except OSError as e:
-                                    logger.warning(
-                                        "清理 todo 文件失败 %s: %s",
-                                        f.name, e,
-                                    )
+                                    logger.warning("清理 todo 文件失败 %s: %s", f.name, e)
         except Exception as e:
             logger.error("定时清理会话失败: %s", e)
         await asyncio.sleep(interval_hours * 3600)
 
 
-async def file_cleanup_loop() -> None:
-    """定时清理过期文件磁盘的后台任务。"""
+async def file_cleanup_loop(upload_manager=None) -> None:
+    """定时清理过期文件磁盘的后台任务。
+
+    参数注入：通过参数接收 upload_manager，不再反射 server 模块全局。
+    """
     try:
         config = load_config(CONFIG_PATH)
     except Exception as e:
@@ -143,9 +116,6 @@ async def file_cleanup_loop() -> None:
 
     while True:
         try:
-            sg = _get_server_globals()
-            upload_manager = sg["upload_manager"]
-
             if upload_manager is not None:
                 expired_ids = upload_manager.get_expired(ttl_days)
                 for file_id in expired_ids:
@@ -178,16 +148,14 @@ async def file_cleanup_loop() -> None:
         await asyncio.sleep(interval_hours * 3600)
 
 
-async def metrics_persist_loop() -> None:
-    """定时将监控指标增量持久化到 SQLite 的后台任务。"""
-    sg = _get_server_globals()
-    metrics_collector = sg["metrics_collector"]
-    metrics_store = sg["metrics_store"]
+async def metrics_persist_loop(metrics_collector=None, metrics_store=None,
+                                reset_event: asyncio.Event = None) -> None:
+    """定时将监控指标增量持久化到 SQLite 的后台任务。
 
+    参数注入：通过参数接收组件引用 + asyncio.Event 替代 state.metrics_baseline_reset。
+    """
     if metrics_collector is None or metrics_store is None:
         return
-
-    server_mod = sys.modules.get("src.server") or sys.modules.get("server")
 
     INITIAL_FLUSH_DELAY = 10
 
@@ -215,16 +183,14 @@ async def metrics_persist_loop() -> None:
                 next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
                 sleep_until = min(next_flush, next_midnight)
                 sleep_seconds = (sleep_until - now).total_seconds()
-            logger.info("metrics_persist_loop: 准备 sleep %.1f 秒 (is_first=%s)", sleep_seconds, is_first_flush)
+            logger.info("metrics_persist_loop: 准备 sleep %.1f 秒 (is_first=%s)",
+                        sleep_seconds, is_first_flush)
             await asyncio.sleep(sleep_seconds)
             logger.info("metrics_persist_loop: sleep 返回，开始执行 flush")
 
-            import state as _state_check
-            if _state_check.metrics_baseline_reset:
+            if reset_event is not None and reset_event.is_set():
                 baseline = metrics_collector.snapshot()
-                _state_check.metrics_baseline_reset = False
-                if server_mod is not None:
-                    server_mod._metrics_baseline_reset = False
+                reset_event.clear()
                 logger.info("metrics baseline 已重置（reset 接口触发）")
 
             current_snap = metrics_collector.snapshot()
