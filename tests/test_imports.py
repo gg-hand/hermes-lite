@@ -81,7 +81,7 @@ class TestImports(unittest.TestCase):
             "src.server",
             "src.agent.react_loop",
             "src.agent.tool_registry",
-            "src.agent.builtin_tools",
+            "src.agent.tools.__init__",
             "src.memory.consolidation",
             "src.memory.memory_md",
             "src.memory.retrieval",

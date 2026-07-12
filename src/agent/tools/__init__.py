@@ -10,7 +10,7 @@
 本 ``__init__`` 模块聚合：
 - ``BUILTIN_TOOLS``：Core Tier 工具定义清单（name/description/schema/handler）
 - ``register_builtin_tools``：将 BUILTIN_TOOLS + 元工具注册到 ToolRegistry
-- 所有子模块的公开 API re-export（向后兼容 ``from .builtin_tools import *``）
+- 所有子模块的公开 API re-export
 """
 from __future__ import annotations
 
