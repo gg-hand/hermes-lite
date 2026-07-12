@@ -388,13 +388,13 @@ class TestOrchestratorContinuation(unittest.TestCase):
     def test_has_unfinished_steps_none_dict(self):
         """todo_dict 为 None 时返回 False（不续接）。"""
         from src.orchestrator import Orchestrator
-        self.assertFalse(Orchestrator._has_unfinished_steps(None))
+        self.assertFalse(ContextBuilder.has_unfinished_steps(None))
 
     def test_has_unfinished_steps_empty_steps(self):
         """todo_dict 无 steps 时返回 False。"""
         from src.orchestrator import Orchestrator
         self.assertFalse(
-            Orchestrator._has_unfinished_steps({"goal": "g", "steps": []})
+            ContextBuilder.has_unfinished_steps({"goal": "g", "steps": []})
         )
 
     def test_has_unfinished_steps_all_completed(self):
@@ -408,7 +408,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
             ],
             "completed": True,
         }
-        self.assertFalse(Orchestrator._has_unfinished_steps(todo_dict))
+        self.assertFalse(ContextBuilder.has_unfinished_steps(todo_dict))
 
     def test_has_unfinished_steps_has_pending(self):
         """有 pending 步骤时返回 True。"""
@@ -421,7 +421,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
             ],
             "completed": False,
         }
-        self.assertTrue(Orchestrator._has_unfinished_steps(todo_dict))
+        self.assertTrue(ContextBuilder.has_unfinished_steps(todo_dict))
 
     def test_has_unfinished_steps_has_in_progress(self):
         """有 in_progress 步骤时返回 True。"""
@@ -433,7 +433,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
             ],
             "completed": False,
         }
-        self.assertTrue(Orchestrator._has_unfinished_steps(todo_dict))
+        self.assertTrue(ContextBuilder.has_unfinished_steps(todo_dict))
 
     def test_has_unfinished_steps_has_failed(self):
         """有 failed 步骤时返回 True（允许 LLM 重试）。"""
@@ -445,7 +445,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
             ],
             "completed": False,
         }
-        self.assertTrue(Orchestrator._has_unfinished_steps(todo_dict))
+        self.assertTrue(ContextBuilder.has_unfinished_steps(todo_dict))
 
     def test_build_continuation_message_with_todo(self):
         """构造续接消息含 goal + 进度 + 未完成步骤。"""
@@ -463,7 +463,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
             ],
             "completed": False,
         }
-        msg = orch._build_continuation_message(todo_dict)
+        msg = orch.context_builder.build_continuation_message(todo_dict)
         self.assertIn("上一轮已达循环上限", msg)
         self.assertIn("完成报告", msg)
         self.assertIn("1/3", msg)
@@ -476,7 +476,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
         from src.orchestrator import Orchestrator
         orch = object.__new__(Orchestrator)
         orch.context_builder = ContextBuilder()
-        msg = orch._build_continuation_message(None)
+        msg = orch.context_builder.build_continuation_message(None)
         self.assertIn("上一轮已达循环上限", msg)
         self.assertIn("无需重复已完成的工作", msg)
 

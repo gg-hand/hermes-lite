@@ -110,25 +110,25 @@ class TestFormatTodoForInjection(unittest.TestCase):
         return orch
 
     def test_method_exists(self):
-        """Orchestrator 类应包含 _format_todo_for_injection 方法。"""
-        self.assertTrue(hasattr(Orchestrator, "_format_todo_for_injection"))
-        self.assertTrue(callable(getattr(Orchestrator, "_format_todo_for_injection")))
+        """ContextBuilder 类应包含 format_todo 方法。"""
+        self.assertTrue(hasattr(ContextBuilder, "format_todo"))
+        self.assertTrue(callable(getattr(ContextBuilder, "format_todo")))
 
     def test_none_todo_dict_returns_empty(self):
         """todo_dict 为 None 时返回空串。"""
         orch = self._make_orchestrator()
-        self.assertEqual(orch._format_todo_for_injection(None), "")
+        self.assertEqual(orch.context_builder.format_todo(None), "")
 
     def test_empty_dict_returns_empty(self):
         """todo_dict 为空 dict 时返回空串。"""
         orch = self._make_orchestrator()
-        self.assertEqual(orch._format_todo_for_injection({}), "")
+        self.assertEqual(orch.context_builder.format_todo({}), "")
 
     def test_no_steps_returns_empty(self):
         """todo_dict 无 steps 字段时返回空串。"""
         orch = self._make_orchestrator()
         self.assertEqual(
-            orch._format_todo_for_injection({"goal": "g", "steps": []}),
+            orch.context_builder.format_todo({"goal": "g", "steps": []}),
             "",
         )
 
@@ -144,7 +144,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             ],
             "completed": False,
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertTrue(section.startswith("## 当前计划进度"))
         self.assertIn("**目标**: 完成 T5 任务", section)
         self.assertIn("**总进度**: 1/3", section)
@@ -162,7 +162,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             ],
             "completed": False,
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         # completed -> [x]
         self.assertIn("[x] 已完成步骤", section)
         # in_progress / pending / failed -> [ ]
@@ -181,7 +181,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             ],
             "completed": True,
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertIn("**总进度**: 2/2", section)
         # 所有步骤都标 [x]
         self.assertIn("[x] s1", section)
@@ -198,7 +198,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             ],
             "completed": False,
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertIn("**总进度**: 0/2", section)
 
     def test_reminder_footer(self):
@@ -209,7 +209,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             "steps": [{"id": 0, "content": "s1", "status": "in_progress"}],
             "completed": False,
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertIn(
             "提醒：每完成一个步骤，必须调用 update_todo 标记为 completed",
             section,
@@ -228,7 +228,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
         todo_dict = {
             "steps": [{"id": 0, "content": "s1", "status": "in_progress"}],
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertIn("**目标**: ", section)
 
     def test_missing_status_treated_as_uncompleted(self):
@@ -238,7 +238,7 @@ class TestFormatTodoForInjection(unittest.TestCase):
             "goal": "g",
             "steps": [{"id": 0, "content": "s1"}],  # 无 status
         }
-        section = orch._format_todo_for_injection(todo_dict)
+        section = orch.context_builder.format_todo(todo_dict)
         self.assertIn("[ ] s1", section)
         self.assertIn("**总进度**: 0/1", section)
 
@@ -485,7 +485,7 @@ class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
         """
         orch = self._make_orchestrator(with_todo_registry=True)
         # 直接调用 _format_todo_for_injection 验证空 steps 降级
-        section = orch._format_todo_for_injection(
+        section = orch.context_builder.format_todo(
             {"goal": "g", "steps": [], "completed": False}
         )
         self.assertEqual(section, "")

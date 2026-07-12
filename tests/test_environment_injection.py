@@ -120,21 +120,21 @@ class TestBuildEnvironmentSection(unittest.TestCase):
         return orch
 
     def test_method_exists(self):
-        """Orchestrator 类应包含 _build_environment_section 方法。"""
-        self.assertTrue(hasattr(Orchestrator, "_build_environment_section"))
-        self.assertTrue(callable(getattr(Orchestrator, "_build_environment_section")))
+        """ContextBuilder 类应包含 build_environment 方法。"""
+        self.assertTrue(hasattr(ContextBuilder, "build_environment"))
+        self.assertTrue(callable(getattr(ContextBuilder, "build_environment")))
 
     def test_returns_non_empty_string(self):
         """方法返回值应为非空字符串。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         self.assertIsInstance(section, str)
         self.assertGreater(len(section), 0)
 
     def test_section_starts_with_header(self):
         """环境信息段应以 '## 运行环境' markdown 标题开头。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         self.assertTrue(
             section.startswith("## 运行环境"),
             f"环境信息段应以 '## 运行环境' 开头，实际开头: {section[:30]!r}",
@@ -143,7 +143,7 @@ class TestBuildEnvironmentSection(unittest.TestCase):
     def test_section_contains_required_fields(self):
         """环境信息段应包含 5 个必需字段。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         # 必需字段标题
         self.assertIn("操作系统:", section)
         self.assertIn("工作目录:", section)
@@ -154,20 +154,20 @@ class TestBuildEnvironmentSection(unittest.TestCase):
     def test_section_contains_real_os_info(self):
         """环境信息段应含真实的 OS 信息（与 platform.system 一致）。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         expected_os = f"{platform.system()} {platform.release()}"
         self.assertIn(expected_os, section)
 
     def test_section_contains_real_cwd(self):
         """环境信息段应含真实的工作目录（与 os.getcwd() 一致）。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         self.assertIn(os.getcwd(), section)
 
     def test_section_contains_real_python_path(self):
         """环境信息段应含真实的 Python 解释器路径（与 sys.executable 一致）。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         self.assertIn(sys.executable, section)
 
     def test_section_shell_adapt_windows(self):
@@ -175,7 +175,7 @@ class TestBuildEnvironmentSection(unittest.TestCase):
         if platform.system() != "Windows":
             self.skipTest("仅在 Windows 平台下运行")
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         # 提取 Shell 行
         shell_line = next(
             (line for line in section.splitlines() if line.startswith("- Shell:")),
@@ -190,7 +190,7 @@ class TestBuildEnvironmentSection(unittest.TestCase):
         if platform.system() == "Windows":
             self.skipTest("仅在非 Windows 平台下运行")
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         shell_line = next(
             (line for line in section.splitlines() if line.startswith("- Shell:")),
             None,
@@ -202,7 +202,7 @@ class TestBuildEnvironmentSection(unittest.TestCase):
     def test_section_python_cmd_is_python3_or_python(self):
         """Python 启动命令字段应为 python3 或 python。"""
         orch = self._make_orchestrator()
-        section = orch._build_environment_section()
+        section = orch.context_builder.build_environment()
         cmd_line = next(
             (
                 line
@@ -218,8 +218,8 @@ class TestBuildEnvironmentSection(unittest.TestCase):
     def test_section_stable_within_same_process(self):
         """同一进程内多次调用返回结果一致（运行时真实值稳定）。"""
         orch = self._make_orchestrator()
-        section1 = orch._build_environment_section()
-        section2 = orch._build_environment_section()
+        section1 = orch.context_builder.build_environment()
+        section2 = orch.context_builder.build_environment()
         self.assertEqual(section1, section2)
 
 

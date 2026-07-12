@@ -331,7 +331,7 @@ class ContextManager:
         markdown 段后传入。两者均属缓存失效区，不影响 system_text 稳定性。
 
         新增 ``env_section`` 注入字段（运行环境信息段），由调用方通过
-        :meth:`Orchestrator._build_environment_section` 构造后传入。注入
+        :meth:`ContextBuilder.build_environment` 构造后传入。注入
         位置在 messages[0] **最前面**（在 ``time_context`` 之前），便于
         LLM 优先感知运行环境。该字段属缓存失效区，不影响 system_text
         稳定性。

@@ -80,7 +80,7 @@ class CronIsolator:
 
         # 0. 注入运行环境信息
         try:
-            env_section = orch._build_environment_section()
+            env_section = orch.context_builder.build_environment()
             if env_section:
                 injection_text = env_section
         except Exception as e:

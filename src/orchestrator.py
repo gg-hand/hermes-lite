@@ -1019,12 +1019,12 @@ class Orchestrator:
                     logger.warning("获取 TodoList 失败，跳过自动续接: %s", e)
                     todo_dict = None
 
-            if not self._has_unfinished_steps(todo_dict):
+            if not ContextBuilder.has_unfinished_steps(todo_dict):
                 # TodoList 全部完成或不存在 → 不续接
                 break
 
             # 构造续接消息，继续循环（不重置 messages）
-            continuation_msg = self._build_continuation_message(todo_dict)
+            continuation_msg = self.context_builder.build_continuation_message(todo_dict)
             current_user_input = continuation_msg
             current_history = messages_used  # 保留全部上下文
             logger.info(
@@ -1081,7 +1081,7 @@ class Orchestrator:
         # 3. 记录消息到 session_logger（持久化原始 response_text，保留完整上下文）
         if self.session_logger is not None:
             try:
-                self._ensure_session(session_id)
+                self.session_mgr.ensure_session(session_id)
                 self.session_logger.log_message(
                     session_id=session_id,
                     role="user",
@@ -1127,7 +1127,7 @@ class Orchestrator:
 
         # 6. 首次对话后异步生成会话标题（fire-and-forget，不阻塞响应返回）
         # cron 会话跳过（由 CronScheduler 直接设置 schedule.name）
-        self._maybe_generate_title_async(session_id, user_input)
+        self.session_mgr.generate_title_async(session_id, user_input)
 
         # Phase 9 Task 6 接入点 C: 返回 filtered_response（用户可见脱敏文本）
         return filtered_response
@@ -1522,7 +1522,7 @@ class Orchestrator:
 
                     # 在 done 事件捕获后、yield 前触发标题生成（避免 finally
                     # 块在 GeneratorExit 期间创建 task 失败被静默吞掉的问题）
-                    self._maybe_generate_title_async(session_id, user_input)
+                    self.session_mgr.generate_title_async(session_id, user_input)
 
                 yield event  # 透传给 server.py
 
@@ -1598,7 +1598,7 @@ class Orchestrator:
             # 3. 批量记录到 session_logger（即使流被中断也保证保存）
             if self.session_logger is not None:
                 try:
-                    self._ensure_session(session_id)
+                    self.session_mgr.ensure_session(session_id)
                     # 先记录 user 输入
                     self.session_logger.log_message(
                         session_id=session_id,
@@ -1687,39 +1687,6 @@ class Orchestrator:
                         await self._trigger_consolidation(session_id)
                 except Exception as e:
                     logger.warning("consolidation 信息累加或触发失败: %s", e)
-
-    def _maybe_generate_title_async(
-        self, session_id: str, user_input: str
-    ) -> None:
-        """异步生成会话标题（fire-and-forget）。委托给 SessionManager。"""
-        self.session_mgr.generate_title_async(session_id, user_input)
-
-    async def _generate_title_task(
-        self, session_id: str, user_input: str
-    ) -> None:
-        """生成标题任务。委托给 SessionManager。"""
-        await self.session_mgr._generate_title_task(session_id, user_input)
-
-    def _ensure_session(self, session_id: str) -> None:
-        """确保 session 存在，不存在则创建。委托给 SessionManager。"""
-        self.session_mgr.ensure_session(session_id)
-
-    def _build_environment_section(self) -> str:
-        """构造运行环境信息段。委托给 ContextBuilder。"""
-        return self.context_builder.build_environment()
-
-    def _format_todo_for_injection(self, todo_dict: Optional[dict]) -> str:
-        """将 TodoList dict 格式化为"## 当前计划进度"段。委托给 ContextBuilder。"""
-        return self.context_builder.format_todo(todo_dict)
-
-    @staticmethod
-    def _has_unfinished_steps(todo_dict: Optional[dict]) -> bool:
-        """检查 TodoList 是否有未完成步骤。委托给 ContextBuilder。"""
-        return ContextBuilder.has_unfinished_steps(todo_dict)
-
-    def _build_continuation_message(self, todo_dict: Optional[dict]) -> str:
-        """构造自动续接消息。委托给 ContextBuilder。"""
-        return self.context_builder.build_continuation_message(todo_dict)
 
     # ------------------------------------------------------------------
     # P1-3: Skill 激活状态管理（L2 body 注入）
@@ -1823,7 +1790,7 @@ class Orchestrator:
         # 便于 LLM 优先感知运行环境（OS / Shell / Python 路径），生成贴合
         # 环境的指令。环境信息为运行时真实值，同一进程内多次调用稳定。
         try:
-            env_section = self._build_environment_section()
+            env_section = self.context_builder.build_environment()
             if env_section:
                 if injection_text:
                     injection_text = f"{env_section}\n\n{injection_text}"
@@ -1853,7 +1820,7 @@ class Orchestrator:
         if self.todo_registry is not None:
             try:
                 todo_dict = self.todo_registry.get_todo_dict(session_id)
-                todo_section = self._format_todo_for_injection(todo_dict)
+                todo_section = self.context_builder.format_todo(todo_dict)
                 if todo_section:
                     if injection_text:
                         injection_text = f"{injection_text}\n\n{todo_section}"
