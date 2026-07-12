@@ -62,7 +62,7 @@ class TestHotReload:
         """llm 配置变更时，orchestrator（方案B整体注册）被重建。"""
         c = Container({"llm": {"model": "v1"}})
         c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
         old_orch = c.get("orchestrator")
 
         c.reload({"llm"}, {"llm": {"model": "v2"}})
@@ -85,7 +85,7 @@ class TestHotReload:
 
         c = Container({"llm": {"model": "v1"}})
         c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
         original = c.get("orchestrator")
 
         # 替换 factory 为会失败的版本
@@ -100,7 +100,7 @@ class TestHotReload:
     def test_delayed_close(self):
         c = Container({"llm": {"model": "v1"}, "server": {"hot_reload_grace_period": 0}})
         c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
         old = c.get("orchestrator")
 
         c.reload({"llm"}, {"llm": {"model": "v2"}, "server": {"hot_reload_grace_period": 0}})
@@ -113,7 +113,7 @@ class TestComponentRef:
     def test_ref_forwards_to_latest(self):
         c = Container({"llm": {"model": "v1"}})
         c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
         ref = ComponentRef(c, "orchestrator")
         assert ref.config == {"model": "v1"}
 
@@ -227,7 +227,7 @@ class TestSetInstance:
         """set_instance 注入后，reload 仍应通过工厂重建。"""
         c = Container({"llm": {"model": "v1"}, "server": {"hot_reload_grace_period": 0}})
         c.register("orchestrator", lambda c: FakeLLM(c.config["llm"]),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
         injected = FakeLLM({"injected": True})
         c.set_instance("orchestrator", injected)
         assert c.get("orchestrator") is injected

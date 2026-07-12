@@ -185,7 +185,10 @@ class Container:
             return to_rebuild
 
     def _topo_sort_dependents(self, directly_affected: set[str]) -> list[str]:
-        """拓扑排序:返回所有需要重建的组件(直接受影响 + 级联依赖者)。"""
+        """拓扑排序:返回所有需要重建的组件(直接受影响 + 级联依赖者)。
+
+        hot_reloadable=False 的组件不参与重建（直接和级联都不参与）。
+        """
         # 构建反向依赖图:谁依赖我 → 我重建时谁也要重建
         reverse_deps: dict[str, list[str]] = {}
         for name, deps in self._deps.items():
@@ -203,7 +206,7 @@ class Container:
             visited.add(name)
             result.append(name)
             for dependent in reverse_deps.get(name, []):
-                if dependent not in visited:
+                if dependent not in visited and self._hot_reloadable.get(dependent, True):
                     queue.append(dependent)
 
         # 拓扑排序:按依赖顺序排列(先重建被依赖的,后重建依赖者)

@@ -72,7 +72,7 @@ class TestLLMHotReload:
                 self.closed = True
 
         c.register("orchestrator", lambda c: FakeOrch(c.config),
-                   deps=[], hot_reloadable=False)
+                   deps=[], hot_reloadable=True)
 
         old_orch = c.get("orchestrator")
 
@@ -111,7 +111,8 @@ class TestSecurityHotReload:
         reloaded = c.reload({"security"}, {"security": {"enabled": False},
                                            "server": {"hot_reload_grace_period": 0}})
         assert "approval_manager" in reloaded
-        assert "orchestrator" in reloaded
+        # orchestrator hot_reloadable=False，不参与重建（由软重启处理）
+        assert "orchestrator" not in reloaded
         assert c.get("approval_manager").enabled is False
 
 
@@ -281,8 +282,9 @@ class TestHotReloadEndToEnd:
                    hot_reloadable=False)
         return c
 
-    def test_llm_change_rebuilds_orchestrator_only(self):
-        """llm 配置变更只重建 orchestrator，不重建其他组件。"""
+    def test_llm_change_skips_orchestrator_when_not_reloadable(self):
+        """llm 配置变更映射到 orchestrator，但 orchestrator hot_reloadable=False
+        时不会被重建（由软重启处理），其他组件也不受影响。"""
         c = self._make_container()
         old_orch = c.get("orchestrator")
         old_metrics = c.get("metrics_collector")
@@ -291,13 +293,14 @@ class TestHotReloadEndToEnd:
         new_config["llm"] = {"model": "v2"}
         reloaded = c.reload({"llm"}, new_config)
 
-        assert "orchestrator" in reloaded
+        assert "orchestrator" not in reloaded
         assert "metrics_collector" not in reloaded
-        assert c.get("orchestrator") is not old_orch
+        assert c.get("orchestrator") is old_orch
         assert c.get("metrics_collector") is old_metrics
 
-    def test_monitoring_change_rebuilds_metrics_and_cascades_to_orchestrator(self):
-        """monitoring 配置变更重建 metrics 组件，级联重建 orchestrator。"""
+    def test_monitoring_change_rebuilds_metrics_not_orchestrator(self):
+        """monitoring 配置变更重建 metrics 组件，orchestrator 因 hot_reloadable=False
+        不参与级联重建（由软重启处理）。"""
         c = self._make_container()
         old_orch = c.get("orchestrator")
         old_metrics = c.get("metrics_collector")
@@ -309,13 +312,15 @@ class TestHotReloadEndToEnd:
         assert "metrics_collector" in reloaded
         assert "metrics_store" in reloaded
         assert "audit_logger" in reloaded
-        # orchestrator 依赖 metrics_collector/audit_logger，级联重建
-        assert "orchestrator" in reloaded
-        assert c.get("orchestrator") is not old_orch
+        # orchestrator 依赖 metrics_collector/audit_logger，但 hot_reloadable=False
+        # 级联过滤生效，不参与重建
+        assert "orchestrator" not in reloaded
+        assert c.get("orchestrator") is old_orch
         assert c.get("metrics_collector") is not old_metrics
 
-    def test_security_change_rebuilds_approval_and_orchestrator(self):
-        """security 配置变更重建 approval_manager 和 orchestrator。"""
+    def test_security_change_rebuilds_approval_not_orchestrator(self):
+        """security 配置变更重建 approval_manager，orchestrator 因 hot_reloadable=False
+        不参与重建（由软重启处理）。"""
         c = self._make_container()
         old_approval = c.get("approval_manager")
         old_orch = c.get("orchestrator")
@@ -325,9 +330,9 @@ class TestHotReloadEndToEnd:
         reloaded = c.reload({"security"}, new_config)
 
         assert "approval_manager" in reloaded
-        assert "orchestrator" in reloaded
+        assert "orchestrator" not in reloaded
         assert c.get("approval_manager") is not old_approval
-        assert c.get("orchestrator") is not old_orch
+        assert c.get("orchestrator") is old_orch
 
     def test_server_change_rebuilds_nothing(self):
         """server 配置变更不重建任何组件（映射为空列表）。"""
@@ -341,8 +346,9 @@ class TestHotReloadEndToEnd:
         assert reloaded == []
         assert c.get("orchestrator") is old_orch
 
-    def test_storage_change_rebuilds_session_logger_and_orchestrator(self):
-        """storage 配置变更重建 session_logger 和 orchestrator。"""
+    def test_storage_change_rebuilds_session_logger_not_orchestrator(self):
+        """storage 配置变更重建 session_logger，orchestrator 因 hot_reloadable=False
+        不参与重建（由软重启处理）。"""
         c = self._make_container()
         old_logger = c.get("session_logger")
         old_orch = c.get("orchestrator")
@@ -352,9 +358,9 @@ class TestHotReloadEndToEnd:
         reloaded = c.reload({"storage"}, new_config)
 
         assert "session_logger" in reloaded
-        assert "orchestrator" in reloaded
+        assert "orchestrator" not in reloaded
         assert c.get("session_logger") is not old_logger
-        assert c.get("orchestrator") is not old_orch
+        assert c.get("orchestrator") is old_orch
 
 
 if __name__ == "__main__":
