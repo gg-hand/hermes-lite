@@ -203,7 +203,7 @@ def close_container() -> None:
 
 def _create_session_logger(config: dict):
     """从 storage 配置创建 SessionLogger。"""
-    from monitoring.session_logger import SessionLogger
+    from storage.sqlite_log import SessionLogger
     storage_cfg = config.get("storage", {})
     sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
     return SessionLogger(db_path=sqlite_path)
@@ -226,7 +226,7 @@ def _create_metrics_store(config: dict, session_logger=None):
     if not monitoring_cfg.get("daily_persistence", True):
         return None
     try:
-        from monitoring.metrics import MetricsStore
+        from monitoring.metrics_store import MetricsStore
         storage_cfg = config.get("storage", {})
         sqlite_path = storage_cfg.get("sqlite_path", "data/sessions.db")
         return MetricsStore(db_path=sqlite_path)
@@ -236,7 +236,7 @@ def _create_metrics_store(config: dict, session_logger=None):
 
 def _create_audit_logger(config: dict):
     """从 monitoring 配置创建 AuditLogger。"""
-    from monitoring.audit import AuditLogger
+    from agent.audit import AuditLogger
     monitoring_cfg = config.get("monitoring", {})
     if not monitoring_cfg.get("enabled", True):
         return None
@@ -248,7 +248,7 @@ def _create_audit_logger(config: dict):
 def _create_approval_manager(config: dict, metrics_collector=None):
     """从 security 配置创建 ApprovalManager。"""
     try:
-        from security.approval_manager import ApprovalManager
+        from agent.approval import ApprovalManager
         security_cfg = config.get("security", {})
         approval_timeout = float(security_cfg.get("approval_timeout_seconds", 300))
         return ApprovalManager(timeout=approval_timeout, metrics=metrics_collector)
@@ -268,14 +268,14 @@ def _create_task_manager(config: dict):
 
 def _create_stream_manager():
     """创建 StreamManager（无配置依赖）。"""
-    from agent.stream_manager import StreamManager
+    from stream_manager import StreamManager
     return StreamManager()
 
 
 def _create_skill_loader():
     """创建 SkillLoader（无配置依赖）。"""
     try:
-        from skills.skill_loader import SkillLoader
+        from skill.loader import SkillLoader
         return SkillLoader()
     except Exception:
         return None
@@ -284,7 +284,7 @@ def _create_skill_loader():
 def _create_proposal_store():
     """创建 ProposalStore（无配置依赖）。"""
     try:
-        from cron.proposal_store import ProposalStore
+        from agent.cron_proposals import ProposalStore
         return ProposalStore()
     except Exception:
         return None
@@ -293,7 +293,7 @@ def _create_proposal_store():
 def _create_mcp_manager(config: dict, skill_loader=None):
     """从 skills 配置创建 MCPManager。"""
     try:
-        from skills.mcp_manager import MCPManager
+        from mcp.manager import MCPManager
         return MCPManager()
     except Exception:
         return None
@@ -322,8 +322,8 @@ def _create_etl_engine(config: dict, upload_manager=None, orchestrator=None):
     """从 files 配置创建 ETLEngine。"""
     try:
         from files.etl_engine import ETLEngine
-        from files.waterfall_parser import WaterfallParser
-        from files.document_chunker import DocumentChunker
+        from files.parser import WaterfallParser
+        from files.chunker import DocumentChunker
         files_cfg = config.get("files", {}) or {}
         llm_fallback = bool(files_cfg.get("llm_fallback_enabled", False))
         water_parser = WaterfallParser(
@@ -353,17 +353,29 @@ def _create_etl_engine(config: dict, upload_manager=None, orchestrator=None):
 def _create_cron_scheduler(config: dict, orchestrator=None):
     """从 tasks 配置创建 CronScheduler。"""
     try:
-        from cron.cron_scheduler import CronScheduler
+        from tasks.scheduler import CronScheduler
         return CronScheduler()
     except Exception:
         return None
 
 
-def _create_health_checker(orchestrator=None, session_logger=None, mcp_manager=None):
-    """创建 HealthChecker（无配置依赖，依赖运行时组件）。"""
+def _create_health_checker(orchestrator=None, session_logger=None, mcp_manager=None,
+                           skill_loader=None, metrics_collector=None, proposal_store=None):
+    """创建 HealthChecker（无配置依赖，依赖运行时组件）。
+
+    需补全 6 个参数，否则 HealthChecker.__init__ 的 orchestrator 必填参数
+    会抛 TypeError，被 except 静默吞掉导致工厂永远返回 None。
+    """
     try:
         from monitoring.health import HealthChecker
-        return HealthChecker()
+        return HealthChecker(
+            orchestrator=orchestrator,
+            session_logger_global=session_logger,
+            mcp_manager=mcp_manager,
+            skill_loader=skill_loader,
+            metrics_collector=metrics_collector,
+            proposal_store=proposal_store,
+        )
     except Exception:
         return None
 
@@ -446,8 +458,17 @@ def register_components(container) -> None:
         deps=["orchestrator"], hot_reloadable=False)
 
     container.register("health_checker",
-        lambda c: _create_health_checker(c.get("orchestrator"), c.get("session_logger"), c.get("mcp_manager")),
-        deps=["orchestrator", "session_logger", "mcp_manager"], hot_reloadable=False)
+        lambda c: _create_health_checker(
+            orchestrator=c.get("orchestrator"),
+            session_logger=c.get("session_logger"),
+            mcp_manager=c.get("mcp_manager"),
+            skill_loader=c.get("skill_loader"),
+            metrics_collector=c.get("metrics_collector"),
+            proposal_store=c.get("proposal_store"),
+        ),
+        deps=["orchestrator", "session_logger", "mcp_manager", "skill_loader",
+              "metrics_collector", "proposal_store"],
+        hot_reloadable=False)
 
 
 def inject_lifespan_instances(
