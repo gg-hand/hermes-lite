@@ -30,6 +30,7 @@ from src.memory.context_manager import ContextManager
 from src.agent.context_builder import ContextBuilder
 from src.agent.cron_isolator import CronIsolator
 from src.orchestrator import Orchestrator
+from src.orchestrator.enhanced_context import EnhancedContextBuilder
 
 
 def _make_env():
@@ -61,6 +62,7 @@ def _make_orchestrator(cm: ContextManager) -> Orchestrator:
     # 委托管理器（方法对象模式，持有 orch 引用）
     orch.context_builder = ContextBuilder()
     orch.cron_isolator = CronIsolator(orchestrator=orch)
+    orch.enhanced_context_builder = EnhancedContextBuilder(orch)
     return orch
 
 
@@ -98,7 +100,7 @@ class TestFileInjectionIntegration(unittest.TestCase):
         """调用 _build_enhanced_context 并返回结果。"""
         history: List[Dict[str, Any]] = []
         return _run_async(
-            self.orch._build_enhanced_context(session_id, user_input, history)
+            self.orch.enhanced_context_builder.build(session_id, user_input, history)
         )
 
     # ------------------------------------------------------------------

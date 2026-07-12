@@ -118,7 +118,7 @@ class CronIsolator:
             )
 
         # 2. 统一前置 injection_text 到 history
-        condensed_history = await orch._apply_condenser(history)
+        condensed_history = await orch.enhanced_context_builder._apply_condenser(history)
         if injection_text:
             enhanced_history = [
                 {"role": "user", "content": injection_text}

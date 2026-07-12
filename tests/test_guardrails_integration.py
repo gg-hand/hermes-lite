@@ -47,6 +47,7 @@ from src.agent.session_manager import SessionManager  # noqa: E402
 from src.agent.skill_manager import SkillManager  # noqa: E402
 from src.guardrails import GuardrailEngine  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,7 @@ def _make_orchestrator(
         llm_client=None, session_logger=session_logger
     )
     orch.skill_mgr = SkillManager()
+    orch.enhanced_context_builder = EnhancedContextBuilder(orch)
     return orch
 
 

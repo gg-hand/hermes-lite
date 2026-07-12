@@ -522,6 +522,8 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         orch.msg_persistence = MessagePersistence(orchestrator=orch)
         orch.session_mgr = SessionManager(llm_client=None, session_logger=None)
         orch.skill_mgr = SkillManager()
+        # Phase 3 Task 9: EnhancedContextBuilder（Mock，build 方法由各用例单独 AsyncMock）
+        orch.enhanced_context_builder = MagicMock()
         return orch
 
     async def test_auto_continuation_when_todo_unfinished(self):
@@ -552,7 +554,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         }
 
         # mock _build_enhanced_context 返回简单三元组（async，spec Task 5.8）
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         # mock _persist_new_messages 避免历史缓冲逻辑（sync，保持 MagicMock）
@@ -587,7 +589,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
             "completed": True,
         }
 
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
@@ -606,7 +608,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
 
         orch.react_loop.run.return_value = ("partial", [], False, "normal")
 
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
@@ -624,7 +626,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
 
         orch.react_loop.run.return_value = ("done", [], True, "normal")
 
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
@@ -656,7 +658,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
             "completed": False,
         }
 
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
@@ -685,7 +687,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
 
         # 模拟正常完成
         orch.react_loop.run.return_value = ("done", [], True, "normal")
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()
@@ -724,7 +726,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
             "steps": [{"id": 0, "status": "in_progress", "content": "step1"}],
             "completed": False,
         }
-        orch._build_enhanced_context = AsyncMock(
+        orch.enhanced_context_builder.build = AsyncMock(
             return_value=("system", [], None)
         )
         orch._persist_new_messages = MagicMock()

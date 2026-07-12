@@ -34,6 +34,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 from src.memory.cron_isolation import CronIsolation  # noqa: E402
 from src.agent.context_builder import ContextBuilder  # noqa: E402
 from src.agent.cron_isolator import CronIsolator  # noqa: E402
@@ -70,8 +71,11 @@ def _make_orchestrator(
     # ops-reliability-uplift Task 7: cron_inject_history_enabled 开关
     orch.cron_inject_history_enabled = cron_inject_history_enabled
 
+    # EnhancedContextBuilder: 注入真实实例（_apply_condenser 由下方 AsyncMock 覆盖）
+    orch.enhanced_context_builder = EnhancedContextBuilder(orch)
+
     # _apply_condenser: 直接返回原 history（隔离 condenser 副作用）
-    orch._apply_condenser = AsyncMock(side_effect=lambda h: h)
+    orch.enhanced_context_builder._apply_condenser = AsyncMock(side_effect=lambda h: h)
 
     # _build_cron_tools: 返回 None（隔离工具过滤逻辑）
     orch._build_cron_tools = MagicMock(return_value=None)

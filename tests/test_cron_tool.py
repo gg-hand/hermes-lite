@@ -783,6 +783,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.react_loop = _MockReactLoopForCache()
         # 构造 Orchestrator（绕过完整初始化，只设置需要的属性）
         from src.orchestrator import Orchestrator
+        from src.orchestrator.enhanced_context import EnhancedContextBuilder
         self.orch = Orchestrator.__new__(Orchestrator)
         self.orch.tool_registry = self.global_registry
         self.orch.react_loop = self.react_loop
@@ -799,13 +800,14 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         self.orch.context_builder = ContextBuilder()
         self.orch.cron_isolator = CronIsolator(orchestrator=self.orch)
+        self.orch.enhanced_context_builder = EnhancedContextBuilder(self.orch)
 
     def tearDown(self):
         self.sandbox.cleanup()
 
     async def test_user_session_returns_none_tools_override(self):
         """用户会话 _build_enhanced_context 返回 tools_override=None。"""
-        system_text, history, tools_override = await self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch.enhanced_context_builder.build(
             session_id="user_session_123",
             user_input="hello",
             history=[],
@@ -814,7 +816,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
 
     async def test_cron_session_without_deps_returns_none(self):
         """cron 会话但 cron_scheduler 未注入时返回 None（降级）。"""
-        system_text, history, tools_override = await self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch.enhanced_context_builder.build(
             session_id="cron:sched1",
             user_input="hello",
             history=[],
@@ -934,7 +936,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         # 模拟 chat() 路径：构建 context + 调用 react_loop.run
         # 注：_build_enhanced_context 已 async（Phase 10），需 await。
         # _MockReactLoopForCache.run 保持同步（测试直接调用，不经生产代码）。
-        system_text, history, tools_override = await self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch.enhanced_context_builder.build(
             session_id="cron:sched4", user_input="hi", history=[]
         )
         self.assertIsNotNone(tools_override)
@@ -951,7 +953,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
 
     async def test_react_loop_user_session_receives_none(self):
         """用户会话 ReactLoop.run 收到 tools_override=None。"""
-        system_text, history, tools_override = await self.orch._build_enhanced_context(
+        system_text, history, tools_override = await self.orch.enhanced_context_builder.build(
             session_id="user_xxx", user_input="hi", history=[]
         )
         self.orch.react_loop.run(

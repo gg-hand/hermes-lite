@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
     import sys
     from pathlib import Path
 
-    _SRC_DIR = str(Path(__file__).resolve().parent)
+    _SRC_DIR = str(Path(__file__).resolve().parent.parent)
     if _SRC_DIR not in sys.path:
         sys.path.insert(0, _SRC_DIR)
     from config import load_config  # type: ignore
@@ -189,6 +189,9 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
         from guardrails import GuardrailEngine  # type: ignore
     except ImportError:  # pragma: no cover
         GuardrailEngine = None  # type: ignore
+
+# Phase 3 Task 9: EnhancedContextBuilder（增强上下文构建器）
+from .enhanced_context import EnhancedContextBuilder  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -756,6 +759,9 @@ class Orchestrator:
         # （方法对象模式，持有 self 引用）
         self.msg_persistence = MessagePersistence(orchestrator=self)
 
+        # EnhancedContextBuilder: 增强上下文构建（画像/记忆/环境/任务/TodoList/Skill）
+        self.enhanced_context_builder = EnhancedContextBuilder(self)
+
     def _build_archive_callback(
         self,
     ) -> Callable[[str, Dict[str, Any]], None]:
@@ -874,7 +880,7 @@ class Orchestrator:
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
         # tools_override（用户会话固定 None；cron 会话为请求级过滤后的列表）
-        system_text, enhanced_history, tools_override = await self._build_enhanced_context(
+        system_text, enhanced_history, tools_override = await self.enhanced_context_builder.build(
             session_id, user_input, history
         )
         # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history
@@ -1232,7 +1238,7 @@ class Orchestrator:
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
         # tools_override（用户会话固定 None；cron 会话为请求级过滤后的列表）
-        system_text, enhanced_history, tools_override = await self._build_enhanced_context(
+        system_text, enhanced_history, tools_override = await self.enhanced_context_builder.build(
             session_id, user_input, history
         )
         # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history（流式路径）
@@ -1687,199 +1693,6 @@ class Orchestrator:
                         await self.msg_persistence.trigger_consolidation(session_id)
                 except Exception as e:
                     logger.warning("consolidation 信息累加或触发失败: %s", e)
-
-    async def _build_enhanced_context(
-        self,
-        session_id: str,
-        user_input: str,
-        history: List[Dict[str, Any]],
-    ) -> tuple:
-        """构建含用户画像与检索记忆的上下文。
-
-        利用 ContextManager / MemoryRetriever / MemoryMdManager 将：
-        1. 用户画像（memory.md 全文）注入到 system prompt（缓存命中区）；
-        2. 检索到的长期记忆（chroma 向量检索）作为 history 前置的
-           user 消息注入（缓存失效区起点）。
-
-        Phase 8 Task 1.4: 检测 ``session_id`` 以 ``cron:`` 开头时走 cron 隔离
-        路径（:meth:`_build_cron_enhanced_context`），不注入用户画像与
-        TaskManager 进度，检索记忆按 cron namespace 过滤。其他 session_id
-        走原有用户会话路径（向后兼容）。
-
-        Phase 8 Task 5.7: 返回值由二元组扩展为三元组，新增 ``tools_override``
-        字段。用户会话路径固定返回 ``None``（react_loop 走默认 registry
-        路径，tools schema 字节级稳定）；cron 路径由
-        :meth:`_build_cron_enhanced_context` 返回请求级过滤后的列表。
-
-        若相关组件未启用或检索为空，降级为原始 SYSTEM_PROMPT + 原始 history。
-
-        参数:
-            session_id: 会话 ID。``cron:`` 前缀触发 cron 隔离路径。
-            user_input: 当前用户输入，用于检索相关记忆。
-            history: 原始对话历史。
-
-        返回:
-            (system_text, enhanced_history, tools_override) 三元组：
-            - system_text: 含画像的 system prompt（若画像为空则等于 SYSTEM_PROMPT）；
-              cron 路径下不含画像（仅 SYSTEM_PROMPT）。
-            - enhanced_history: 含检索注入的 history（若无注入则等于原始 history）。
-            - tools_override: 工具 schema 覆盖列表。用户会话固定 ``None``；
-              cron 会话为请求级过滤后的列表（或 ``None`` 表示未启用过滤）。
-        """
-        # Phase 8 Task 1.4: cron 会话走隔离路径
-        cron_isolation = self.cron_isolator.build_isolation(session_id)
-        if cron_isolation is not None:
-            return await self.cron_isolator.build_enhanced_context(
-                session_id, user_input, history, cron_isolation
-            )
-
-        system_text = SYSTEM_PROMPT
-        enhanced_history = history
-        injection_text = ""
-
-        # 1. 注入用户画像到 system（通过 ContextManager 的缓存命中区构建）
-        if self.context_manager is not None:
-            try:
-                system_text = self.context_manager.get_cache_stable_prefix()
-            except Exception as e:
-                logger.warning("构建含画像的 system 失败，降级为 SYSTEM_PROMPT: %s", e)
-                system_text = SYSTEM_PROMPT
-
-        # 2. 检索长期记忆并作为 history 前置 user 消息注入
-        # Phase X 优化：后续轮次（已有对话历史）走轻量检索路径，
-        # 跳过 _filter_by_relevance 与 reinforce 写入，省掉 ~2.6s。
-        if self.memory_retriever is not None:
-            try:
-                # 判断是否为首轮：history 尚无完整 user↔assistant 交换
-                is_first_round = len(history) < 2
-                if is_first_round:
-                    memory_text = await asyncio.to_thread(
-                        self.memory_retriever.get_injection_text, user_input
-                    )
-                else:
-                    memory_text = await asyncio.to_thread(
-                        self.memory_retriever.get_injection_text_lightweight,
-                        user_input,
-                    )
-                # 上报记忆检索命中/未命中指标
-                if self.metrics is not None:
-                    self.metrics.observe_memory_retrieval(hit=bool(memory_text))
-                if memory_text:
-                    injection_text = memory_text
-            except Exception as e:
-                logger.warning("长期记忆检索注入失败，跳过: %s", e)
-
-        # 2.5 注入运行环境信息到 messages[0]（缓存失效区，不污染 system_text）
-        # 环境信息置于 TaskManager 进度注入**之前**（即 messages[0] 顶部），
-        # 便于 LLM 优先感知运行环境（OS / Shell / Python 路径），生成贴合
-        # 环境的指令。环境信息为运行时真实值，同一进程内多次调用稳定。
-        try:
-            env_section = self.context_builder.build_environment()
-            if env_section:
-                if injection_text:
-                    injection_text = f"{env_section}\n\n{injection_text}"
-                else:
-                    injection_text = env_section
-        except Exception as e:
-            logger.warning("运行环境信息注入失败，跳过: %s", e)
-
-        # 3. 注入任务进度摘要到 messages[0]（缓存失效区，不污染 system_text）
-        if self.task_manager is not None:
-            try:
-                task_summary = self.task_manager.get_progress_summary()
-                if task_summary:  # 非空字符串才注入
-                    task_section = f"## 当前任务状态\n{task_summary}"
-                    if injection_text:
-                        injection_text = f"{injection_text}\n\n{task_section}"
-                    else:
-                        injection_text = task_section
-            except Exception as e:
-                logger.warning("任务进度注入失败，跳过: %s", e)
-
-        # 3.5 注入 TodoList 状态到 messages[0]（缓存失效区，不污染 system_text）
-        # Phase 9 Task 5: 让 LLM 每轮看到 TodoList 状态自然更新，避免多轮
-        # 工具调用后忘记更新 TodoList。注入位置在 TaskManager 进度段之后
-        # （环境信息段已在最前面）。仅在 plan 模式下注入（todo_registry 有
-        # TodoList 时）；todo_registry 为 None 或 session 无 plan 时降级跳过。
-        if self.todo_registry is not None:
-            try:
-                todo_dict = self.todo_registry.get_todo_dict(session_id)
-                todo_section = self.context_builder.format_todo(todo_dict)
-                if todo_section:
-                    if injection_text:
-                        injection_text = f"{injection_text}\n\n{todo_section}"
-                    else:
-                        injection_text = todo_section
-            except Exception as e:
-                logger.warning("TodoList 状态注入失败，跳过: %s", e)
-
-        # 4. 注入已上传文件摘要到 messages[0]（缓存失效区）
-        # 让 LLM 每轮感知会话内已上传文件，无需主动调用 file_list_uploads
-        if self.context_manager is not None:
-            try:
-                file_section = self.context_manager.get_file_injection(session_id)
-                if file_section:
-                    if injection_text:
-                        injection_text = f"{injection_text}\n\n{file_section}"
-                    else:
-                        injection_text = file_section
-            except Exception as e:
-                logger.warning("文件摘要注入失败，跳过: %s", e)
-
-        # 5. P1-3: 注入已激活 Skill body 到 messages[0]（末位，L2 激活后注入）
-        # LLM 调用 skill__{name}() 后，下一轮在此注入 body 到上下文末位。
-        # 末位注入保证不破坏前面 section 的相对顺序，且不影响缓存前缀。
-        try:
-            skill_section = self.skill_mgr.build_active_section(session_id)
-            if skill_section:
-                if injection_text:
-                    injection_text = f"{injection_text}\n\n{skill_section}"
-                else:
-                    injection_text = skill_section
-        except Exception as e:
-            logger.warning("已激活 skill body 注入失败，跳过: %s", e)
-
-        # 统一前置 injection_text 到 history（若存在）
-        # history 先经 condenser 压缩（masking 旧 tool_result / LLM 摘要），
-        # 压缩在送入 ReactLoop 前完成，不影响 history_buffer 存储。
-        condensed_history = await self._apply_condenser(history)
-        if injection_text:
-            enhanced_history = [
-                {"role": "user", "content": injection_text}
-            ] + condensed_history
-        else:
-            enhanced_history = condensed_history
-
-        # Phase 8 Task 5.7: 用户会话路径 tools_override 固定 None，
-        # react_loop 走默认 tool_registry.get_tools_schema() 路径，
-        # 保证 tools schema 字节级稳定（缓存约束 1）。
-        return system_text, enhanced_history, None
-
-    async def _apply_condenser(
-        self, history: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """对 history 应用 condenser 压缩，返回压缩后的新列表。
-
-        压缩在送入 ReactLoop 前完成，不影响 history_buffer 存储。
-        先将 history 规整为 ``{role, content}``（剔除 timestamp 等附加字段，
-        保证消息结构符合 Anthropic API 规范），再调用 condenser。
-        condenser 为 None 或压缩失败时原样返回规整后的 history。
-        """
-        clean = [
-            {"role": m.get("role"), "content": m.get("content")}
-            for m in history
-            if m.get("role") is not None and m.get("content") is not None
-        ]
-        # 使用 getattr 兼容测试中通过 __new__ 绕过 __init__ 的场景
-        # （未设置 self.condenser 时不报错，按"未启用压缩"处理）
-        condenser = getattr(self, "condenser", None)
-        if condenser is None:
-            return clean
-        try:
-            return await asyncio.to_thread(condenser.condense, clean)
-        except Exception as e:
-            logger.warning("condenser 压缩历史失败，使用原始历史: %s", e)
-            return clean
 
     def apply_condenser_config(
         self, condenser_cfg: Dict[str, Any]

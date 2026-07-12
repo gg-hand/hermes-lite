@@ -42,6 +42,7 @@ from src.memory.context_manager import ContextManager  # noqa: E402
 from src.agent.context_builder import ContextBuilder  # noqa: E402
 from src.agent.cron_isolator import CronIsolator  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 from src.tasks.todo_list import TodoListRegistry  # noqa: E402
 
 
@@ -278,6 +279,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         orch.context_builder = ContextBuilder()
         orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.enhanced_context_builder = EnhancedContextBuilder(orch)
         return orch
 
     def _init_plan(self, orch, session_id: str):
@@ -301,7 +303,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_1"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续下一步", []
         )
         self.assertGreater(len(enhanced_history), 0)
@@ -314,7 +316,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_2"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -328,7 +330,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_3"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -344,7 +346,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_4"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -359,7 +361,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_5"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -380,7 +382,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_6"
         self._init_plan(orch, session_id)
 
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         content = enhanced_history[0]["content"]
@@ -399,7 +401,7 @@ class TestUserSessionTodoInjection(unittest.IsolatedAsyncioTestCase):
         session_id = "user_session_7"
         self._init_plan(orch, session_id)
 
-        system_text, _, _ = await orch._build_enhanced_context(
+        system_text, _, _ = await orch.enhanced_context_builder.build(
             session_id, "继续", []
         )
         self.assertNotIn("## 当前计划进度", system_text)
@@ -438,13 +440,14 @@ class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         orch.context_builder = ContextBuilder()
         orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.enhanced_context_builder = EnhancedContextBuilder(orch)
         return orch
 
     async def test_no_todo_registry_no_exception(self):
         """todo_registry 为 None 时 _build_enhanced_context 不抛异常。"""
         orch = self._make_orchestrator(with_todo_registry=False)
         # 不应抛异常
-        system_text, enhanced_history, _ = await orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "no_registry_session", "question", []
         )
         # messages[0] 不含 todo 段
@@ -456,7 +459,7 @@ class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
         """todo_registry 存在但 session 无 plan 时 _build_enhanced_context 不抛异常。"""
         orch = self._make_orchestrator(with_todo_registry=True)
         # 不调用 init_plan，get_todo_dict 返回 None
-        system_text, enhanced_history, _ = await orch._build_enhanced_context(
+        system_text, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "no_plan_session", "question", []
         )
         # 不应抛异常且 messages[0] 不含 todo 段
@@ -468,7 +471,7 @@ class TestTodoInjectionDegradation(unittest.IsolatedAsyncioTestCase):
     async def test_no_todo_registry_does_not_pollute_system_text(self):
         """todo_registry 为 None 时 system_text 不被污染。"""
         orch = self._make_orchestrator(with_todo_registry=False)
-        system_text, _, _ = await orch._build_enhanced_context(
+        system_text, _, _ = await orch.enhanced_context_builder.build(
             "no_registry_session", "question", []
         )
         self.assertNotIn("## 当前计划进度", system_text)
@@ -519,6 +522,7 @@ class TestTodoInjectionStateUpdate(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         orch.context_builder = ContextBuilder()
         orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.enhanced_context_builder = EnhancedContextBuilder(orch)
         return orch
 
     async def test_progress_reflects_state_change(self):
@@ -536,28 +540,28 @@ class TestTodoInjectionStateUpdate(unittest.IsolatedAsyncioTestCase):
         )
 
         # 初始：0/3
-        _, history, _ = await orch._build_enhanced_context(
+        _, history, _ = await orch.enhanced_context_builder.build(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 0/3", history[0]["content"])
 
         # 完成 step 0（自动推进 step 1）：1/3
         orch.todo_registry.update_step(session_id, 0, "completed", "")
-        _, history, _ = await orch._build_enhanced_context(
+        _, history, _ = await orch.enhanced_context_builder.build(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 1/3", history[0]["content"])
 
         # 完成 step 1（自动推进 step 2）：2/3
         orch.todo_registry.update_step(session_id, 1, "completed", "")
-        _, history, _ = await orch._build_enhanced_context(
+        _, history, _ = await orch.enhanced_context_builder.build(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 2/3", history[0]["content"])
 
         # 完成 step 2：3/3
         orch.todo_registry.update_step(session_id, 2, "completed", "")
-        _, history, _ = await orch._build_enhanced_context(
+        _, history, _ = await orch.enhanced_context_builder.build(
             session_id, "q", []
         )
         self.assertIn("**总进度**: 3/3", history[0]["content"])

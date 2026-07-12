@@ -37,6 +37,7 @@ from src.memory.cron_isolation import CronIsolation  # noqa: E402
 from src.agent.context_builder import ContextBuilder  # noqa: E402
 from src.agent.cron_isolator import CronIsolator  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -254,12 +255,13 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         orch.context_builder = ContextBuilder()
         orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.enhanced_context_builder = EnhancedContextBuilder(orch)
         return orch
 
     async def test_user_session_messages_zero_contains_env_section(self):
         """用户会话 messages[0] 顶部应含 '## 运行环境' 段。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "user_session", "question", []
         )
         # messages[0] 应为注入的 user 消息
@@ -275,7 +277,7 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_user_session_env_section_before_task_progress(self):
         """环境信息注入位置应在 TaskManager 进度注入之前。"""
         orch = self._make_orchestrator(with_task_manager=True)
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "user_session", "question", []
         )
         content = enhanced_history[0]["content"]
@@ -292,7 +294,7 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_user_session_env_section_before_memory(self):
         """环境信息注入位置应在长期记忆注入之前。"""
         orch = self._make_orchestrator(with_task_manager=False)
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "user_session", "question", []
         )
         content = enhanced_history[0]["content"]
@@ -309,7 +311,7 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_user_session_system_text_not_polluted(self):
         """SYSTEM_PROMPT 不应被环境信息污染（system_text 中不含 '## 运行环境'）。"""
         orch = self._make_orchestrator()
-        system_text, _, _ = await orch._build_enhanced_context(
+        system_text, _, _ = await orch.enhanced_context_builder.build(
             "user_session", "question", []
         )
         self.assertNotIn("## 运行环境", system_text)
@@ -319,7 +321,7 @@ class TestUserSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_user_session_env_section_contains_required_fields(self):
         """用户会话注入的环境信息段应含 5 个必需字段。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "user_session", "question", []
         )
         content = enhanced_history[0]["content"]
@@ -364,12 +366,13 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
         # 委托管理器（方法对象模式，持有 orch 引用）
         orch.context_builder = ContextBuilder()
         orch.cron_isolator = CronIsolator(orchestrator=orch)
+        orch.enhanced_context_builder = EnhancedContextBuilder(orch)
         return orch
 
     async def test_cron_session_messages_zero_contains_env_section(self):
         """cron 会话 messages[0] 顶部应含 '## 运行环境' 段。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "cron:sched_X", "question", []
         )
         self.assertGreater(len(enhanced_history), 0)
@@ -384,7 +387,7 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_cron_session_env_section_before_memory(self):
         """cron 环境信息注入位置应在长期记忆注入之前。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "cron:sched_X", "question", []
         )
         content = enhanced_history[0]["content"]
@@ -401,7 +404,7 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_cron_session_does_not_inject_todo(self):
         """cron 会话不应注入 TaskManager 进度。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "cron:sched_X", "question", []
         )
         content = enhanced_history[0]["content"]
@@ -411,7 +414,7 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_cron_session_system_text_not_polluted(self):
         """cron 会话 SYSTEM_PROMPT 不应被环境信息污染。"""
         orch = self._make_orchestrator()
-        system_text, _, _ = await orch._build_enhanced_context(
+        system_text, _, _ = await orch.enhanced_context_builder.build(
             "cron:sched_X", "question", []
         )
         self.assertNotIn("## 运行环境", system_text)
@@ -420,7 +423,7 @@ class TestCronSessionEnvironmentInjection(unittest.IsolatedAsyncioTestCase):
     async def test_cron_session_env_section_contains_required_fields(self):
         """cron 会话注入的环境信息段应含 5 个必需字段。"""
         orch = self._make_orchestrator()
-        _, enhanced_history, _ = await orch._build_enhanced_context(
+        _, enhanced_history, _ = await orch.enhanced_context_builder.build(
             "cron:sched_X", "question", []
         )
         content = enhanced_history[0]["content"]
