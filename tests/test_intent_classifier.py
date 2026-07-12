@@ -524,9 +524,9 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """chat_stream() 方法源码应引用 classify_intent（验证集成点存在）。"""
         import inspect
 
-        from src.orchestrator import Orchestrator
+        from src.orchestrator.chat_handler import ChatHandler
 
-        chat_stream_source = inspect.getsource(Orchestrator.chat_stream)
+        chat_stream_source = inspect.getsource(ChatHandler.chat_stream)
         self.assertIn("classify_intent", chat_stream_source)
         self.assertIn("intent_result", chat_stream_source)
 
@@ -552,10 +552,10 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """P1 修复：chat_stream() 方法应将 intent_result 保存到 self._current_intent_result。"""
         import inspect
 
-        from src.orchestrator import Orchestrator
+        from src.orchestrator.chat_handler import ChatHandler
 
-        chat_stream_source = inspect.getsource(Orchestrator.chat_stream)
-        self.assertIn("self._current_intent_result", chat_stream_source)
+        chat_stream_source = inspect.getsource(ChatHandler.chat_stream)
+        self.assertIn("orch._current_intent_result", chat_stream_source)
 
 
 if __name__ == "__main__":
