@@ -1,16 +1,9 @@
 """EC2 长驻 HTTP 服务入口。
 
-所有路由、lifespan、后台循环、配置工具已提取到独立模块：
-- app.py: FastAPI 实例 + 中间件 + 路由注册
-- lifespan.py: 生命周期管理（初始化/释放资源 + skill state 辅助）
-- background_loops.py: 定时清理循环
-- config_helpers.py: 配置工具函数
-- logging_setup.py: 日志配置
-- routes/: 按域拆分的路由模块
-
-server.py 仅保留全局组件变量声明（供测试 patch 与 state.py 代理）
-+ 配置工具 re-export（供 tests/test_config_update.py 导入）
-+ 静态文件挂载 + uvicorn 入口。
+所有路由、lifespan、后台循环、配置工具已提取到独立模块（app.py /
+lifespan.py / background_loops.py / config_helpers.py / logging_setup.py /
+routes/）。server.py 仅保留全局组件变量声明（供测试 patch 与 state.py
+代理）+ 配置工具 re-export + 静态文件挂载 + uvicorn 入口。
 """
 from __future__ import annotations
 
@@ -38,25 +31,15 @@ from config import load_config, clear_config_cache  # noqa: E402, F401
 
 # ---------- 全局组件 ----------
 # 在 lifespan.py 中初始化，全局复用。保留在此处供测试 patch 与 state.py 代理。
-orchestrator: Optional[Any] = None
-session_logger: Optional[Any] = None
-metrics_collector: Optional[Any] = None
-metrics_store: Optional[Any] = None
-metrics_persist_task: Optional[Any] = None
-_metrics_baseline_reset: bool = False
-audit_logger: Optional[Any] = None
-approval_manager: Optional[Any] = None
-skill_loader = None
-skill_tools_registered = False
-mcp_manager = None
-task_manager: Optional[Any] = None
-cron_scheduler: Optional[Any] = None
-proposal_store: Optional[Any] = None
-cron_tool_registry: Optional[Any] = None
-health_checker: Optional[Any] = None
-stream_manager: Optional[Any] = None
-upload_manager: Optional[Any] = None
-etl_engine: Optional[Any] = None
+orchestrator: Optional[Any] = None; session_logger: Optional[Any] = None
+metrics_collector: Optional[Any] = None; metrics_store: Optional[Any] = None
+metrics_persist_task: Optional[Any] = None; _metrics_baseline_reset: bool = False
+audit_logger: Optional[Any] = None; approval_manager: Optional[Any] = None
+skill_loader = None; skill_tools_registered = False; mcp_manager = None
+task_manager: Optional[Any] = None; cron_scheduler: Optional[Any] = None
+proposal_store: Optional[Any] = None; cron_tool_registry: Optional[Any] = None
+health_checker: Optional[Any] = None; stream_manager: Optional[Any] = None
+upload_manager: Optional[Any] = None; etl_engine: Optional[Any] = None
 file_context_injector: Optional[Any] = None
 
 # ---------- 配置工具函数（供 tests/test_config_update.py 从 server 导入） ----------
