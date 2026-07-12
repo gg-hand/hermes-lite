@@ -127,3 +127,47 @@ def build_done_event(
         "stop_reason": final_stop_reason,
         "reasoning_stats": reasoning_stats,
     }
+
+
+async def generate_max_loops_summary(
+    llm_client: Any,
+    messages: List[Dict[str, Any]],
+    last_text: str,
+    session_id: Optional[str] = None,
+) -> str:
+    """达到 max_loops 时调用 LLM 生成总结性回复。
+
+    不传 tools 参数，强制 LLM 返回纯文本总结。失败时降级返回
+    ``last_text`` 并记录 error 日志。
+    """
+    try:
+        summary_prompt = (
+            "已达循环上限，请总结当前进展与未完成原因，不要调用工具。"
+            f"最后回复：{last_text}"
+        )
+        summary_messages = messages + [
+            {"role": "user", "content": summary_prompt}
+        ]
+        response = await llm_client.chat_main(
+            messages=summary_messages,
+            system=None,
+            tools=None,
+        )
+        content_blocks = getattr(response, "content", []) or []
+        text_parts: List[str] = []
+        for block in content_blocks:
+            block_dict = block_to_dict(block)
+            if block_dict.get("type") == "text":
+                text = block_dict.get("text", "")
+                if text:
+                    text_parts.append(text)
+        summary_text = "".join(text_parts)
+        if not summary_text:
+            logger.warning(
+                "max_loops 总结调用返回空文本，降级返回 last_text"
+            )
+            return last_text
+        return summary_text
+    except Exception as e:
+        logger.error("max_loops 总结调用失败，降级返回 last_text: %s", e)
+        return last_text

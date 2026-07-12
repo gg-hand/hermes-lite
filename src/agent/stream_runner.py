@@ -65,6 +65,17 @@ if TYPE_CHECKING:
     from ..llm.reasoning_profiles import ReasoningConfig
     from .react_loop import ReactLoop
 
+from .tool_executor import (
+    compute_params_hash as _compute_params_hash_fn,
+    detect_tool_stuck as _detect_tool_stuck_fn,
+    build_stuck_message as _build_stuck_message_fn,
+    drop_trailing_orphan_tool_calls as _drop_trailing_orphan_tool_calls_fn,
+)
+from .stream_handler import (
+    block_to_dict as _block_to_dict_fn,
+    build_done_event as _build_done_event_fn,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -170,7 +181,7 @@ class StreamRunner:
         for loop_idx in range(loop.max_loops):
             # 🔴 检测点 1：每轮循环开始前检测中断
             if cancel_event and cancel_event.is_set():
-                yield loop._build_done_event(
+                yield _build_done_event_fn(
                     response=last_text,
                     messages=messages,
                     is_complete=False,
@@ -216,7 +227,7 @@ class StreamRunner:
                             partial_blocks.append({"type": "text", "text": current_round_text})
                         if partial_blocks:
                             messages.append({"role": "assistant", "content": partial_blocks})
-                        yield loop._build_done_event(
+                        yield _build_done_event_fn(
                             response=current_round_text or last_text,
                             messages=messages,
                             is_complete=False,
@@ -250,7 +261,7 @@ class StreamRunner:
                     partial_blocks_sc.append({"type": "text", "text": current_round_text})
                 if partial_blocks_sc:
                     messages.append({"role": "assistant", "content": partial_blocks_sc})
-                yield loop._build_done_event(
+                yield _build_done_event_fn(
                     response=current_round_text or last_text,
                     messages=messages,
                     is_complete=False,
@@ -264,7 +275,7 @@ class StreamRunner:
             except Exception as e:
                 logger.error("LLM 流式调用失败 (loop=%d): %s", loop_idx, e)
                 if last_text:
-                    yield loop._build_done_event(
+                    yield _build_done_event_fn(
                         response=last_text,
                         messages=messages,
                         is_complete=False,
@@ -329,7 +340,7 @@ class StreamRunner:
                         "reasoning-only 回复重试达到全局预算 3 次 (loop=%d)，终止",
                         loop_idx,
                     )
-                    yield loop._build_done_event(
+                    yield _build_done_event_fn(
                         response=last_text,
                         messages=messages,
                         is_complete=False,
@@ -344,7 +355,7 @@ class StreamRunner:
             # 5. 判断是否需要工具调用
             if stop_reason != "tool_use" or not tool_use_blocks:
                 # 自然结束（end_turn）→ is_complete=True
-                yield loop._build_done_event(
+                yield _build_done_event_fn(
                     response=last_text,
                     messages=messages,
                     is_complete=True,
@@ -362,8 +373,8 @@ class StreamRunner:
                     "模型请求工具调用但未提供 tool_registry，返回当前文本回复"
                 )
                 # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                messages = loop._drop_trailing_orphan_tool_calls(messages)
-                yield loop._build_done_event(
+                messages = _drop_trailing_orphan_tool_calls_fn(messages)
+                yield _build_done_event_fn(
                     response=last_text,
                     messages=messages,
                     is_complete=False,
@@ -378,8 +389,8 @@ class StreamRunner:
             # 🔴 检测点 3：工具执行前检测中断
             # 注：已开始的工具会执行完毕（原子性），不半途取消
             if cancel_event and cancel_event.is_set():
-                messages = loop._drop_trailing_orphan_tool_calls(messages)
-                yield loop._build_done_event(
+                messages = _drop_trailing_orphan_tool_calls_fn(messages)
+                yield _build_done_event_fn(
                     response=last_text,
                     messages=messages,
                     is_complete=False,
@@ -401,8 +412,8 @@ class StreamRunner:
                 t0 = time.perf_counter()
 
                 # Phase 9 Task 7.3 + Phase 9+ 错误分类: 工具执行前检测卡死
-                params_hash = loop._compute_params_hash(tool_input)
-                is_stuck, stuck_reason = loop._detect_tool_stuck(
+                params_hash = _compute_params_hash_fn(tool_input)
+                is_stuck, stuck_reason = _detect_tool_stuck_fn(
                     tool_name, params_hash, recent_tool_calls
                 )
                 if is_stuck:
@@ -426,9 +437,9 @@ class StreamRunner:
                             if loop.metrics is not None:
                                 loop.metrics.observe_tool_error_class(tool_name, "stuck_detected")
                         # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                        messages = loop._drop_trailing_orphan_tool_calls(messages)
-                        yield loop._build_done_event(
-                            response=loop._build_stuck_message(tool_name, stuck_reason),
+                        messages = _drop_trailing_orphan_tool_calls_fn(messages)
+                        yield _build_done_event_fn(
+                            response=_build_stuck_message_fn(tool_name, stuck_reason),
                             messages=messages,
                             is_complete=False,
                             termination_reason="tool_permanent_fail",
@@ -861,7 +872,7 @@ class StreamRunner:
 
             # 检测点 4：工具执行后检查 cancel_event（run_stream 专用）
             if cancel_event and cancel_event.is_set():
-                yield loop._build_done_event(
+                yield _build_done_event_fn(
                     response=last_text,
                     messages=messages,
                     is_complete=False,
@@ -886,7 +897,7 @@ class StreamRunner:
             messages, last_text, session_id
         )
         # max_loops 耗尽 → is_complete=False
-        yield loop._build_done_event(
+        yield _build_done_event_fn(
             response=summary_text,
             messages=messages,
             is_complete=False,

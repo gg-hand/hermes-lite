@@ -65,6 +65,16 @@ if TYPE_CHECKING:
     from ..llm.reasoning_profiles import ReasoningConfig
     from .react_loop import ReactLoop
 
+from .tool_executor import (
+    compute_params_hash as _compute_params_hash_fn,
+    detect_tool_stuck as _detect_tool_stuck_fn,
+    build_stuck_message as _build_stuck_message_fn,
+    drop_trailing_orphan_tool_calls as _drop_trailing_orphan_tool_calls_fn,
+)
+from .stream_handler import (
+    block_to_dict as _block_to_dict_fn,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,7 +210,7 @@ class SyncRunner:
             assistant_content: List[Dict[str, Any]] = []
 
             for block in content_blocks:
-                block_dict = loop._block_to_dict(block)
+                block_dict = _block_to_dict_fn(block)
                 assistant_content.append(block_dict)
                 btype = block_dict.get("type")
                 if btype == "text":
@@ -231,7 +241,7 @@ class SyncRunner:
                     "模型请求工具调用但未提供 tool_registry，返回当前文本回复"
                 )
                 # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                messages = loop._drop_trailing_orphan_tool_calls(messages)
+                messages = _drop_trailing_orphan_tool_calls_fn(messages)
                 return last_text, messages, False, "normal"
 
             # 5. 执行工具调用，将 tool_result 作为 user 消息回传
@@ -245,8 +255,8 @@ class SyncRunner:
 
                 # Phase 9 Task 7.3 + Phase 9+ 错误分类: 工具执行前检测卡死
                 # （仅对实际会执行的 allow 分支检测，deny/confirm 拒绝路径不进入滑动窗口）。
-                params_hash = loop._compute_params_hash(tool_input)
-                is_stuck, stuck_reason = loop._detect_tool_stuck(
+                params_hash = _compute_params_hash_fn(tool_input)
+                is_stuck, stuck_reason = _detect_tool_stuck_fn(
                     tool_name, params_hash, recent_tool_calls
                 )
                 if is_stuck:
@@ -271,9 +281,9 @@ class SyncRunner:
                             if loop.metrics is not None:
                                 loop.metrics.observe_tool_error_class(tool_name, "stuck_detected")
                         # 清理末尾未执行的 assistant(tool_calls)，避免下轮 400
-                        messages = loop._drop_trailing_orphan_tool_calls(messages)
+                        messages = _drop_trailing_orphan_tool_calls_fn(messages)
                         return (
-                            loop._build_stuck_message(tool_name, stuck_reason),
+                            _build_stuck_message_fn(tool_name, stuck_reason),
                             messages,
                             False,
                             "tool_permanent_fail",
@@ -402,7 +412,7 @@ class SyncRunner:
                 # action == "allow"：正常执行
                 # 检测点 2：工具执行前检查 cancel_event
                 if cancel_event and cancel_event.is_set():
-                    messages = loop._drop_trailing_orphan_tool_calls(messages)
+                    messages = _drop_trailing_orphan_tool_calls_fn(messages)
                     return last_text, messages, False, "user_cancel"
 
                 # Phase 8 Task 5.7: 通过 _execute_tool_with_dispatch 派发到

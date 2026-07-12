@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .audit import AuditLogger
@@ -168,6 +168,42 @@ def extract_schedule_id(session_id: Optional[str]) -> Optional[str]:
     if session_id and session_id.startswith("cron:"):
         return session_id[5:]
     return None
+
+
+def drop_trailing_orphan_tool_calls(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """弹出末尾未执行的 ``assistant(tool_calls)`` 消息。
+
+    卡死终止 / tool_registry 缺失等分支在 LLM 返回 ``assistant(tool_use)`` 后、
+    工具执行前提前 return，导致 messages 末尾留下未匹配 tool_result 的孤立
+    ``assistant(tool_calls)``。本方法从末尾向前弹出连续的孤立 assistant(tool_calls)，
+    直到遇到非 assistant 或纯 text assistant 为止。返回新列表，不修改原列表。
+    """
+    if not messages:
+        return messages
+    cleaned = list(messages)
+    while cleaned:
+        last = cleaned[-1]
+        if last.get("role") != "assistant":
+            break
+        content = last.get("content")
+        if not isinstance(content, list):
+            break
+        has_tool_use = any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in content
+        )
+        if not has_tool_use:
+            break
+        cleaned.pop()
+    if len(cleaned) != len(messages):
+        logger.warning(
+            "清理末尾孤立 assistant(tool_calls): 原始 %d 条 → 清理后 %d 条",
+            len(messages),
+            len(cleaned),
+        )
+    return cleaned
 
 
 # ──────────────────────────────────────────────────────────────────

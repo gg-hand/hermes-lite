@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 import weakref
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环依赖
     from ..llm.client import LLMClient
@@ -34,216 +34,55 @@ if TYPE_CHECKING:  # 仅用于类型检查，运行时不导入以避免循环�
 
 try:
     from ..stream_manager import StreamCancelled
+    from ..monitoring.metrics import MetricsCollector
+    from ..agent.audit import AuditLogger
+    from ..agent.policy import PolicyEngine, Decision
+    from ..agent.approval import ApprovalManager
 except ImportError:
-    import sys
-    from pathlib import Path
-    _SRC_DIR = str(Path(__file__).resolve().parent.parent)
-    if _SRC_DIR not in sys.path:
-        sys.path.insert(0, _SRC_DIR)
     from stream_manager import StreamCancelled  # type: ignore
-    try:
-        from ..monitoring.metrics import MetricsCollector
-        from ..agent.audit import AuditLogger
-        from ..agent.policy import PolicyEngine, Decision
-        from ..agent.approval import ApprovalManager
-    except ImportError:
-        from monitoring.metrics import MetricsCollector  # type: ignore
-        from agent.audit import AuditLogger  # type: ignore
-        from agent.policy import PolicyEngine, Decision  # type: ignore
-        from agent.approval import ApprovalManager  # type: ignore
-
-# Phase 9+ 错误分类模块
-try:
-    from .error_classifier import ErrorClassifier, ErrorClass
-except ImportError:
-    try:
-        from agent.error_classifier import ErrorClassifier, ErrorClass  # type: ignore
-    except ImportError:
-        ErrorClassifier = None  # type: ignore
-        ErrorClass = None  # type: ignore
-
-# 统一工具错误异常层次（Phase A：替换字符串错误载体）
-try:
-    from .tool_error import (
-        EXECUTION_ERROR_CATEGORIES,
-        ErrorStage,
-        NonStreamHILError,
-        PolicyDeniedError,
-        StuckDetectedError,
-        ToolError,
-        UserRejectedError,
-        from_exception,
-    )
-except ImportError:
-    try:
-        from agent.tool_error import (  # type: ignore
-            EXECUTION_ERROR_CATEGORIES,
-            ErrorStage,
-            NonStreamHILError,
-            PolicyDeniedError,
-            StuckDetectedError,
-            ToolError,
-            UserRejectedError,
-            from_exception,
-        )
-    except ImportError:  # pragma: no cover
-        ToolError = None  # type: ignore
-        ErrorStage = None  # type: ignore
-        from_exception = None  # type: ignore
-        PolicyDeniedError = None  # type: ignore
-        NonStreamHILError = None  # type: ignore
-        UserRejectedError = None  # type: ignore
-        StuckDetectedError = None  # type: ignore
-        EXECUTION_ERROR_CATEGORIES = frozenset()  # type: ignore
-
-# Phase 9 Task 6: GuardrailEngine（fail-open 软护栏，工具返回值脱敏）
-# 与 monitoring / agent 模块同样降级为 None，由 __init__ 内部降级为 noop。
+    from monitoring.metrics import MetricsCollector  # type: ignore
+    from agent.audit import AuditLogger  # type: ignore
+    from agent.policy import PolicyEngine, Decision  # type: ignore
+    from agent.approval import ApprovalManager  # type: ignore
+from .error_classifier import ErrorClassifier, ErrorClass
+from .tool_error import (
+    EXECUTION_ERROR_CATEGORIES,
+    ErrorStage,
+    NonStreamHILError,
+    PolicyDeniedError,
+    StuckDetectedError,
+    ToolError,
+    UserRejectedError,
+    from_exception,
+)
 try:
     from ..guardrails import GuardrailEngine
-except ImportError:
-    try:
-        from guardrails import GuardrailEngine  # type: ignore
-    except ImportError:
-        GuardrailEngine = None  # type: ignore
-
-# Phase 5: 策略与审批模块（运行时需要 Decision 实例化）
-# react_loop.py 本身位于 agent 目录下，相对导入用 from .policy
-try:
-    from .policy import Decision
 except ImportError:  # pragma: no cover
-    try:
-        from agent.policy import Decision  # type: ignore
-    except ImportError:
-        # 降级：定义占位 Decision，避免 import 失败阻断
-        from dataclasses import dataclass
-        from typing import Literal
+    GuardrailEngine = None  # type: ignore
 
-        @dataclass
-        class Decision:  # type: ignore
-            action: Literal["allow", "confirm", "deny"]
-            reason: str
-            risk_level: Literal["low", "medium", "high"]
+from .tool_executor import (
+    ToolExecutor,
+    compute_params_hash as _compute_params_hash_fn,
+    detect_tool_stuck as _detect_tool_stuck_fn,
+    build_stuck_message as _build_stuck_message_fn,
+    extract_schedule_id as _extract_schedule_id_fn,
+    drop_trailing_orphan_tool_calls as _drop_trailing_orphan_tool_calls_fn,
+)
+from .stream_handler import (
+    block_to_dict as _block_to_dict_fn,
+    build_done_event as _build_done_event_fn,
+    build_reasoning_stats as _build_reasoning_stats_fn,
+    generate_max_loops_summary as _generate_max_loops_summary_fn,
+)
+from .stream_runner import StreamRunner
+from .sync_runner import SyncRunner
+from .noop_guardrail import NoopGuardrail as _NoopGuardrail
+from .meta_cognition import (
+    maybe_trigger_agent_failure_signal as _maybe_trigger_agent_failure_signal_fn,
+    check_user_failure_feedback as _check_user_failure_feedback_fn,
+)
 
 logger = logging.getLogger(__name__)
-
-# Task 21: 工具执行逻辑提取到 ToolExecutor
-try:
-    from .tool_executor import (
-        ToolExecutor,
-        compute_params_hash as _compute_params_hash_fn,
-        detect_tool_stuck as _detect_tool_stuck_fn,
-        build_stuck_message as _build_stuck_message_fn,
-        extract_schedule_id as _extract_schedule_id_fn,
-    )
-except ImportError:  # pragma: no cover
-    try:
-        from agent.tool_executor import (  # type: ignore
-            ToolExecutor,
-            compute_params_hash as _compute_params_hash_fn,
-            detect_tool_stuck as _detect_tool_stuck_fn,
-            build_stuck_message as _build_stuck_message_fn,
-            extract_schedule_id as _extract_schedule_id_fn,
-        )
-    except ImportError:  # pragma: no cover
-        ToolExecutor = None  # type: ignore
-        _compute_params_hash_fn = None  # type: ignore
-        _detect_tool_stuck_fn = None  # type: ignore
-        _build_stuck_message_fn = None  # type: ignore
-        _extract_schedule_id_fn = None  # type: ignore
-
-# Task 22: 流式处理辅助函数提取到 stream_handler
-try:
-    from .stream_handler import (
-        block_to_dict as _block_to_dict_fn,
-        build_done_event as _build_done_event_fn,
-        build_reasoning_stats as _build_reasoning_stats_fn,
-    )
-except ImportError:  # pragma: no cover
-    try:
-        from agent.stream_handler import (  # type: ignore
-            block_to_dict as _block_to_dict_fn,
-            build_done_event as _build_done_event_fn,
-            build_reasoning_stats as _build_reasoning_stats_fn,
-        )
-    except ImportError:  # pragma: no cover
-        _block_to_dict_fn = None  # type: ignore
-        _build_done_event_fn = None  # type: ignore
-        _build_reasoning_stats_fn = None  # type: ignore
-
-# Task 13: 流式执行逻辑提取到 StreamRunner
-try:
-    from .stream_runner import StreamRunner
-except ImportError:  # pragma: no cover
-    try:
-        from agent.stream_runner import StreamRunner  # type: ignore
-    except ImportError:  # pragma: no cover
-        StreamRunner = None  # type: ignore
-
-# Task 14: 同步执行逻辑提取到 SyncRunner
-try:
-    from .sync_runner import SyncRunner
-except ImportError:  # pragma: no cover
-    try:
-        from agent.sync_runner import SyncRunner  # type: ignore
-    except ImportError:  # pragma: no cover
-        SyncRunner = None  # type: ignore
-
-
-class ToolRegistry(Protocol):
-    """工具注册器接口约定（占位 Protocol）。
-
-    任何提供 get_tools_schema 与 execute_tool 方法的对象均可作为
-    ReactLoop 的 tool_registry 注入，实现解耦。
-    """
-
-    def get_tools_schema(self) -> List[Dict[str, Any]]:
-        """返回工具 schema 列表（Anthropic tool use 格式）。"""
-        ...
-
-    def execute_tool(self, tool_name: str, tool_input: dict) -> str:
-        """执行工具调用，返回结果字符串。"""
-        ...
-
-
-class _NoopGuardrail:
-    """GuardrailEngine 模块不可用时的 noop 占位（Phase 9 Task 6）。
-
-    提供 ``sanitize_tool_result`` / ``scan_input`` / ``filter_output`` 三个
-    方法，全部直返原值，保证 react_loop 调用方不抛异常。仅在 GuardrailEngine
-    模块导入失败（``GuardrailEngine is None``）时使用，正常路径下
-    ``__init__`` 会用 ``GuardrailEngine.create_noop()`` 替代。
-    """
-
-    def sanitize_tool_result(self, result: Any, tool_name: str) -> Any:
-        """直返原结果（noop）。"""
-        return result
-
-    def scan_input(self, text: str):  # type: ignore[no-untyped-def]
-        """返回 allow（noop）。
-
-        与 GuardrailEngine.ScanResult 兼容的最简占位，避免引入对 ScanResult
-        的硬依赖（GuardrailEngine 模块可能不可用）。
-        """
-        # 局部 import：仅在调用时尝试导入 ScanResult，失败时返回简单 namedtuple
-        try:
-            from ..guardrails import ScanResult  # type: ignore
-            return ScanResult(action="allow", matched_patterns=[], reason="noop")
-        except Exception:
-            # 兜底：返回一个轻量 dataclass 实例
-            from dataclasses import dataclass, field
-            from typing import List as _List
-
-            @dataclass
-            class _ScanResultFallback:
-                action: str = "allow"
-                matched_patterns: _List[str] = field(default_factory=list)
-                reason: str = "noop"
-
-            return _ScanResultFallback()
-
-    def filter_output(self, text: str):  # type: ignore[no-untyped-def]
-        """直返 (text, 0)（noop）。"""
-        return text, 0
 
 
 class ReactLoop:
@@ -269,7 +108,7 @@ class ReactLoop:
     def __init__(
         self,
         llm_client: "LLMClient",
-        tool_registry: Optional[ToolRegistry] = None,
+        tool_registry: Optional[Any] = None,
         max_loops: int = 50,
         audit_logger: Optional["AuditLogger"] = None,
         metrics: Optional["MetricsCollector"] = None,
@@ -408,154 +247,21 @@ class ReactLoop:
         error_class: Optional[str],
         consecutive_failures: int,
     ) -> bool:
-        """触发 Agent 自画像信号入池（连续失败≥2 次 或 PERMANENT 错误类）。
-
-        通过 ``orchestrator_ref`` 弱引用访问 ``signal_pool``，调用
-        ``signal_pool.add(target="agent", section="Agent 自画像", content=...)``
-        将失败模式作为 Agent 自画像信号入池。signal_pool 内部按 target 分组
-        去重 + 计数累加，达阈值（7 次）后写入 ``## Agent 自画像`` section。
-
-        cron 会话（session_id 以 ``cron:`` 开头）跳过，避免污染用户画像
-        （与 L1 路径的 cron 隔离约束一致）。
-
-        参数:
-            session_id: 会话 ID（用于 cron 隔离判断）。
-            tool_name: 失败的工具名。
-            error_class: 错误分类（``ErrorClass.value`` 字符串），可为 None。
-            consecutive_failures: 当前连续失败次数。
-
-        返回:
-            True 表示已成功触发入池；False 表示因 signal_pool 不可用或
-            cron 会话而跳过。
-        """
-        # cron 会话跳过：避免 cron 自动任务污染 Agent 自画像
-        if session_id and isinstance(session_id, str) and session_id.startswith("cron:"):
-            return False
-        orch = self._orchestrator_ref() if self._orchestrator_ref else None
-        if orch is None or getattr(orch, "signal_pool", None) is None:
-            logger.debug(
-                "signal_pool 不可用，Agent 失败信号未入池（tool=%s, failures=%d）",
-                tool_name, consecutive_failures,
-            )
-            return False
-        # 构造失败模式描述（精炼，避免长文本污染画像）
-        ec_part = f"，错误类型={error_class}" if error_class else ""
-        content = (
-            f"Agent 在工具 {tool_name} 上连续失败 {consecutive_failures} 次{ec_part}"
+        """触发 Agent 失败信号入池（委托到 meta_cognition.maybe_trigger_agent_failure_signal）。"""
+        return _maybe_trigger_agent_failure_signal_fn(
+            self._orchestrator_ref, session_id, tool_name,
+            error_class, consecutive_failures,
         )
-        try:
-            orch.signal_pool.add(
-                content=content,
-                source="L1_agent_failure",
-                section="Agent 自画像",
-                target="agent",
-            )
-            logger.info(
-                "Agent 失败信号入池（target=agent）: tool=%s failures=%d ec=%s",
-                tool_name, consecutive_failures, error_class,
-            )
-            return True
-        except Exception as e:
-            logger.warning("Agent 失败信号入池异常: %s", e)
-            return False
 
     def _check_user_failure_feedback(self, user_input: str, session_id: Optional[str]) -> None:
-        """检测用户对失败的口头反馈（"又错了"/"上次说过"等），触发 Agent 信号入池。
-
-        用户说"又错了"/"上次说过"等表明 Agent 重复犯错，应作为 Agent 自画像
-        信号入池。本方法在 run()/run_stream() 入口处调用，触发后不阻塞主流程。
-
-        参数:
-            user_input: 用户输入文本。
-            session_id: 会话 ID（用于 cron 隔离判断）。
-        """
-        if not user_input:
-            return
-        # 关键词匹配：用户明确表达 Agent 又错了/重复犯错
-        feedback_keywords = ("又错了", "上次说过", "不是说过", "说过不要", "重复犯")
-        for kw in feedback_keywords:
-            if kw in user_input:
-                self._maybe_trigger_agent_failure_signal(
-                    session_id=session_id,
-                    tool_name="unknown",
-                    error_class="user_feedback",
-                    consecutive_failures=1,
-                )
-                return
+        """检测用户失败反馈并触发信号（委托到 meta_cognition.check_user_failure_feedback）。"""
+        _check_user_failure_feedback_fn(
+            self._orchestrator_ref, user_input, session_id,
+        )
 
     # ------------------------------------------------------------------
     # Phase 9 Task 7.3: 单工具重试检测辅助方法
     # ------------------------------------------------------------------
-    @staticmethod
-    def _compute_params_hash(tool_input: dict) -> str:
-        """计算工具输入参数的 hash（委托到 tool_executor.compute_params_hash）。"""
-        return _compute_params_hash_fn(tool_input)
-
-    @staticmethod
-    def _detect_tool_stuck(
-        tool_name: str,
-        params_hash: str,
-        recent_calls: List[Tuple[str, str, Optional[str]]],
-        window_size: int = 5,
-        threshold: int = 3,
-    ) -> Tuple[bool, str]:
-        """检测工具是否陷入重复调用卡死（委托到 tool_executor.detect_tool_stuck）。"""
-        return _detect_tool_stuck_fn(
-            tool_name, params_hash, recent_calls, window_size, threshold
-        )
-
-    @staticmethod
-    def _build_stuck_message(tool_name: str, reason: str = "") -> str:
-        """构造卡死终止消息（委托到 tool_executor.build_stuck_message）。"""
-        return _build_stuck_message_fn(tool_name, reason)
-
-    @staticmethod
-    def _drop_trailing_orphan_tool_calls(
-        messages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """弹出末尾未执行的 ``assistant(tool_calls)`` 消息。
-
-        Phase 9 修复：卡死终止 / tool_registry 缺失等分支在 LLM 返回
-        ``assistant(tool_use)`` 后、工具执行前提前 return，导致 messages
-        末尾留下未匹配 tool_result 的孤立 ``assistant(tool_calls)``。
-        该 messages 会被持久化进 session db，下一轮请求加载历史时触发
-        DeepSeek/OpenAI 400：
-
-            ``An assistant message with 'tool_calls' must be followed by
-            tool messages responding to each 'tool_call_id'.``
-
-        本方法从末尾向前弹出连续的孤立 assistant(tool_calls)（content
-        为 list 且含 tool_use 块），直到遇到非 assistant 或纯 text
-        assistant 为止。返回新列表，不修改原列表。
-
-        注意：仅清理末尾连续孤立项，不动中间消息（中间孤立意味着消息
-        序列有更严重问题，删除可能破坏配对）。
-        """
-        if not messages:
-            return messages
-        cleaned = list(messages)
-        while cleaned:
-            last = cleaned[-1]
-            if last.get("role") != "assistant":
-                break
-            content = last.get("content")
-            if not isinstance(content, list):
-                break
-            has_tool_use = any(
-                isinstance(b, dict) and b.get("type") == "tool_use"
-                for b in content
-            )
-            if not has_tool_use:
-                break
-            cleaned.pop()
-        if len(cleaned) != len(messages):
-            logger.warning(
-                "清理末尾孤立 assistant(tool_calls): 原始 %d 条 → 清理后 %d 条",
-                len(messages),
-                len(cleaned),
-            )
-        return cleaned
-
     def _evaluate_policy(
         self,
         tool_name: str,
@@ -569,11 +275,6 @@ class ReactLoop:
                 tool_name, tool_input, session_id=session_id
             )
         return Decision("allow", "", "low")
-
-    @staticmethod
-    def _extract_schedule_id(session_id: Optional[str]) -> Optional[str]:
-        """从 session_id 提取 cron 调度项 ID（委托到 tool_executor.extract_schedule_id）。"""
-        return _extract_schedule_id_fn(session_id)
 
     def _log_audit(
         self,
@@ -673,89 +374,48 @@ class ReactLoop:
         last_text: str,
         session_id: Optional[str] = None,
     ) -> str:
-        """达到 max_loops 时调用 LLM 生成总结性回复。
+        """达到 max_loops 时生成总结性回复（委托到 stream_handler.generate_max_loops_summary）。"""
+        return await _generate_max_loops_summary_fn(
+            self.llm_client, messages, last_text, session_id,
+        )
 
-        不传 tools 参数，强制 LLM 返回纯文本总结。失败时降级返回
-        ``last_text`` 并记录 error 日志。
+    # ── 静态/实例 wrapper（保留为公共 API，供 tests/chat_handler 外部调用） ──
+    @staticmethod
+    def _compute_params_hash(tool_input: dict) -> str:
+        return _compute_params_hash_fn(tool_input)
 
-        参数:
-            messages: 当前循环的完整消息列表。
-            last_text: 最后的文本回复（用于降级与 prompt 提示）。
-            session_id: 可选会话 ID，仅用于日志关联。
+    @staticmethod
+    def _detect_tool_stuck(tool_name, params_hash, recent_calls, window_size=5, threshold=3):
+        return _detect_tool_stuck_fn(tool_name, params_hash, recent_calls, window_size, threshold)
 
-        返回:
-            总结性回复文本；调用失败或返回空时降级返回 ``last_text``。
-        """
-        try:
-            summary_prompt = (
-                "已达循环上限，请总结当前进展与未完成原因，不要调用工具。"
-                f"最后回复：{last_text}"
-            )
-            summary_messages = messages + [
-                {"role": "user", "content": summary_prompt}
-            ]
-            response = await self.llm_client.chat_main(
-                messages=summary_messages,
-                system=None,
-                tools=None,
-            )
-            # 提取文本 block（兼容 content 为 dict 列表或对象列表）
-            content_blocks = getattr(response, "content", []) or []
-            text_parts: List[str] = []
-            for block in content_blocks:
-                block_dict = self._block_to_dict(block)
-                if block_dict.get("type") == "text":
-                    text = block_dict.get("text", "")
-                    if text:
-                        text_parts.append(text)
-            summary_text = "".join(text_parts)
-            if not summary_text:
-                logger.warning(
-                    "max_loops 总结调用返回空文本，降级返回 last_text"
-                )
-                return last_text
-            return summary_text
-        except Exception as e:
-            logger.error("max_loops 总结调用失败，降级返回 last_text: %s", e)
-            return last_text
+    @staticmethod
+    def _build_stuck_message(tool_name: str, reason: str = "") -> str:
+        return _build_stuck_message_fn(tool_name, reason)
+
+    @staticmethod
+    def _drop_trailing_orphan_tool_calls(messages):
+        return _drop_trailing_orphan_tool_calls_fn(messages)
+
+    @staticmethod
+    def _extract_schedule_id(session_id):
+        return _extract_schedule_id_fn(session_id)
 
     @staticmethod
     def _block_to_dict(block: Any) -> Dict[str, Any]:
-        """将 content block 转为 dict（委托到 stream_handler.block_to_dict）。"""
         return _block_to_dict_fn(block)
 
-    def _build_done_event(
-        self,
-        *,
-        response: str,
-        messages: List[Dict[str, Any]],
-        is_complete: bool,
-        termination_reason: str,
-        usage: Optional[Dict[str, Any]] = None,
-        content_blocks: Optional[List[Dict[str, Any]]] = None,
-        stop_reason: Optional[str] = None,
-        reasoning_cfg: Optional["ReasoningConfig"] = None,
-        current_round_text: str = "",
-        current_round_reasoning: str = "",
-    ) -> Dict[str, Any]:
-        """统一构造 done 事件（委托到 stream_handler.build_done_event）。"""
+    def _build_done_event(self, *, response, messages, is_complete, termination_reason,
+                          usage=None, content_blocks=None, stop_reason=None,
+                          reasoning_cfg=None, current_round_text="", current_round_reasoning=""):
         return _build_done_event_fn(
-            response=response,
-            messages=messages,
-            is_complete=is_complete,
-            termination_reason=termination_reason,
-            usage=usage,
-            content_blocks=content_blocks,
-            stop_reason=stop_reason,
-            reasoning_cfg=reasoning_cfg,
-            current_round_text=current_round_text,
+            response=response, messages=messages, is_complete=is_complete,
+            termination_reason=termination_reason, usage=usage,
+            content_blocks=content_blocks, stop_reason=stop_reason,
+            reasoning_cfg=reasoning_cfg, current_round_text=current_round_text,
             current_round_reasoning=current_round_reasoning,
         )
 
     @staticmethod
-    def _build_reasoning_stats(
-        reasoning_cfg: Optional["ReasoningConfig"],
-        usage: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """构造 reasoning_stats 字段（委托到 stream_handler.build_reasoning_stats）。"""
+    def _build_reasoning_stats(reasoning_cfg, usage):
         return _build_reasoning_stats_fn(reasoning_cfg, usage)
+
