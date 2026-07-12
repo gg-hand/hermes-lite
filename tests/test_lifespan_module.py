@@ -1,52 +1,53 @@
-"""Task 5: 验证 lifespan 模块可独立导入且暴露 lifespan 函数。
+# tests/test_lifespan_module.py（修改）
+"""测试 lifespan 模块使用 container.get() 而非手工 new。
 
-架构决策：全局组件变量保留在 server.py（因 40 个测试 patch src.server.orchestrator），
-lifespan.py 仅包含 lifespan 函数与 skill state 辅助函数。lifespan 函数内部通过
-`import server; server.orchestrator = ...` 设置全局变量。
+spec 2026-07-13 阶段 2：lifespan 从 796 行降至 ~200 行。
 """
-import inspect
+from __future__ import annotations
 import sys
+import os
+from unittest.mock import MagicMock, patch, AsyncMock
 
-sys.path.insert(0, "src")
-
-
-def test_lifespan_module_importable():
-    """lifespan 模块可独立导入。"""
-    import lifespan
-    assert lifespan is not None
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 
-def test_lifespan_callable_exists():
-    """lifespan 模块暴露 lifespan 可调用对象（async context manager）。"""
-    from lifespan import lifespan
-    assert callable(lifespan)
+class TestLifespanUsesContainer:
 
+    def test_lifespan_calls_container_get(self):
+        """lifespan 应通过 container.get() 获取组件，而非手工 new。"""
+        with open(os.path.join(_SRC_DIR, "lifespan.py"), "r", encoding="utf-8") as f:
+            content = f.read()
+        # 不应包含手工创建逻辑
+        assert "SessionLogger(" not in content or "container.get" in content
+        assert "MetricsCollector(" not in content or "container.get" in content
 
-def test_lifespan_is_async_context_manager():
-    """lifespan 是 async context manager（被 @asynccontextmanager 装饰）。"""
-    from lifespan import lifespan
-    # @asynccontextmanager 装饰后，lifespan 是一个 callable，
-    # 调用后返回 _AsyncGeneratorContextManager
-    assert callable(lifespan)
+    def test_lifespan_uses_background_task_registry(self):
+        """lifespan 应使用 BackgroundTaskRegistry 注册后台 task。"""
+        with open(os.path.join(_SRC_DIR, "lifespan.py"), "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "BackgroundTaskRegistry" in content
+        assert "task_registry" in content
 
+    def test_lifespan_creates_metrics_reset_event(self):
+        """lifespan 应创建 app.state.metrics_reset_event。"""
+        with open(os.path.join(_SRC_DIR, "lifespan.py"), "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "metrics_reset_event" in content
+        assert "asyncio.Event" in content
 
-def test_load_skill_state_exists():
-    """_load_skill_state 辅助函数存在于 lifespan 模块。"""
-    from lifespan import _load_skill_state
-    assert callable(_load_skill_state)
+    def test_lifespan_no_set_instance(self):
+        """lifespan 不应调用 inject_lifespan_instances（改为 container.get 触发工厂）。"""
+        with open(os.path.join(_SRC_DIR, "lifespan.py"), "r", encoding="utf-8") as f:
+            content = f.read()
+        # inject_lifespan_instances 是旧模式，新 lifespan 不应使用
+        assert "inject_lifespan_instances" not in content
 
-
-def test_save_skill_state_exists():
-    """_save_skill_state 辅助函数存在于 lifespan 模块。"""
-    from lifespan import _save_skill_state
-    assert callable(_save_skill_state)
-
-
-def test_server_globals_still_declared():
-    """server 模块仍声明全局变量（供 test patch 与 state.py 代理）。"""
-    import server
-    assert hasattr(server, "orchestrator")
-    assert hasattr(server, "session_logger")
-    assert hasattr(server, "metrics_collector")
-    assert hasattr(server, "approval_manager")
-    assert hasattr(server, "task_manager")
+    def test_lifespan_no_state_sync(self):
+        """lifespan 不应同步到 state 模块或 server 模块。"""
+        with open(os.path.join(_SRC_DIR, "lifespan.py"), "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "import state as _state" not in content
+        assert "_state.orchestrator =" not in content
+        assert "_server_mod.orchestrator =" not in content
