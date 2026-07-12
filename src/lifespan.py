@@ -674,7 +674,7 @@ async def lifespan(app: FastAPI):
     # cron_tool 子进程执行派发。用户会话路径不受影响（仅 cron: 前缀会话读取）。
     if orchestrator is not None:
         try:
-            orchestrator.set_cron_dependencies(
+            orchestrator.cron_isolator.set_dependencies(
                 cron_scheduler=cron_scheduler,
                 cron_tool_registry=cron_tool_registry,
             )

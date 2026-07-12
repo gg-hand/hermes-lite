@@ -1727,9 +1727,9 @@ class Orchestrator:
               cron 会话为请求级过滤后的列表（或 ``None`` 表示未启用过滤）。
         """
         # Phase 8 Task 1.4: cron 会话走隔离路径
-        cron_isolation = self._build_cron_isolation(session_id)
+        cron_isolation = self.cron_isolator.build_isolation(session_id)
         if cron_isolation is not None:
-            return await self._build_cron_enhanced_context(
+            return await self.cron_isolator.build_enhanced_context(
                 session_id, user_input, history, cron_isolation
             )
 
@@ -1854,41 +1854,6 @@ class Orchestrator:
         # react_loop 走默认 tool_registry.get_tools_schema() 路径，
         # 保证 tools schema 字节级稳定（缓存约束 1）。
         return system_text, enhanced_history, None
-
-    def _build_cron_isolation(
-        self, session_id: Optional[str]
-    ) -> Optional["CronIsolation"]:
-        """从 session_id 解析 CronIsolation context。委托给 CronIsolator。"""
-        return self.cron_isolator.build_isolation(session_id)
-
-    async def _build_cron_enhanced_context(
-        self,
-        session_id: str,
-        user_input: str,
-        history: List[Dict[str, Any]],
-        cron_isolation: "CronIsolation",
-    ) -> tuple:
-        """构建 cron 调度会话的隔离上下文。委托给 CronIsolator。"""
-        return await self.cron_isolator.build_enhanced_context(
-            session_id, user_input, history, cron_isolation
-        )
-
-    def _build_cron_tools(
-        self, session_id: Optional[str]
-    ) -> Optional[List[Dict[str, Any]]]:
-        """构建 cron 调度会话的请求级工具过滤列表。委托给 CronIsolator。"""
-        return self.cron_isolator.build_cron_tools(session_id)
-
-    def set_cron_dependencies(
-        self,
-        cron_scheduler: Optional[Any] = None,
-        cron_tool_registry: Optional[Any] = None,
-    ) -> None:
-        """注入 cron 调度路径所需的依赖。委托给 CronIsolator。"""
-        self.cron_isolator.set_dependencies(
-            cron_scheduler=cron_scheduler,
-            cron_tool_registry=cron_tool_registry,
-        )
 
     async def _apply_condenser(
         self, history: List[Dict[str, Any]]

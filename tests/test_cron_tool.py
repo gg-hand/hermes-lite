@@ -827,14 +827,14 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         # 注入 cron 依赖
         sched = {"active_tools_snapshot": ["builtin_a"]}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched1": sched})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
         # 注册一个 cron_tool
         self.cron_tool_registry.register("cron_echo")
 
-        tools_override = self.orch._build_cron_tools("cron:sched1")
+        tools_override = self.orch.cron_isolator.build_cron_tools("cron:sched1")
         self.assertIsNotNone(tools_override)
         names = [t["name"] for t in tools_override]
         # snapshot 只允许 builtin_a
@@ -847,13 +847,13 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         """active_tools_snapshot 为空时返回完整内置工具集 + cron_tool。"""
         sched = {"active_tools_snapshot": []}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched2": sched})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
         self.cron_tool_registry.register("cron_echo")
 
-        tools_override = self.orch._build_cron_tools("cron:sched2")
+        tools_override = self.orch.cron_isolator.build_cron_tools("cron:sched2")
         names = [t["name"] for t in tools_override]
         self.assertIn("builtin_a", names)
         self.assertIn("builtin_b", names)
@@ -863,23 +863,23 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         """active_tools_snapshot 为 None 时返回完整工具集 + cron_tool。"""
         sched = {"active_tools_snapshot": None}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched3": sched})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
         self.cron_tool_registry.register("cron_echo")
 
-        tools_override = self.orch._build_cron_tools("cron:sched3")
+        tools_override = self.orch.cron_isolator.build_cron_tools("cron:sched3")
         self.assertEqual(len(tools_override), 3)  # 2 内置 + 1 cron_tool
 
     def test_cron_session_schedule_not_found_returns_none(self):
         """调度项不存在返回 None（用完整工具集，向后兼容）。"""
         self.orch.cron_scheduler = _MockCronSchedulerForCache({})  # 空映射
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
-        tools_override = self.orch._build_cron_tools("cron:nonexistent")
+        tools_override = self.orch.cron_isolator.build_cron_tools("cron:nonexistent")
         self.assertIsNone(tools_override)
 
     def test_global_registry_byte_stable_after_cron_tool_register(self):
@@ -925,7 +925,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         """ReactLoop.run 收到 tools_override 参数（非 None）。"""
         sched = {"active_tools_snapshot": ["builtin_a"]}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched4": sched})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
@@ -966,7 +966,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
     def test_cron_tool_registry_injected_to_react_loop(self):
         """set_cron_dependencies 注入 cron_tool_registry 到 react_loop。"""
         self.orch.cron_scheduler = _MockCronSchedulerForCache({})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=self.cron_tool_registry,
         )
@@ -976,7 +976,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         """_build_cron_tools 首次调用时懒注入 cron_tool_registry 到 react_loop。"""
         sched = {"active_tools_snapshot": []}
         self.orch.cron_scheduler = _MockCronSchedulerForCache({"sched5": sched})
-        self.orch.set_cron_dependencies(
+        self.orch.cron_isolator.set_dependencies(
             cron_scheduler=self.orch.cron_scheduler,
             cron_tool_registry=None,  # 先不注入
         )
@@ -984,7 +984,7 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.orch.cron_tool_registry = self.cron_tool_registry
         # 重置 react_loop.cron_tool_registry 为 None 模拟未注入
         self.react_loop.cron_tool_registry = None
-        self.orch._build_cron_tools("cron:sched5")
+        self.orch.cron_isolator.build_cron_tools("cron:sched5")
         # 首次调用后已注入
         self.assertIs(self.orch.react_loop.cron_tool_registry, self.cron_tool_registry)
 
@@ -1127,7 +1127,7 @@ class TestEndToEndIntegration(unittest.TestCase):
         orch.cron_isolator = CronIsolator(orchestrator=orch)
 
         # _build_cron_tools 过滤 + 合并
-        tools_override = orch._build_cron_tools("cron:e2e")
+        tools_override = orch.cron_isolator.build_cron_tools("cron:e2e")
         names = [t["name"] for t in tools_override]
         self.assertIn("search", names)  # snapshot 允许
         self.assertIn("echo_text", names)  # cron_tool 始终可见

@@ -94,7 +94,7 @@ class TestBuildCronEnhancedContextExcludeTypes(unittest.IsolatedAsyncioTestCase)
         history = [{"role": "user", "content": "上次结果是什么"}]
 
         system_text, enhanced_history, tools_override = (
-            await orch._build_cron_enhanced_context(
+            await orch.cron_isolator.build_enhanced_context(
                 session_id="cron:sched_A",
                 user_input="本次问题",
                 history=history,
@@ -141,7 +141,7 @@ class TestBuildCronEnhancedContextExcludeTypes(unittest.IsolatedAsyncioTestCase)
         history = [{"role": "user", "content": "新任务"}]
 
         system_text, enhanced_history, tools_override = (
-            await orch._build_cron_enhanced_context(
+            await orch.cron_isolator.build_enhanced_context(
                 session_id="cron:sched_B",
                 user_input="新任务输入",
                 history=history,
@@ -187,7 +187,7 @@ class TestBuildCronEnhancedContextInjectHistorySwitch(unittest.IsolatedAsyncioTe
         cron_isolation = CronIsolation(cron_id="sched_C")
         history = [{"role": "user", "content": "新任务"}]
 
-        await orch._build_cron_enhanced_context(
+        await orch.cron_isolator.build_enhanced_context(
             session_id="cron:sched_C",
             user_input="任务输入",
             history=history,
@@ -218,7 +218,7 @@ class TestBuildCronEnhancedContextInjectHistorySwitch(unittest.IsolatedAsyncioTe
         history = [{"role": "user", "content": "新任务"}]
 
         system_text, enhanced_history, tools_override = (
-            await orch._build_cron_enhanced_context(
+            await orch.cron_isolator.build_enhanced_context(
                 session_id="cron:sched_D",
                 user_input="任务输入",
                 history=history,
