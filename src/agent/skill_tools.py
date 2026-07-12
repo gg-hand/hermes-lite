@@ -830,13 +830,13 @@ def _make_skill_activate_handler(skill_loader: Any, orchestrator: Any, skill_nam
     LLM 调用 ``skill__{name}()`` 后触发：
     1. 从 ``orchestrator._current_session_id`` 获取当前会话 ID
        （在 ``run``/``run_stream`` 入口已设置）
-    2. 调用 ``orchestrator.activate_skill(skill_name, session_id=...)``
+    2. 调用 ``orchestrator.skill_mgr.activate(skill_name, session_id=...)``
        标记 skill 为已激活（下一轮注入 body 到 messages[0] 末位）
     3. 返回激活成功信息 + body 预览（前 100 字）
 
     参数:
         skill_loader: ``SkillLoader`` 实例（用于检查存在性 + 加载 body 预览）。
-        orchestrator: ``Orchestrator`` 实例（用于 activate_skill + session_id）。
+        orchestrator: ``Orchestrator`` 实例（用于 skill_mgr.activate + session_id）。
         skill_name: Skill 名称（closure 捕获，每个 skill 独立 handler）。
 
     返回:
@@ -847,7 +847,7 @@ def _make_skill_activate_handler(skill_loader: Any, orchestrator: Any, skill_nam
             return f"Skill '{skill_name}' 不存在"
         session_id = getattr(orchestrator, "_current_session_id", None) or "default"
         try:
-            orchestrator.activate_skill(skill_name, session_id=session_id)
+            orchestrator.skill_mgr.activate(skill_name, session_id=session_id)
         except Exception as e:
             return f"激活 Skill '{skill_name}' 失败: {e}"
         body_preview = skill_loader.load_body(skill_name)[:100]

@@ -839,7 +839,7 @@ class Orchestrator:
         self._current_intent_result = None
 
         # 0. 会话切换检测：若 session_id 变化且 pending 非空，先 flush 旧会话沉淀
-        await self._maybe_flush_on_session_switch(session_id)
+        await self.msg_persistence.maybe_flush_on_switch(session_id)
 
         # 1. 获取 session 历史
         history: List[Dict[str, Any]] = []
@@ -868,7 +868,7 @@ class Orchestrator:
                 logger.info("准备注入 InterruptNotice 到 history: %s", session_id)
 
         # 1.6 安全网：清理历史中的连续 user 消息（兼容旧 JSONL 文件）
-        history = self._sanitize_history_alternation(history)
+        history = MessagePersistence.sanitize_history(history)
 
         # 2. 执行 React 循环
         # 构建含用户画像 + 检索记忆的增强上下文
@@ -1103,7 +1103,7 @@ class Orchestrator:
         if self.history_buffer is not None:
             try:
                 new_messages = messages_used[enhanced_history_len:]
-                self._persist_new_messages(session_id, new_messages, user_input, response_text)
+                self.msg_persistence.persist_new_messages(session_id, new_messages, user_input, response_text)
             except Exception as e:
                 logger.warning("更新 HistoryBuffer 失败: %s", e)
 
@@ -1121,7 +1121,7 @@ class Orchestrator:
                 )
                 # 达到阈值则触发沉淀（consolidate 内部会重置计数器与消息缓冲）
                 if self.consolidation_engine.should_consolidate():
-                    await self._trigger_consolidation(session_id)
+                    await self.msg_persistence.trigger_consolidation(session_id)
             except Exception as e:
                 logger.warning("consolidation 信息累加或触发失败: %s", e)
 
@@ -1192,7 +1192,7 @@ class Orchestrator:
         """
         # 0. 会话切换检测：若 session_id 变化且 pending 非空，先 flush 旧会话沉淀
         yield {"type": "status", "status": "loading_context", "message": "正在加载上下文..."}
-        await self._maybe_flush_on_session_switch(session_id)
+        await self.msg_persistence.maybe_flush_on_switch(session_id)
 
         # 记录当前 session_id，供 plan 工具通过 get_session_id 回调获取
         self._current_session_id = session_id
@@ -1226,7 +1226,7 @@ class Orchestrator:
                 logger.info("准备注入 InterruptNotice 到 history（流式）: %s", session_id)
 
         # 1.6 安全网：清理历史中的连续 user 消息（兼容旧 JSONL 文件）
-        history = self._sanitize_history_alternation(history)
+        history = MessagePersistence.sanitize_history(history)
 
         # 2. 流式执行 React 循环，透传事件并收集待持久化的消息
         # 构建含用户画像 + 检索记忆的增强上下文
@@ -1643,7 +1643,7 @@ class Orchestrator:
                 try:
                     if done_messages is not None:
                         new_messages = done_messages[enhanced_history_len:]
-                        self._persist_new_messages(
+                        self.msg_persistence.persist_new_messages(
                             session_id, new_messages, user_input, response_text
                         )
                     else:
@@ -1684,25 +1684,9 @@ class Orchestrator:
                         {"role": "assistant", "content": _consolidation_response}
                     )
                     if self.consolidation_engine.should_consolidate():
-                        await self._trigger_consolidation(session_id)
+                        await self.msg_persistence.trigger_consolidation(session_id)
                 except Exception as e:
                     logger.warning("consolidation 信息累加或触发失败: %s", e)
-
-    # ------------------------------------------------------------------
-    # P1-3: Skill 激活状态管理（L2 body 注入）
-    # ------------------------------------------------------------------
-
-    def activate_skill(self, skill_name: str, session_id: str = "default") -> None:
-        """标记 Skill 为已激活。委托给 SkillManager。"""
-        self.skill_mgr.activate(skill_name, session_id)
-
-    def deactivate_skill(self, skill_name: str, session_id: str = "default") -> None:
-        """取消激活指定 Skill。委托给 SkillManager。"""
-        self.skill_mgr.deactivate(skill_name, session_id)
-
-    def _build_active_skills_section(self, session_id: str) -> str:
-        """构建已激活 Skill body 段。委托给 SkillManager。"""
-        return self.skill_mgr.build_active_section(session_id)
 
     async def _build_enhanced_context(
         self,
@@ -1846,7 +1830,7 @@ class Orchestrator:
         # LLM 调用 skill__{name}() 后，下一轮在此注入 body 到上下文末位。
         # 末位注入保证不破坏前面 section 的相对顺序，且不影响缓存前缀。
         try:
-            skill_section = self._build_active_skills_section(session_id)
+            skill_section = self.skill_mgr.build_active_section(session_id)
             if skill_section:
                 if injection_text:
                     injection_text = f"{injection_text}\n\n{skill_section}"
@@ -1932,36 +1916,6 @@ class Orchestrator:
             logger.warning("condenser 压缩历史失败，使用原始历史: %s", e)
             return clean
 
-    def _persist_new_messages(
-        self,
-        session_id: str,
-        new_messages: List[Dict[str, Any]],
-        user_input: str,
-        response_text: str,
-    ) -> None:
-        """委托到 MessagePersistence.persist_new_messages。"""
-        self.msg_persistence.persist_new_messages(
-            session_id, new_messages, user_input, response_text
-        )
-
-    def _save_interrupt_notice(
-        self, session_id: str, new_message: Optional[str] = None
-    ) -> None:
-        """委托到 MessagePersistence.save_interrupt_notice。"""
-        self.msg_persistence.save_interrupt_notice(session_id, new_message)
-
-    @staticmethod
-    def _sanitize_history_alternation(
-        history: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """委托到 MessagePersistence.sanitize_history。"""
-        return MessagePersistence.sanitize_history(history)
-
-    @staticmethod
-    def _is_empty_assistant_content(content: Any) -> bool:
-        """委托到 MessagePersistence.is_empty_assistant。"""
-        return MessagePersistence.is_empty_assistant(content)
-
     def apply_condenser_config(
         self, condenser_cfg: Dict[str, Any]
     ) -> Optional[Condenser]:
@@ -1997,18 +1951,6 @@ class Orchestrator:
         if self.context_manager is not None:
             self.context_manager.condenser = new_condenser
         return new_condenser
-
-    async def _maybe_flush_on_session_switch(self, session_id: str) -> None:
-        """委托到 MessagePersistence.maybe_flush_on_switch。"""
-        await self.msg_persistence.maybe_flush_on_switch(session_id)
-
-    def flush_consolidation(self, session_id: Optional[str] = None) -> Dict[str, int]:
-        """委托到 MessagePersistence.flush_consolidation。"""
-        return self.msg_persistence.flush_consolidation(session_id)
-
-    async def _trigger_consolidation(self, session_id: Optional[str] = None) -> None:
-        """委托到 MessagePersistence.trigger_consolidation。"""
-        await self.msg_persistence.trigger_consolidation(session_id)
 
     def close(self) -> None:
         """关闭所有资源。

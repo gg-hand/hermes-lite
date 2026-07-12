@@ -214,7 +214,7 @@ def chat_stream(req: ChatRequest):
                             session_id
                         )
                         if orchestrator is not None:
-                            orchestrator._save_interrupt_notice(
+                            orchestrator.msg_persistence.save_interrupt_notice(
                                 session_id, graceful_msg
                             )
 
@@ -312,7 +312,7 @@ async def cancel_stream(req: CancelRequest):
                     kill_running_process()
                 except ImportError:
                     pass
-                orchestrator._save_interrupt_notice(req.session_id, msg)
+                orchestrator.msg_persistence.save_interrupt_notice(req.session_id, msg)
                 logger.info(
                     "Force killed: session=%s, message injected", req.session_id
                 )
