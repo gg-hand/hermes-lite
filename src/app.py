@@ -198,6 +198,93 @@ def close_container() -> None:
 
 
 # ---------------------------------------------------------------------------
+# FastAPI Depends 函数（Task 5: 路由类型安全注入）
+# ---------------------------------------------------------------------------
+
+from fastapi import Depends
+
+
+def get_container_or_raise() -> "Container":
+    """获取已初始化的容器，未初始化时抛 RuntimeError。"""
+    c = get_container()
+    if c is None:
+        raise RuntimeError("DI 容器未初始化")
+    return c
+
+
+def _resolve_depends(c):
+    """直接调用回退：c 为 Depends 对象时（绕过 FastAPI 直接调用）解析容器。
+
+    FastAPI 路由注入时会将 Depends 默认值替换为解析后的容器实例；
+    但在单元测试或普通函数调用中，默认值仍是 Depends 对象，此处做兼容。
+    """
+    from fastapi.params import Depends as _DependsType
+    if isinstance(c, _DependsType):
+        return get_container_or_raise()
+    return c
+
+
+def get_orchestrator(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("orchestrator")
+
+
+def get_session_logger(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("session_logger")
+
+
+def get_metrics_collector(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("metrics_collector")
+
+
+def get_metrics_store(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("metrics_store")
+
+
+def get_audit_logger(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("audit_logger")
+
+
+def get_approval_manager(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("approval_manager")
+
+
+def get_task_manager(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("task_manager")
+
+
+def get_stream_manager(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("stream_manager")
+
+
+def get_skill_loader(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("skill_loader")
+
+
+def get_mcp_manager(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("mcp_manager")
+
+
+def get_upload_manager(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("upload_manager")
+
+
+def get_etl_engine(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("etl_engine")
+
+
+def get_cron_scheduler(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("cron_scheduler")
+
+
+def get_proposal_store(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("proposal_store")
+
+
+def get_health_checker(c=Depends(get_container_or_raise)):
+    return _resolve_depends(c).get("health_checker")
+
+
+# ---------------------------------------------------------------------------
 # 组件注册（Task 3: 注册15个外部组件到容器）
 # ---------------------------------------------------------------------------
 
