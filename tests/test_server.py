@@ -27,21 +27,51 @@ if _SRC_DIR not in sys.path:
 
 @pytest.fixture
 def mock_orchestrator():
-    """创建 mock orchestrator + llm_client，注入 server 模块全局变量。"""
-    with patch("server.orchestrator") as mock_orch, \
-         patch("server.session_logger") as mock_session, \
-         patch("server.stream_manager") as mock_sm:
-        mock_llm = MagicMock()
-        mock_llm.main_reasoning_enabled = False
-        mock_llm.main_reasoning_effort = "medium"
-        mock_llm.main_reasoning_budget_tokens = 8000
-        mock_llm.cron_reasoning_enabled = False
-        mock_llm.cron_reasoning_effort = "low"
-        mock_llm.persist_thinking = True
-        mock_orch.llm_client = mock_llm
-        mock_session.create_session.return_value = "test-session-id"
-        mock_sm.register.return_value = None
+    """创建 mock orchestrator + llm_client，注入 server 模块全局变量 + DI overrides。
+
+    注意：routes/* 已改为 Depends 注入，patch("server.orchestrator") 仅对
+    server.py 内部代码生效；路由通过 dependency_overrides 注入 mock。
+    """
+    from server import app
+    from app import (
+        get_orchestrator, get_session_logger, get_stream_manager,
+        get_metrics_collector, get_metrics_store,
+    )
+    mock_orch = MagicMock()
+    mock_session = MagicMock()
+    mock_sm = MagicMock()
+    mock_llm = MagicMock()
+    mock_llm.main_reasoning_enabled = False
+    mock_llm.main_reasoning_effort = "medium"
+    mock_llm.main_reasoning_budget_tokens = 8000
+    mock_llm.cron_reasoning_enabled = False
+    mock_llm.cron_reasoning_effort = "low"
+    mock_llm.persist_thinking = True
+    mock_orch.llm_client = mock_llm
+    mock_session.create_session.return_value = "test-session-id"
+    mock_sm.register.return_value = None
+
+    # DI overrides：路由通过 Depends(get_xxx) 注入 mock
+    app.dependency_overrides[get_orchestrator] = lambda: mock_orch
+    app.dependency_overrides[get_session_logger] = lambda: mock_session
+    app.dependency_overrides[get_stream_manager] = lambda: mock_sm
+    app.dependency_overrides[get_metrics_collector] = lambda: None
+    app.dependency_overrides[get_metrics_store] = lambda: None
+
+    # reset_metrics 端点访问 request.app.state.metrics_reset_event
+    if not hasattr(app.state, "metrics_reset_event"):
+        app.state.metrics_reset_event = MagicMock()
+
+    with patch("server.orchestrator", mock_orch), \
+         patch("server.session_logger", mock_session), \
+         patch("server.stream_manager", mock_sm):
         yield mock_orch
+
+    app.dependency_overrides.pop(get_orchestrator, None)
+    app.dependency_overrides.pop(get_session_logger, None)
+    app.dependency_overrides.pop(get_stream_manager, None)
+    app.dependency_overrides.pop(get_metrics_collector, None)
+    app.dependency_overrides.pop(get_metrics_store, None)
 
 
 @pytest.fixture
@@ -309,43 +339,57 @@ class TestStartupSecurityWarning:
 class TestMetricsReset:
     """/metrics/reset 路由测试。
 
-    验证重置指标接口正常工作：重置 metrics_collector、设置 baseline_reset 标志、
+    验证重置指标接口正常工作：重置 metrics_collector、触发 metrics_reset_event、
     返回正确 JSON。前端监控面板"重置指标"按钮调用此接口。
     """
 
     def test_reset_metrics_success(self, client):
         """正常重置：返回 ok=True，metrics_collector.reset() 被调用。"""
-        import server as srv
-        with patch("server.metrics_collector") as mock_collector:
-            srv._metrics_baseline_reset = False
+        from server import app
+        from app import get_metrics_collector
+        mock_collector = MagicMock()
+        app.dependency_overrides[get_metrics_collector] = lambda: mock_collector
+        try:
             resp = client.post("/metrics/reset")
             assert resp.status_code == 200
             assert resp.json() == {"ok": True}
             mock_collector.reset.assert_called_once()
-            assert srv._metrics_baseline_reset is True
+            # reset_metrics 通过 app.state.metrics_reset_event 通知 baseline 重置
+            app.state.metrics_reset_event.set.assert_called()
+        finally:
+            app.dependency_overrides[get_metrics_collector] = lambda: None
 
     def test_reset_metrics_when_disabled(self, client):
         """监控未启用（metrics_collector=None）时返回 400。"""
-        import server as srv
-        with patch("server.metrics_collector", None):
-            srv._metrics_baseline_reset = False
+        from server import app
+        from app import get_metrics_collector
+        app.dependency_overrides[get_metrics_collector] = lambda: None
+        try:
             resp = client.post("/metrics/reset")
             assert resp.status_code == 400
             data = resp.json()
             assert data["ok"] is False
             assert "error" in data
+        finally:
+            pass  # 保持 None override（由 fixture teardown 清理）
 
     def test_reset_metrics_sets_baseline_reset_flag(self, client):
-        """重置后 _metrics_baseline_reset 标志被设置（供 metrics_persist_loop 检查）。"""
-        import server as srv
-        with patch("server.metrics_collector") as mock_collector:
-            srv._metrics_baseline_reset = False
+        """重置后 metrics_reset_event.set() 被调用（供 baseline 重置检查）。"""
+        from server import app
+        from app import get_metrics_collector
+        mock_collector = MagicMock()
+        app.dependency_overrides[get_metrics_collector] = lambda: mock_collector
+        # 重置 mock 以清除 fixture 中可能的 set 调用
+        app.state.metrics_reset_event.set.reset_mock()
+        try:
             client.post("/metrics/reset")
-            assert srv._metrics_baseline_reset is True
-            # 再次重置后仍为 True
-            srv._metrics_baseline_reset = False
+            app.state.metrics_reset_event.set.assert_called_once()
+            # 再次重置后 set 再次被调用
+            app.state.metrics_reset_event.set.reset_mock()
             client.post("/metrics/reset")
-            assert srv._metrics_baseline_reset is True
+            app.state.metrics_reset_event.set.assert_called_once()
+        finally:
+            app.dependency_overrides[get_metrics_collector] = lambda: None
 
 
 # ======================================================================

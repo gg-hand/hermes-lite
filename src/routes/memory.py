@@ -9,7 +9,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app import get_orchestrator
 
 logger = logging.getLogger("hermes.server")
 
@@ -52,6 +54,7 @@ def search_memories(
     q: str = Query("", description="搜索关键词，空串返回空列表"),
     top_k: int = Query(20, ge=1, le=200, description="返回条数"),
     type: Optional[str] = Query(None, description="按 metadata.type 过滤"),
+    orchestrator=Depends(get_orchestrator),
 ):
     """搜索长期记忆（向量检索）。
 
@@ -62,9 +65,6 @@ def search_memories(
     返回:
         ``{"memories": [{id, content, similarity, metadata}], "total": N}``
     """
-    import state
-
-    orchestrator = state.orchestrator
     if orchestrator is None or orchestrator.chroma_store is None:
         raise HTTPException(status_code=503, detail="ChromaMemoryStore 尚未初始化")
     # 空关键词直接返回空列表（避免无意义检索）
@@ -100,6 +100,7 @@ def search_memories(
 def list_all_memories(
     type: Optional[str] = Query(None, description="按 metadata.type 过滤"),
     limit: int = Query(100, ge=1, le=1000, description="最多返回条数"),
+    orchestrator=Depends(get_orchestrator),
 ):
     """列出全部长期记忆（不做向量检索，按 metadata.type 过滤 + limit 截断）。
 
@@ -109,9 +110,6 @@ def list_all_memories(
     返回:
         ``{"memories": [{id, content, metadata}], "total": N}``
     """
-    import state
-
-    orchestrator = state.orchestrator
     if orchestrator is None or orchestrator.chroma_store is None:
         raise HTTPException(status_code=503, detail="ChromaMemoryStore 尚未初始化")
     try:
@@ -141,7 +139,7 @@ def list_all_memories(
 
 
 @router.delete("/memories/{memory_id}")
-def delete_memory(memory_id: str):
+def delete_memory(memory_id: str, orchestrator=Depends(get_orchestrator)):
     """删除单条长期记忆（用户手动删除，立即生效）。
 
     与 LLM 通过 ``delete_memory`` 工具入队 ``pending_memory_ops``（延迟到下次
@@ -153,9 +151,6 @@ def delete_memory(memory_id: str):
     返回:
         ``{"status": "ok", "deleted_id": memory_id}``
     """
-    import state
-
-    orchestrator = state.orchestrator
     if orchestrator is None or orchestrator.chroma_store is None:
         raise HTTPException(status_code=503, detail="ChromaMemoryStore 尚未初始化")
     # 先检查是否存在（get_all_memories 兼容 mock 与真实 chromadb）
@@ -180,7 +175,7 @@ def delete_memory(memory_id: str):
 
 
 @router.get("/profile")
-def get_profile():
+def get_profile(orchestrator=Depends(get_orchestrator)):
     """返回用户画像 memory.md 全文。
 
     通过 ``orchestrator.memory_md_manager`` 读取 memory.md，文件不存在时
@@ -190,9 +185,6 @@ def get_profile():
     返回:
         ``{"content": "...", "updated_at": "ISO timestamp"}``
     """
-    import state
-
-    orchestrator = state.orchestrator
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
     memory_md_manager = getattr(orchestrator, "memory_md_manager", None)

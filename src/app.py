@@ -129,37 +129,6 @@ async def log_requests(request: Request, call_next):
     return response
 
 # ---------------------------------------------------------------------------
-# 路由注册（Task 8+: 按域从 server.py 迁移路由）
-# ---------------------------------------------------------------------------
-
-from routes.misc import router as misc_router  # noqa: E402
-from routes.health import router as health_router  # noqa: E402
-from routes.sessions import router as sessions_router  # noqa: E402
-from routes.config import router as config_router  # noqa: E402
-from routes.approvals import router as approvals_router  # noqa: E402
-from routes.proposals import router as proposals_router  # noqa: E402
-from routes.skills import router as skills_router  # noqa: E402
-from routes.cron_tools import router as cron_tools_router  # noqa: E402
-from routes.files import router as files_router  # noqa: E402
-from routes.memory import router as memory_router  # noqa: E402
-from routes.chat import router as chat_router  # noqa: E402
-from routes.schedules import router as schedules_router  # noqa: E402
-
-app.include_router(misc_router)
-app.include_router(health_router)
-app.include_router(sessions_router)
-app.include_router(config_router)
-app.include_router(approvals_router)
-app.include_router(proposals_router)
-app.include_router(skills_router)
-app.include_router(cron_tools_router)
-app.include_router(files_router)
-app.include_router(memory_router)
-app.include_router(chat_router)
-app.include_router(schedules_router)
-
-
-# ---------------------------------------------------------------------------
 # DI 容器（Task 5）
 # ---------------------------------------------------------------------------
 
@@ -282,6 +251,39 @@ def get_proposal_store(c=Depends(get_container_or_raise)):
 
 def get_health_checker(c=Depends(get_container_or_raise)):
     return _resolve_depends(c).get("health_checker")
+
+
+# ---------------------------------------------------------------------------
+# 路由注册（Task 8+: 按域从 server.py 迁移路由）
+# ---------------------------------------------------------------------------
+# 注意：路由导入必须在 get_* Depends 函数定义之后，否则会触发循环导入
+# （routes/*.py 在模块顶部使用 ``from app import get_xxx``）。
+
+from routes.misc import router as misc_router  # noqa: E402
+from routes.health import router as health_router  # noqa: E402
+from routes.sessions import router as sessions_router  # noqa: E402
+from routes.config import router as config_router  # noqa: E402
+from routes.approvals import router as approvals_router  # noqa: E402
+from routes.proposals import router as proposals_router  # noqa: E402
+from routes.skills import router as skills_router  # noqa: E402
+from routes.cron_tools import router as cron_tools_router  # noqa: E402
+from routes.files import router as files_router  # noqa: E402
+from routes.memory import router as memory_router  # noqa: E402
+from routes.chat import router as chat_router  # noqa: E402
+from routes.schedules import router as schedules_router  # noqa: E402
+
+app.include_router(misc_router)
+app.include_router(health_router)
+app.include_router(sessions_router)
+app.include_router(config_router)
+app.include_router(approvals_router)
+app.include_router(proposals_router)
+app.include_router(skills_router)
+app.include_router(cron_tools_router)
+app.include_router(files_router)
+app.include_router(memory_router)
+app.include_router(chat_router)
+app.include_router(schedules_router)
 
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,11 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.server import app  # noqa: E402
+from src.server import app  # noqa: E402  # noqa: F811
+# 注意：必须从 ``app`` 模块（而非 ``src.app``）导入 get_orchestrator，
+# 因为 routes/* 通过 ``from app import get_orchestrator`` 引用同一个函数对象，
+# dependency_overrides 按函数对象做 key。
+from app import get_orchestrator  # noqa: E402
 from src.memory.memory_md import MemoryMdManager  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -158,16 +162,10 @@ class TestSearchMemories(unittest.TestCase):
         ]
         self.store = _MockChromaStore(self.memories)
         self.orch = _make_mock_orchestrator(chroma_store=self.store)
-        self._patches = [patch("src.server.orchestrator", self.orch)]
-        for p in self._patches:
-            p.start()
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -252,16 +250,10 @@ class TestListAllMemories(unittest.TestCase):
         ]
         self.store = _MockChromaStore(self.memories)
         self.orch = _make_mock_orchestrator(chroma_store=self.store)
-        self._patches = [patch("src.server.orchestrator", self.orch)]
-        for p in self._patches:
-            p.start()
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -338,16 +330,10 @@ class TestDeleteMemory(unittest.TestCase):
         ]
         self.store = _MockChromaStore(self.memories)
         self.orch = _make_mock_orchestrator(chroma_store=self.store)
-        self._patches = [patch("src.server.orchestrator", self.orch)]
-        for p in self._patches:
-            p.start()
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -397,16 +383,10 @@ class TestGetProfile(unittest.TestCase):
         # 使用真实 MemoryMdManager，端到端验证文件读取 + mtime 解析
         self.manager = MemoryMdManager(file_path=self.memory_md_path)
         self.orch = _make_mock_orchestrator(memory_md_manager=self.manager)
-        self._patches = [patch("src.server.orchestrator", self.orch)]
-        for p in self._patches:
-            p.start()
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -469,16 +449,10 @@ class TestOrchestratorNotInitialized(unittest.TestCase):
     """orchestrator 为 None 时所有 Dashboard 端点返回 503。"""
 
     def setUp(self):
-        self._patches = [patch("src.server.orchestrator", None)]
-        for p in self._patches:
-            p.start()
+        app.dependency_overrides[get_orchestrator] = lambda: None
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_orchestrator, None)
 
     def _client(self) -> TestClient:
         return TestClient(app)

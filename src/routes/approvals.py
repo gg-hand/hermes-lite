@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app import get_approval_manager, get_metrics_collector
 from schemas.approvals import (
     ApprovalListItem,
     ApprovalListResponse,
@@ -23,7 +24,12 @@ router = APIRouter()
 
 
 @router.post("/approvals/{approval_id}/resolve", response_model=ApprovalResolveResponse)
-def resolve_approval(approval_id: str, req: ApprovalResolveRequest):
+def resolve_approval(
+    approval_id: str,
+    req: ApprovalResolveRequest,
+    approval_manager=Depends(get_approval_manager),
+    metrics_collector=Depends(get_metrics_collector),
+):
     """提交审批决定。
 
     - approval_manager 未初始化 → 503
@@ -31,11 +37,6 @@ def resolve_approval(approval_id: str, req: ApprovalResolveRequest):
     - approval_manager.resolve 返回 False → 404
     - 成功 → 200 ApprovalResolveResponse
     """
-    import state
-
-    approval_manager = state.approval_manager
-    metrics_collector = state.metrics_collector
-
     if approval_manager is None:
         raise HTTPException(status_code=503, detail="审批管理器未初始化")
     if req.decision not in ("approve", "deny"):
@@ -58,14 +59,11 @@ def resolve_approval(approval_id: str, req: ApprovalResolveRequest):
 
 
 @router.get("/approvals", response_model=ApprovalListResponse)
-def list_approvals():
+def list_approvals(approval_manager=Depends(get_approval_manager)):
     """列出所有 pending 状态的审批请求。
 
     approval_manager 未初始化时返回空列表（不报错）。
     """
-    import state
-
-    approval_manager = state.approval_manager
     if approval_manager is None:
         return ApprovalListResponse(pending=[])
     items = approval_manager.list_pending()

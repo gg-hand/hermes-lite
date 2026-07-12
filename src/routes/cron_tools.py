@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app import get_orchestrator
 
 logger = logging.getLogger("hermes.server")
 
@@ -86,11 +88,8 @@ def _read_cron_tool_dir(tool_dir: Path) -> Dict[str, Any]:
     return result
 
 
-def _get_cron_tool_registry():
-    """从 state.orchestrator 获取 cron_tool_registry（lifespan 注入到 orchestrator）。"""
-    import state
-
-    orchestrator = state.orchestrator
+def _get_cron_tool_registry(orchestrator):
+    """从 orchestrator 获取 cron_tool_registry（lifespan 注入到 orchestrator）。"""
     if orchestrator is None:
         return None
     return getattr(orchestrator, "cron_tool_registry", None)
@@ -128,7 +127,7 @@ def list_pending_cron_tools():
 
 
 @router.post("/cron_tools/{name}/activate")
-def activate_cron_tool(name: str):
+def activate_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
     """激活待审查的 cron_tool：从 .pending/ 移到 cron_tool/{name}/，注册到 registry。
 
     Phase 8 Task 5.5。流程：
@@ -140,7 +139,7 @@ def activate_cron_tool(name: str):
 
     激活失败时回滚（移回 .pending/）。
     """
-    cron_tool_registry = _get_cron_tool_registry()
+    cron_tool_registry = _get_cron_tool_registry(orchestrator)
     if cron_tool_registry is None:
         raise HTTPException(status_code=503, detail="CronToolRegistry 尚未初始化")
 
@@ -220,12 +219,12 @@ def reject_cron_tool(name: str):
 
 
 @router.get("/cron_tools")
-def list_cron_tools():
+def list_cron_tools(orchestrator=Depends(get_orchestrator)):
     """列出所有已激活的 cron_tool。
 
     Phase 8 Task 5.6。返回每个工具的元数据（name/version/description/timeout）。
     """
-    cron_tool_registry = _get_cron_tool_registry()
+    cron_tool_registry = _get_cron_tool_registry(orchestrator)
     if cron_tool_registry is None:
         raise HTTPException(status_code=503, detail="CronToolRegistry 尚未初始化")
     items = []
@@ -246,12 +245,12 @@ def list_cron_tools():
 
 
 @router.delete("/cron_tools/{name}")
-def delete_cron_tool(name: str):
+def delete_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
     """删除已激活的 cron_tool：从 registry 注销 + 删除目录。
 
     Phase 8 Task 5.6。
     """
-    cron_tool_registry = _get_cron_tool_registry()
+    cron_tool_registry = _get_cron_tool_registry(orchestrator)
     if cron_tool_registry is None:
         raise HTTPException(status_code=503, detail="CronToolRegistry 尚未初始化")
     base_dir = _CRON_TOOL_BASE_DIR
@@ -278,12 +277,12 @@ def delete_cron_tool(name: str):
 
 
 @router.put("/cron_tools/{name}")
-def reload_cron_tool(name: str):
+def reload_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
     """重新加载 cron_tool（编辑 TOOL.md / run.* 后调用）。
 
     Phase 8 Task 5.6。从磁盘重新解析 TOOL.md 并覆盖 registry 中的 meta。
     """
-    cron_tool_registry = _get_cron_tool_registry()
+    cron_tool_registry = _get_cron_tool_registry(orchestrator)
     if cron_tool_registry is None:
         raise HTTPException(status_code=503, detail="CronToolRegistry 尚未初始化")
     try:
