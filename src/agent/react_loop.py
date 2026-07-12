@@ -151,6 +151,25 @@ except ImportError:  # pragma: no cover
         _build_stuck_message_fn = None  # type: ignore
         _extract_schedule_id_fn = None  # type: ignore
 
+# Task 22: 流式处理辅助函数提取到 stream_handler
+try:
+    from .stream_handler import (
+        block_to_dict as _block_to_dict_fn,
+        build_done_event as _build_done_event_fn,
+        build_reasoning_stats as _build_reasoning_stats_fn,
+    )
+except ImportError:  # pragma: no cover
+    try:
+        from agent.stream_handler import (  # type: ignore
+            block_to_dict as _block_to_dict_fn,
+            build_done_event as _build_done_event_fn,
+            build_reasoning_stats as _build_reasoning_stats_fn,
+        )
+    except ImportError:  # pragma: no cover
+        _block_to_dict_fn = None  # type: ignore
+        _build_done_event_fn = None  # type: ignore
+        _build_reasoning_stats_fn = None  # type: ignore
+
 
 class ToolRegistry(Protocol):
     """工具注册器接口约定（占位 Protocol）。
@@ -1904,43 +1923,8 @@ class ReactLoop:
 
     @staticmethod
     def _block_to_dict(block: Any) -> Dict[str, Any]:
-        """将 anthropic 响应的 content block 转为可序列化的 dict。
-
-        anthropic SDK 返回的 content block 是类型对象（如 TextBlock、
-        ToolUseBlock），回传给 messages.create 时虽支持对象，但统一转为
-        dict 便于日志、序列化与一致处理。
-
-        参数:
-            block: anthropic content block 对象或 dict。
-
-        返回:
-            转换后的 dict。
-        """
-        if isinstance(block, dict):
-            return block
-
-        block_type = getattr(block, "type", None)
-        if block_type == "text":
-            return {
-                "type": "text",
-                "text": getattr(block, "text", ""),
-            }
-        if block_type == "tool_use":
-            return {
-                "type": "tool_use",
-                "id": getattr(block, "id", ""),
-                "name": getattr(block, "name", ""),
-                "input": getattr(block, "input", {}) or {},
-            }
-        if block_type == "thinking":
-            # thinking block 完整保留 text + signature（Anthropic extended thinking）
-            return {
-                "type": "thinking",
-                "thinking": getattr(block, "thinking", ""),
-                "signature": getattr(block, "signature", ""),
-            }
-        # 未知 block 类型，尽量保留可访问字段
-        return {"type": block_type or "unknown"}
+        """将 content block 转为 dict（委托到 stream_handler.block_to_dict）。"""
+        return _block_to_dict_fn(block)
 
     def _build_done_event(
         self,
@@ -1956,59 +1940,24 @@ class ReactLoop:
         current_round_text: str = "",
         current_round_reasoning: str = "",
     ) -> Dict[str, Any]:
-        """统一构造 done 事件，保证字段完整性（spec SubTask 10.5/22.11/22.32）。
-
-        所有 done 事件 yield 点必须调用此工厂，禁止手写 dict。
-        字段兜底：usage=None→{}，content_blocks=None→从 current_round_text 重建，
-        stop_reason=None→"end_turn"，reasoning_stats 调用 _build_reasoning_stats。
-        """
-        final_usage = usage if usage is not None else {}
-        if content_blocks is None:
-            content_blocks = []
-            if current_round_text:
-                content_blocks.append({"type": "text", "text": current_round_text})
-        final_stop_reason = stop_reason if stop_reason is not None else "end_turn"
-        reasoning_stats = self._build_reasoning_stats(
-            reasoning_cfg, final_usage if final_usage else None
+        """统一构造 done 事件（委托到 stream_handler.build_done_event）。"""
+        return _build_done_event_fn(
+            response=response,
+            messages=messages,
+            is_complete=is_complete,
+            termination_reason=termination_reason,
+            usage=usage,
+            content_blocks=content_blocks,
+            stop_reason=stop_reason,
+            reasoning_cfg=reasoning_cfg,
+            current_round_text=current_round_text,
+            current_round_reasoning=current_round_reasoning,
         )
-        return {
-            "type": "done",
-            "response": response,
-            "messages": messages,
-            "is_complete": is_complete,
-            "termination_reason": termination_reason,
-            "usage": final_usage,
-            "content_blocks": content_blocks,
-            "stop_reason": final_stop_reason,
-            "reasoning_stats": reasoning_stats,
-        }
 
     @staticmethod
     def _build_reasoning_stats(
         reasoning_cfg: Optional["ReasoningConfig"],
         usage: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """构造 done 事件的 reasoning_stats 字段（SubTask 10.8）。
-
-        合并 effort/budget/reasoning_tokens 到单个 dict，避免与
-        ``done.usage.reasoning_tokens`` 重复且消除"done 后再更新思考区头部"
-        的闪烁。
-
-        参数:
-            reasoning_cfg: 本轮使用的 ReasoningConfig（可能为 None）。
-            usage: backend done 事件提取的 usage dict（含 reasoning_tokens）。
-
-        返回:
-            ``{"effort": str, "budget_tokens": int|None, "reasoning_tokens": int}``
-            或 None（reasoning 未开启时）。
-        """
-        if reasoning_cfg is None or not reasoning_cfg.enabled:
-            return None
-        reasoning_tokens = 0
-        if usage and isinstance(usage, dict):
-            reasoning_tokens = usage.get("reasoning_tokens", 0) or 0
-        return {
-            "effort": reasoning_cfg.effort,
-            "budget_tokens": reasoning_cfg.budget_tokens,
-            "reasoning_tokens": reasoning_tokens,
-        }
+        """构造 reasoning_stats 字段（委托到 stream_handler.build_reasoning_stats）。"""
+        return _build_reasoning_stats_fn(reasoning_cfg, usage)
