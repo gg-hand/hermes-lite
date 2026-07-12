@@ -73,3 +73,11 @@ Thumbs.db
 
 # ── Desktop 桌面端（由 feature/desktop-v0.1.0 分支管理，dev 不介入） ──
 desktop/
+
+# 架构清理：备份目录和调试脚本
+hermes-lite.bak.*/
+hermes-lite/_test_*.py
+hermes-lite/bili_*.py
+hermes-lite/debug_*.txt
+hermes-lite/server_*.txt
+hermes-lite/sv*.txt
