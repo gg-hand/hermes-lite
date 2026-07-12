@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from app import get_upload_manager, get_session_logger, get_etl_engine
 from schemas.files import (
     FileDeleteResponse,
     FileItem,
@@ -25,11 +26,8 @@ router = APIRouter()
 # ---------- 后台 ETL 辅助 ----------
 
 
-def _run_etl(file_id: str, session_id: str) -> None:
+def _run_etl(file_id: str, session_id: str, etl_engine) -> None:
     """后台执行 ETL 处理。"""
-    import state
-
-    etl_engine = state.etl_engine
     try:
         if etl_engine is not None:
             result = etl_engine.process_file(file_id, session_id)
@@ -54,6 +52,9 @@ def _run_etl(file_id: str, session_id: str) -> None:
 async def upload_file(
     request: Request,
     background_tasks: BackgroundTasks,
+    upload_manager=Depends(get_upload_manager),
+    session_logger=Depends(get_session_logger),
+    etl_engine=Depends(get_etl_engine),
 ):
     """上传文件并触发 ETL 处理。
 
@@ -61,12 +62,6 @@ async def upload_file(
     全局 SHA256 去重：相同内容的文件返回已有 file_id。
     上传成功后后台异步执行 ETL 流水线。
     """
-    import state
-
-    upload_manager = state.upload_manager
-    session_logger = state.session_logger
-    etl_engine = state.etl_engine
-
     if upload_manager is None:
         raise HTTPException(status_code=503, detail="文件模块未初始化")
 
@@ -133,7 +128,7 @@ async def upload_file(
 
     # 后台 ETL
     if not is_dup and etl_engine is not None:
-        background_tasks.add_task(_run_etl, file_id, session_id)
+        background_tasks.add_task(_run_etl, file_id, session_id, etl_engine)
 
     message = "文件已在知识库中" if is_dup else "上传成功"
     return FileUploadResponse(file_id=file_id, is_dup=bool(is_dup), message=message)
@@ -143,11 +138,8 @@ async def upload_file(
 
 
 @router.get("/files", response_model=FileListResponse)
-def list_files():
+def list_files(upload_manager=Depends(get_upload_manager)):
     """列出所有已上传文件。"""
-    import state
-
-    upload_manager = state.upload_manager
     if upload_manager is None:
         raise HTTPException(status_code=503, detail="文件模块未初始化")
     try:
@@ -176,11 +168,9 @@ def list_files():
 
 
 @router.get("/files/{file_id}")
-def get_file_metadata(file_id: str):
+def get_file_metadata(file_id: str,
+                      upload_manager=Depends(get_upload_manager)):
     """获取单个文件的元数据。"""
-    import state
-
-    upload_manager = state.upload_manager
     if upload_manager is None:
         raise HTTPException(status_code=503, detail="文件模块未初始化")
     try:
@@ -199,11 +189,9 @@ def get_file_metadata(file_id: str):
 
 
 @router.get("/files/{file_id}/raw")
-def get_file_raw(file_id: str):
+def get_file_raw(file_id: str,
+                 upload_manager=Depends(get_upload_manager)):
     """返回文件原始内容（图片缩略图/文档下载用）。"""
-    import state
-
-    upload_manager = state.upload_manager
     if upload_manager is None:
         raise HTTPException(status_code=503, detail="文件模块未初始化")
     try:
@@ -242,11 +230,9 @@ def get_file_raw(file_id: str):
 
 
 @router.get("/sessions/{session_id}/files", response_model=FileListResponse)
-def get_session_files(session_id: str):
+def get_session_files(session_id: str,
+                      upload_manager=Depends(get_upload_manager)):
     """获取指定会话的上传文件列表。"""
-    import state
-
-    upload_manager = state.upload_manager
     if upload_manager is None:
         raise HTTPException(status_code=503, detail="文件模块未初始化")
     try:
@@ -277,15 +263,14 @@ def get_session_files(session_id: str):
 
 
 @router.delete("/admin/files/{file_id}", response_model=FileDeleteResponse)
-def admin_delete_file(file_id: str, request: Request):
+def admin_delete_file(file_id: str,
+                      request: Request,
+                      etl_engine=Depends(get_etl_engine)):
     """管理员应急清理：全链路删除文件知识。
 
     删除：磁盘原始文件 + 解析缓存 + ChromaDB 向量块 + FTS5 索引 + SQLite 元数据。
     需要 Bearer Token 认证。
     """
-    import state
-
-    etl_engine = state.etl_engine
     if etl_engine is None:
         raise HTTPException(status_code=503, detail="ETL 模块未初始化")
     try:

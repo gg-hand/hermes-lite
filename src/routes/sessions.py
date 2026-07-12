@@ -8,7 +8,13 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from app import (
+    get_session_logger,
+    get_cron_scheduler,
+    get_orchestrator,
+    get_upload_manager,
+)
 from schemas.common import (
     SessionListResponse,
     SessionItem,
@@ -24,11 +30,10 @@ router = APIRouter()
 
 
 @router.get("/sessions", response_model=SessionListResponse)
-def list_sessions(exclude_cron: bool = False, cron_only: bool = False):
-    import state
-
-    session_logger = state.session_logger
-    cron_scheduler = state.cron_scheduler
+def list_sessions(exclude_cron: bool = False,
+                  cron_only: bool = False,
+                  session_logger=Depends(get_session_logger),
+                  cron_scheduler=Depends(get_cron_scheduler)):
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     try:
@@ -68,10 +73,8 @@ def list_sessions(exclude_cron: bool = False, cron_only: bool = False):
 def get_session_messages(
     session_id: str,
     limit: Optional[int] = Query(default=None, ge=1, description="限制返回数量"),
+    session_logger=Depends(get_session_logger),
 ):
-    import state
-
-    session_logger = state.session_logger
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     try:
@@ -97,10 +100,9 @@ def get_session_messages(
 
 
 @router.patch("/sessions/{session_id}")
-def update_session_title(session_id: str, body: SessionTitleUpdate):
-    import state
-
-    session_logger = state.session_logger
+def update_session_title(session_id: str,
+                         body: SessionTitleUpdate,
+                         session_logger=Depends(get_session_logger)):
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     if not session_logger.session_exists(session_id):
@@ -123,17 +125,16 @@ def update_session_title(session_id: str, body: SessionTitleUpdate):
 
 
 @router.delete("/sessions/{session_id}", response_model=DeleteSessionResponse)
-def delete_session(session_id: str):
-    import state
-
-    session_logger = state.session_logger
+def delete_session(session_id: str,
+                   session_logger=Depends(get_session_logger),
+                   orchestrator=Depends(get_orchestrator),
+                   upload_manager=Depends(get_upload_manager)):
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     try:
         deleted = session_logger.delete_session(session_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
-        orchestrator = state.orchestrator
         if (
             orchestrator is not None
             and getattr(orchestrator, "todo_registry", None) is not None
@@ -142,7 +143,6 @@ def delete_session(session_id: str):
                 orchestrator.todo_registry.delete(session_id)
             except Exception as e:
                 logger.warning("清理会话 todo 文件失败 %s: %s", session_id, e)
-        upload_manager = state.upload_manager
         if upload_manager is not None:
             try:
                 upload_manager.cleanup_session(session_id)

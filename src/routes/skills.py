@@ -17,7 +17,9 @@ import sys
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from app import get_skill_loader, get_orchestrator
 
 logger = logging.getLogger("hermes.server")
 
@@ -94,11 +96,8 @@ except ImportError:  # pragma: no cover - 扩展模块缺失时降级
 
 
 @router.get("/skills")
-def list_skills():
+def list_skills(skill_loader=Depends(get_skill_loader)):
     """列出所有已发现的 Skill，含启用/禁用状态。"""
-    import state
-
-    skill_loader = state.skill_loader
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     try:
@@ -119,17 +118,15 @@ def list_skills():
 
 
 @router.get("/skills/{name}")
-def get_skill(name: str):
+def get_skill(name: str,
+              skill_loader=Depends(get_skill_loader),
+              orchestrator=Depends(get_orchestrator)):
     """获取指定 Skill 的详细信息。
 
     基于 SkillMeta（来自 ``_metas`` 缓存或 ``discover()``）返回元数据，
     不再调 ``skill_loader.load()`` 读空的 ``tools.py``。同时返回软禁用状态
     与 stub 注册状态。
     """
-    import state
-
-    skill_loader = state.skill_loader
-    orchestrator = state.orchestrator
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
@@ -165,12 +162,10 @@ def get_skill(name: str):
 
 
 @router.post("/skills/{name}/reload")
-def reload_skill(name: str):
+def reload_skill(name: str,
+                 skill_loader=Depends(get_skill_loader),
+                 orchestrator=Depends(get_orchestrator)):
     """热重载指定 Skill：双路径注册（stub 激活按钮 + 业务工具）。"""
-    import state
-
-    skill_loader = state.skill_loader
-    orchestrator = state.orchestrator
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
@@ -243,12 +238,10 @@ def reload_skill(name: str):
 
 
 @router.post("/skills/{name}/toggle")
-def toggle_skill(name: str):
+def toggle_skill(name: str,
+                 skill_loader=Depends(get_skill_loader),
+                 orchestrator=Depends(get_orchestrator)):
     """切换 Skill 启用/禁用状态。"""
-    import state
-
-    skill_loader = state.skill_loader
-    orchestrator = state.orchestrator
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
@@ -324,12 +317,10 @@ def toggle_skill(name: str):
 
 
 @router.delete("/skills/{name}")
-def delete_skill(name: str):
+def delete_skill(name: str,
+                 skill_loader=Depends(get_skill_loader),
+                 orchestrator=Depends(get_orchestrator)):
     """注销并删除指定的 Skill。"""
-    import state
-
-    skill_loader = state.skill_loader
-    orchestrator = state.orchestrator
     if skill_loader is None:
         raise HTTPException(status_code=503, detail="SkillLoader 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:

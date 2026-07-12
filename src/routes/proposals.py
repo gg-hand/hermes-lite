@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app import get_proposal_store, get_orchestrator
 from schemas.proposals import ProposalModifyRequest
 
 logger = logging.getLogger("hermes.server")
@@ -22,7 +23,7 @@ router = APIRouter()
 
 
 @router.get("/proposals")
-def list_proposals():
+def list_proposals(proposal_store=Depends(get_proposal_store)):
     """列出所有提议（按创建顺序）。
 
     Phase 8 Task 3.8。返回 ``proposal_store`` 中所有提议的 dict 列表，
@@ -31,9 +32,6 @@ def list_proposals():
 
     proposal_store 未初始化时返回 503。
     """
-    import state
-
-    proposal_store = state.proposal_store
     if proposal_store is None:
         raise HTTPException(status_code=503, detail="ProposalStore 尚未初始化")
     proposals = proposal_store.list()
@@ -41,14 +39,12 @@ def list_proposals():
 
 
 @router.get("/proposals/{proposal_id}")
-def get_proposal(proposal_id: str):
+def get_proposal(proposal_id: str,
+                 proposal_store=Depends(get_proposal_store)):
     """获取指定提议详情。
 
     Phase 8 Task 3.8。提议不存在时返回 404。
     """
-    import state
-
-    proposal_store = state.proposal_store
     if proposal_store is None:
         raise HTTPException(status_code=503, detail="ProposalStore 尚未初始化")
     proposal = proposal_store.get(proposal_id)
@@ -58,7 +54,9 @@ def get_proposal(proposal_id: str):
 
 
 @router.post("/proposals/{proposal_id}/confirm")
-def confirm_proposal(proposal_id: str):
+def confirm_proposal(proposal_id: str,
+                     proposal_store=Depends(get_proposal_store),
+                     orchestrator=Depends(get_orchestrator)):
     """确认提议：``pending_confirm → confirmed``，随后创建调度项。
 
     Phase 8 Task 3.8。流程：
@@ -69,11 +67,6 @@ def confirm_proposal(proposal_id: str):
 
     提议不存在或状态不允许转换时返回 404；调度项创建失败时返回 500。
     """
-    import state
-
-    proposal_store = state.proposal_store
-    orchestrator = state.orchestrator
-
     if proposal_store is None:
         raise HTTPException(status_code=503, detail="ProposalStore 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
@@ -135,7 +128,10 @@ def confirm_proposal(proposal_id: str):
 
 
 @router.post("/proposals/{proposal_id}/modify")
-def modify_proposal(proposal_id: str, req: ProposalModifyRequest):
+def modify_proposal(proposal_id: str,
+                    req: ProposalModifyRequest,
+                    proposal_store=Depends(get_proposal_store),
+                    orchestrator=Depends(get_orchestrator)):
     """修改并确认提议：``pending_confirm → modified``，随后创建调度项。
 
     Phase 8 Task 3.8。流程：
@@ -145,11 +141,6 @@ def modify_proposal(proposal_id: str, req: ProposalModifyRequest):
 
     提议不存在或状态不允许转换时返回 404。
     """
-    import state
-
-    proposal_store = state.proposal_store
-    orchestrator = state.orchestrator
-
     if proposal_store is None:
         raise HTTPException(status_code=503, detail="ProposalStore 尚未初始化")
     if orchestrator is None or orchestrator.tool_registry is None:
@@ -204,14 +195,12 @@ def modify_proposal(proposal_id: str, req: ProposalModifyRequest):
 
 
 @router.post("/proposals/{proposal_id}/reject")
-def reject_proposal(proposal_id: str):
+def reject_proposal(proposal_id: str,
+                    proposal_store=Depends(get_proposal_store)):
     """拒绝提议：``pending_confirm → rejected``，不创建调度项。
 
     Phase 8 Task 3.8。提议不存在或状态不允许转换时返回 404/409。
     """
-    import state
-
-    proposal_store = state.proposal_store
     if proposal_store is None:
         raise HTTPException(status_code=503, detail="ProposalStore 尚未初始化")
 

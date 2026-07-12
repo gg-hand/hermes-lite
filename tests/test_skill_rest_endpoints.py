@@ -42,6 +42,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.server import app  # noqa: E402
+from app import get_skill_loader, get_orchestrator  # noqa: E402
 from src.agent.tool_registry import ToolRegistry  # noqa: E402
 from src.skill.loader import (  # noqa: E402
     Skill,
@@ -122,10 +123,11 @@ class TestSkillRestEndpoints(unittest.TestCase):
         self.skill_loader.skill_dir = self.tmpdir
         # orchestrator mock 持有 tool_registry
         self.orch = _MockOrchestrator(self.registry)
-        # patch server 模块级全局
+        # DI 覆盖：通过 dependency_overrides 注入 mock 组件
+        app.dependency_overrides[get_skill_loader] = lambda: self.skill_loader
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
+        # SKILL_STATE_PATH 仍通过 patch 注入（非 Depends 组件）
         self._patches = [
-            patch("src.server.skill_loader", self.skill_loader),
-            patch("src.server.orchestrator", self.orch),
             patch("src.server.SKILL_STATE_PATH", self.tmpdir / "state.json"),
         ]
         for p in self._patches:
@@ -137,6 +139,8 @@ class TestSkillRestEndpoints(unittest.TestCase):
                 p.stop()
             except RuntimeError:
                 pass
+        app.dependency_overrides.pop(get_skill_loader, None)
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -183,10 +187,14 @@ class TestSkillRestEndpoints(unittest.TestCase):
 
     def test_get_skill_503_when_skill_loader_none(self):
         """skill_loader 为 None 时返回 503。"""
-        # 临时将 skill_loader patch 为 None
-        with patch("src.server.skill_loader", None):
+        # 临时将 skill_loader 覆盖为 None
+        app.dependency_overrides[get_skill_loader] = lambda: None
+        try:
             client = self._client()
             resp = client.get("/skills/any")
+        finally:
+            # 恢复为 setUp 中的 mock
+            app.dependency_overrides[get_skill_loader] = lambda: self.skill_loader
         self.assertEqual(resp.status_code, 503)
 
     # ---- POST /skills/{name}/reload -------------------------------------

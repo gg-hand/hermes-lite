@@ -15,9 +15,10 @@ import threading
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app import get_orchestrator, get_session_logger, get_stream_manager
 from schemas.chat import ChatRequest, CancelRequest, ChatResponse
 
 logger = logging.getLogger("hermes.server")
@@ -73,7 +74,10 @@ def _get_config_path() -> str:
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest,
+               orchestrator=Depends(get_orchestrator),
+               session_logger=Depends(get_session_logger),
+               stream_manager=Depends(get_stream_manager)):
     """对话接口。
 
     流程:
@@ -82,12 +86,6 @@ async def chat(req: ChatRequest):
         3. 返回会话 ID、回复与时间戳。
     异常时返回 500。
     """
-    import state
-
-    orchestrator = state.orchestrator
-    session_logger = state.session_logger
-    stream_manager = state.stream_manager
-
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
     if session_logger is None:
@@ -127,18 +125,15 @@ async def chat(req: ChatRequest):
 
 
 @router.post("/chat/stream")
-def chat_stream(req: ChatRequest):
+def chat_stream(req: ChatRequest,
+                orchestrator=Depends(get_orchestrator),
+                session_logger=Depends(get_session_logger),
+                stream_manager=Depends(get_stream_manager)):
     """流式对话接口（Server-Sent Events）。
 
     与 :http:post:`/chat` 等价，但通过 SSE 实时推送 LLM 文本增量与
     工具调用事件，前端可逐字渲染。
     """
-    import state
-
-    orchestrator = state.orchestrator
-    session_logger = state.session_logger
-    stream_manager = state.stream_manager
-
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
     if session_logger is None:
@@ -286,7 +281,9 @@ def chat_stream(req: ChatRequest):
 
 
 @router.post("/chat/cancel")
-async def cancel_stream(req: CancelRequest):
+async def cancel_stream(req: CancelRequest,
+                        stream_manager=Depends(get_stream_manager),
+                        orchestrator=Depends(get_orchestrator)):
     """中断正在进行的流式对话。
 
     模式：
@@ -295,11 +292,6 @@ async def cancel_stream(req: CancelRequest):
     - ``graceful``（二次）：已有 graceful pending 时再次调用 → force kill
       当前运行中的子进程（如 bash_exec 下载），立即中断并注入用户新消息
     """
-    import state
-
-    stream_manager = state.stream_manager
-    orchestrator = state.orchestrator
-
     if stream_manager is None:
         raise HTTPException(status_code=503, detail="StreamManager 尚未初始化")
 
