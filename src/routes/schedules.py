@@ -12,6 +12,8 @@
 - GET    /schedules/{schedule_id}/audit/{run_id}
 - GET    /schedules/{schedule_id}/memories
 - DELETE /schedules/{schedule_id}/memories/{memory_id}
+
+Task 10 (DI 重构): 改用 FastAPI Depends 注入，去除对 state 模块的依赖。
 """
 from __future__ import annotations
 
@@ -20,8 +22,14 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app import (
+    get_audit_logger,
+    get_cron_scheduler,
+    get_orchestrator,
+    get_session_logger,
+)
 from schemas.schedules import (
     ScheduleCreateRequest,
     ScheduleUpdateRequest,
@@ -49,18 +57,18 @@ except ImportError:  # pragma: no cover - 直接运行模块时回退
 
 
 @router.get("/schedules", response_model=ScheduleListResponse)
-def list_schedules():
+def list_schedules(cron_scheduler=Depends(get_cron_scheduler)):
     """列出所有调度项。"""
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     return ScheduleListResponse(schedules=cron_scheduler.list_schedules())
 
 
 @router.get("/schedules/runs")
-def list_recent_runs(limit: int = Query(20, ge=1, le=100, description="返回条数上限")):
+def list_recent_runs(
+    limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
+    cron_scheduler=Depends(get_cron_scheduler),
+):
     """跨调度项读取最近 N 条执行记录（带时间戳）。
 
     遍历所有调度项的 ``runs.jsonl``，合并按 ``started_at`` 倒序，取前 ``limit``
@@ -75,9 +83,6 @@ def list_recent_runs(limit: int = Query(20, ge=1, le=100, description="返回条
     返回:
         ``{"runs": [RunSummary.to_dict() + schedule_name], "total": N}``
     """
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     runs_store = getattr(cron_scheduler, "runs_store", None)
@@ -94,11 +99,9 @@ def list_recent_runs(limit: int = Query(20, ge=1, le=100, description="返回条
 
 
 @router.post("/schedules", response_model=ScheduleResponse)
-def create_schedule(req: ScheduleCreateRequest):
+def create_schedule(req: ScheduleCreateRequest,
+                    cron_scheduler=Depends(get_cron_scheduler)):
     """新增调度项。cron 非法返回 400。"""
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     # 先校验 cron 合法性
@@ -132,11 +135,9 @@ def create_schedule(req: ScheduleCreateRequest):
 
 
 @router.put("/schedules/{schedule_id}")
-def update_schedule(schedule_id: str, req: ScheduleUpdateRequest):
+def update_schedule(schedule_id: str, req: ScheduleUpdateRequest,
+                    cron_scheduler=Depends(get_cron_scheduler)):
     """更新调度项。仅 enabled 即时生效；cron/task/name 变更需重启。"""
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     fields = req.model_dump(exclude_none=True)
@@ -158,11 +159,9 @@ def update_schedule(schedule_id: str, req: ScheduleUpdateRequest):
 
 
 @router.delete("/schedules/{schedule_id}")
-def delete_schedule(schedule_id: str):
+def delete_schedule(schedule_id: str,
+                    cron_scheduler=Depends(get_cron_scheduler)):
     """删除调度项。"""
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     ok = cron_scheduler.delete_schedule(schedule_id)
@@ -172,12 +171,10 @@ def delete_schedule(schedule_id: str):
 
 
 @router.post("/schedules/{schedule_id}/trigger")
-async def trigger_schedule(schedule_id: str):
+async def trigger_schedule(schedule_id: str,
+                           cron_scheduler=Depends(get_cron_scheduler),
+                           orchestrator=Depends(get_orchestrator)):
     """立即触发调度项一次。"""
-    import state
-
-    cron_scheduler = state.cron_scheduler
-    orchestrator = state.orchestrator
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     if orchestrator is None:
@@ -194,6 +191,8 @@ async def trigger_schedule(schedule_id: str):
 def get_schedule_history(
     schedule_id: str,
     limit: int = Query(10, ge=1, le=100, description="返回条数上限"),
+    cron_scheduler=Depends(get_cron_scheduler),
+    session_logger=Depends(get_session_logger),
 ):
     """获取指定调度项的执行历史（最近 N 条 assistant 回复）。
 
@@ -206,16 +205,12 @@ def get_schedule_history(
     返回:
         ``{"history": [{id, content, created_at, tool_name}], "total": N}``
     """
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     # 校验调度项存在
     schedule = cron_scheduler._find_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="调度项不存在")
-    session_logger = state.session_logger
     if session_logger is None:
         raise HTTPException(status_code=503, detail="session_logger 尚未初始化")
     cron_session_id = f"cron:{schedule_id}"
@@ -246,6 +241,8 @@ def get_schedule_audit(
     schedule_id: str,
     limit: int = Query(20, ge=1, le=500, description="返回条数上限"),
     run_id: Optional[str] = Query(None, description="可选执行批次 ID 过滤"),
+    cron_scheduler=Depends(get_cron_scheduler),
+    audit_logger=Depends(get_audit_logger),
 ):
     """获取指定调度项的工具调用审计日志。
 
@@ -263,18 +260,15 @@ def get_schedule_audit(
     返回:
         ``{"logs": [...], "total": N}``
     """
-    import state
     from config import load_config
 
     config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
 
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     schedule = cron_scheduler._find_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="调度项不存在")
-    audit_logger = state.audit_logger
     if audit_logger is None:
         return {"logs": [], "total": 0}
     # 监控禁用时返回空列表（与 /audit/logs 行为一致）
@@ -295,7 +289,9 @@ def get_schedule_audit(
 
 
 @router.get("/schedules/{schedule_id}/audit/{run_id}")
-def get_schedule_audit_by_run(schedule_id: str, run_id: str):
+def get_schedule_audit_by_run(schedule_id: str, run_id: str,
+                              cron_scheduler=Depends(get_cron_scheduler),
+                              audit_logger=Depends(get_audit_logger)):
     """获取指定调度项某次执行批次的工具调用审计日志。
 
     Phase 8 Task 4.5。调 ``audit_logger.get_by_run_id(schedule_id, run_id)``
@@ -308,18 +304,15 @@ def get_schedule_audit_by_run(schedule_id: str, run_id: str):
     返回:
         ``{"logs": [...], "total": N, "run_id": "<run_id>"}``
     """
-    import state
     from config import load_config
 
     config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
 
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     schedule = cron_scheduler._find_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="调度项不存在")
-    audit_logger = state.audit_logger
     if audit_logger is None:
         return {"logs": [], "total": 0, "run_id": run_id}
     try:
@@ -343,6 +336,8 @@ def get_schedule_audit_by_run(schedule_id: str, run_id: str):
 def list_schedule_memories(
     schedule_id: str,
     limit: int = Query(20, ge=1, le=200, description="返回条数上限"),
+    cron_scheduler=Depends(get_cron_scheduler),
+    orchestrator=Depends(get_orchestrator),
 ):
     """列出指定调度项的隔离记忆（namespace=cron, cron_id=schedule_id）。
 
@@ -354,15 +349,11 @@ def list_schedule_memories(
     返回:
         ``{"memories": [{id, content, metadata}], "total": N}``
     """
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     schedule = cron_scheduler._find_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="调度项不存在")
-    orchestrator = state.orchestrator
     if orchestrator is None or orchestrator.chroma_store is None:
         raise HTTPException(status_code=503, detail="ChromaMemoryStore 尚未初始化")
     # 用 cron_id 解析后的值（cron_id 字段为 None 时回退到 id）
@@ -386,7 +377,9 @@ def list_schedule_memories(
 
 
 @router.delete("/schedules/{schedule_id}/memories/{memory_id}")
-def delete_schedule_memory(schedule_id: str, memory_id: str):
+def delete_schedule_memory(schedule_id: str, memory_id: str,
+                           cron_scheduler=Depends(get_cron_scheduler),
+                           orchestrator=Depends(get_orchestrator)):
     """删除指定调度项的某条隔离记忆。
 
     Phase 8 Task 1.9。**校验 ``cron_id`` 一致**防止跨调度项误删：先查
@@ -399,15 +392,11 @@ def delete_schedule_memory(schedule_id: str, memory_id: str):
     返回:
         ``{"status": "ok", "deleted_id": memory_id}``
     """
-    import state
-
-    cron_scheduler = state.cron_scheduler
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
     schedule = cron_scheduler._find_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="调度项不存在")
-    orchestrator = state.orchestrator
     if orchestrator is None or orchestrator.chroma_store is None:
         raise HTTPException(status_code=503, detail="ChromaMemoryStore 尚未初始化")
     cron_id = schedule.get_cron_id()

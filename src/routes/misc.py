@@ -1,19 +1,26 @@
 """misc 路由：静态页面、工具清单、审计日志、reasoning 开关、检索、重启、记忆冲刷。
 
 Task 8: 从 server.py 迁移 12 个端点到此。
+Task 10 (DI 重构): 改用 FastAPI Depends 注入 + 软重启改用容器 API，去除对 state 模块的依赖。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import sys
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from app import (
+    get_audit_logger,
+    get_container_or_raise,
+    get_orchestrator,
+    get_session_logger,
+    get_stream_manager,
+)
 from schemas.common import FlushResponse
 
 logger = logging.getLogger("hermes.server")
@@ -30,18 +37,8 @@ def _now_iso() -> str:
     return datetime.now().isoformat()
 
 
-def _sync_to_server_globals(**kwargs):
-    """同步 state 变更到 server 模块的全局变量（过渡期兼容）。
-
-    routes 通过 state 模块访问共享状态，但 server.py 中尚未迁移的
-    handler 仍使用模块级 global 变量。此函数确保 /restart 等修改
-    state 的操作也同步更新 server 模块的全局变量。
-    """
-    for mod_name in ("server", "src.server"):
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            for key, value in kwargs.items():
-                setattr(mod, key, value)
+# 模块级变量，替代 state.soft_restart_in_progress
+_soft_restart_in_progress = False
 
 
 # ---------- 静态页面 ----------
@@ -104,10 +101,7 @@ def serve_workflow():
 # ---------- 工具清单 ----------
 
 @router.get("/tools")
-async def list_tools_inventory():
-    import state
-
-    orchestrator = state.orchestrator
+async def list_tools_inventory(orchestrator=Depends(get_orchestrator)):
     if orchestrator is None or orchestrator.tool_registry is None:
         return {"core": [], "deferred": [], "loaded": []}
     registry = orchestrator.tool_registry
@@ -121,13 +115,12 @@ async def list_tools_inventory():
 # ---------- 审计日志 ----------
 
 @router.get("/audit/logs")
-def get_audit_logs(limit: int = Query(50, ge=1, le=1000)):
-    import state
+def get_audit_logs(limit: int = Query(50, ge=1, le=1000),
+                   audit_logger=Depends(get_audit_logger)):
     from config import load_config
 
     config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
 
-    audit_logger = state.audit_logger
     if audit_logger is None:
         return JSONResponse({"logs": []})
     try:
@@ -142,10 +135,8 @@ def get_audit_logs(limit: int = Query(50, ge=1, le=1000)):
 # ---------- reasoning 开关 ----------
 
 @router.post("/reasoning/toggle")
-def reasoning_toggle(req: dict = Body(...)):
-    import state
-
-    orchestrator = state.orchestrator
+def reasoning_toggle(req: dict = Body(...),
+                     orchestrator=Depends(get_orchestrator)):
     if orchestrator is None or orchestrator.llm_client is None:
         return JSONResponse(
             content={"error": "LLMClient 尚未初始化"},
@@ -173,10 +164,7 @@ def reasoning_toggle(req: dict = Body(...)):
 
 
 @router.get("/reasoning/status")
-def reasoning_status():
-    import state
-
-    orchestrator = state.orchestrator
+def reasoning_status(orchestrator=Depends(get_orchestrator)):
     if orchestrator is None or orchestrator.llm_client is None:
         return JSONResponse(
             content={"error": "LLMClient 尚未初始化"},
@@ -206,10 +194,8 @@ def recall_messages(
     keyword: str = Query(..., description="搜索关键词"),
     session_id: Optional[str] = Query(None, description="按会话过滤"),
     limit: int = Query(20, ge=1, le=100, description="返回条数"),
+    session_logger=Depends(get_session_logger),
 ):
-    import state
-
-    session_logger = state.session_logger
     if session_logger is None:
         raise HTTPException(status_code=503, detail="SessionLogger 尚未初始化")
     try:
@@ -223,10 +209,8 @@ def recall_messages(
 # ---------- 记忆冲刷 ----------
 
 @router.post("/consolidation/flush", response_model=FlushResponse)
-def flush_consolidation(background_tasks: BackgroundTasks):
-    import state
-
-    orchestrator = state.orchestrator
+def flush_consolidation(background_tasks: BackgroundTasks,
+                        orchestrator=Depends(get_orchestrator)):
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
 
@@ -254,37 +238,33 @@ def flush_consolidation(background_tasks: BackgroundTasks):
 # ---------- 软重启 ----------
 
 @router.post("/restart")
-async def restart_server():
-    import state
-    from config import load_config, validate_required_env_vars
-    from orchestrator import Orchestrator
+async def restart_server(request: Request,
+                         container=Depends(get_container_or_raise)):
+    """软重启：通过容器 API 重建 Orchestrator/health_checker/etl_engine + 重启 cron task。
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
-
-    orchestrator = state.orchestrator
-    if orchestrator is None:
-        raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
-
-    if state.soft_restart_in_progress:
+    使用模块级 ``_soft_restart_in_progress`` 替代 ``state.soft_restart_in_progress``，
+    使用 ``container.get()`` + ``container.set_instance()`` 替代 ``state.xxx = yyy``。
+    """
+    global _soft_restart_in_progress
+    if _soft_restart_in_progress:
         raise HTTPException(status_code=409, detail="软重启已在进行中")
-
-    state.soft_restart_in_progress = True
-    _sync_to_server_globals(_SOFT_RESTART_IN_PROGRESS=True)
+    _soft_restart_in_progress = True
     try:
+        # 0. 简易配置校验
+        from config import load_config, validate_required_env_vars
+        config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
         new_config = load_config(config_path)
-
         try:
             validate_required_env_vars(new_config)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"配置校验失败: {e}")
 
-        stream_manager = state.stream_manager
+        # 1. 等待活跃流
+        stream_manager = container.get("stream_manager")
         if stream_manager is not None:
             active = stream_manager.active_count()
             if active > 0:
-                logger.info(
-                    "软重启: 等待 %d 个进行中的流完成（最多 30s）...", active
-                )
+                logger.info("软重启: 等待 %d 个进行中的流完成（最多 30s）...", active)
                 for _ in range(30):
                     if stream_manager.active_count() == 0:
                         break
@@ -295,42 +275,76 @@ async def restart_server():
                         "软重启: %d 个流未在等待时间内完成，继续重启", remaining
                     )
 
-        old_orchestrator = orchestrator
+        # 2. 关闭旧 Orchestrator
+        old_orch = container.get("orchestrator")
+        if old_orch is None:
+            raise HTTPException(status_code=503, detail="Orchestrator 尚未初始化")
         try:
-            await asyncio.to_thread(old_orchestrator.shutdown)
+            await asyncio.to_thread(old_orch.shutdown)
         except Exception as e:
             logger.warning("软重启: 旧 Orchestrator 关闭异常（已忽略）: %s", e)
 
+        # 3. 手动创建新 Orchestrator
+        from orchestrator import Orchestrator
         try:
-            new_orchestrator = await asyncio.to_thread(
+            new_orch = await asyncio.to_thread(
                 Orchestrator,
                 config_path=config_path,
-                metrics=state.metrics_collector,
-                audit_logger=state.audit_logger,
-                approval_manager=state.approval_manager,
-                task_manager=state.task_manager,
+                metrics=container.get("metrics_collector"),
+                audit_logger=container.get("audit_logger"),
+                approval_manager=container.get("approval_manager"),
+                task_manager=container.get("task_manager"),
             )
         except Exception as e:
             logger.exception("软重启: 新 Orchestrator 构建失败，服务不可用")
             raise HTTPException(
                 status_code=500,
-                detail=f"新 Orchestrator 构建失败，请手动 systemctl restart: {e}",
+                detail=f"新 Orchestrator 构建失败: {e}",
             )
 
-        if new_orchestrator.chroma_store is not None:
+        # 4. 预热 ChromaDB
+        if new_orch.chroma_store is not None:
             try:
-                new_orchestrator.chroma_store.query_memory(
-                    "warmup", top_k=1, reinforce=False
-                )
+                new_orch.chroma_store.query_memory("warmup", top_k=1, reinforce=False)
             except Exception as e:
                 logger.warning("软重启: ChromaDB 预热失败: %s", e)
 
-        state.orchestrator = new_orchestrator
-        _sync_to_server_globals(orchestrator=new_orchestrator)
-        logger.info("软重启: Orchestrator 已替换为新实例")
+        # 5. 通过 set_instance 替换容器中的实例
+        container.set_instance("orchestrator", new_orch)
 
+        # 5.5 重建 health_checker（持有新 orchestrator 引用）
+        from monitoring.health import HealthChecker
+        new_hc = HealthChecker(
+            orchestrator=new_orch,
+            session_logger_global=container.get("session_logger"),
+            mcp_manager=container.get("mcp_manager"),
+            skill_loader=container.get("skill_loader"),
+            metrics_collector=container.get("metrics_collector"),
+            proposal_store=container.get("proposal_store"),
+        )
+        container.set_instance("health_checker", new_hc)
+
+        # 5.6 重建 etl_engine（捕获新 orchestrator 的 chroma_store/llm_client）
+        from app import _create_etl_engine
+        new_etl = _create_etl_engine(
+            container.config,
+            upload_manager=container.get("upload_manager"),
+            orchestrator=new_orch,
+        )
+        if new_etl is not None:
+            container.set_instance("etl_engine", new_etl)
+
+        # 6. 重启 cron_task（持有新 Orchestrator 引用）
+        task_registry = request.app.state.task_registry
+        cron_scheduler = container.get("cron_scheduler")
+        if cron_scheduler is not None:
+            await task_registry.restart(
+                "cron",
+                lambda: cron_scheduler.run_loop(new_orch)
+            )
+
+        logger.info("软重启: Orchestrator/health_checker/etl_engine 已替换，cron_task 已重启")
         return {"status": "ok", "message": "软重启完成"}
 
     finally:
-        state.soft_restart_in_progress = False
-        _sync_to_server_globals(_SOFT_RESTART_IN_PROGRESS=False)
+        _soft_restart_in_progress = False

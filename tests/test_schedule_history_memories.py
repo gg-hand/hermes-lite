@@ -39,10 +39,24 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+# 添加 src/ 到 sys.path，使 `from app import ...` 与 routes/*.py 使用同一模块对象
+# （FastAPI dependency_overrides 按函数对象身份匹配，导入路径不一致会导致 override 失效）
+_SRC_DIR = os.path.join(_PROJECT_ROOT, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
+# 注意：必须从 `app`（而非 `src.app`）导入 get_* 函数，因为 routes/*.py 使用
+# `from app import get_xxx`，FastAPI dependency_overrides 按函数对象身份匹配。
+# 若导入路径不一致，override 不会生效。
+from app import (  # noqa: E402
+    get_cron_scheduler,
+    get_orchestrator,
+    get_session_logger,
+)
 from src.server import app  # noqa: E402
 from src.storage.sqlite_log import SessionLogger  # noqa: E402
 from src.tasks.scheduler import CronScheduler  # noqa: E402
@@ -152,19 +166,13 @@ class TestScheduleHistoryEndpoint(unittest.TestCase):
         self.logger.create_session(other_session)
         self.logger.log_message(other_session, "assistant", "other reply")
 
-        self._patches = [
-            patch("src.server.cron_scheduler", self.cs),
-            patch("src.server.session_logger", self.logger),
-        ]
-        for p in self._patches:
-            p.start()
+        self._patches = []
+        app.dependency_overrides[get_cron_scheduler] = lambda: self.cs
+        app.dependency_overrides[get_session_logger] = lambda: self.logger
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_cron_scheduler, None)
+        app.dependency_overrides.pop(get_session_logger, None)
         self.logger.close()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -277,19 +285,13 @@ class TestScheduleMemoriesEndpoint(unittest.TestCase):
         ]
         self.store = _MockChromaStore(self.memories)
         self.orch = _make_mock_orchestrator(self.store)
-        self._patches = [
-            patch("src.server.cron_scheduler", self.cs),
-            patch("src.server.orchestrator", self.orch),
-        ]
-        for p in self._patches:
-            p.start()
+        self._patches = []
+        app.dependency_overrides[get_cron_scheduler] = lambda: self.cs
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_cron_scheduler, None)
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
@@ -380,19 +382,13 @@ class TestDeleteScheduleMemoryEndpoint(unittest.TestCase):
         ]
         self.store = _MockChromaStore(self.memories)
         self.orch = _make_mock_orchestrator(self.store)
-        self._patches = [
-            patch("src.server.cron_scheduler", self.cs),
-            patch("src.server.orchestrator", self.orch),
-        ]
-        for p in self._patches:
-            p.start()
+        self._patches = []
+        app.dependency_overrides[get_cron_scheduler] = lambda: self.cs
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
 
     def tearDown(self):
-        for p in self._patches:
-            try:
-                p.stop()
-            except RuntimeError:
-                pass
+        app.dependency_overrides.pop(get_cron_scheduler, None)
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:
