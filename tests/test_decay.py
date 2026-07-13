@@ -1,4 +1,4 @@
-"""MemoryDecay 三因子衰减计算单元测试（Phase 7 Task 1）。
+﻿"""MemoryDecay 三因子衰减计算单元测试（Phase 7 Task 1）。
 
 覆盖：
 1. recency 衰减正确性（老记忆 importance 下降）
@@ -37,8 +37,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.memory.decay import MemoryDecay  # noqa: E402
-from src.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from hermes.memory.decay import MemoryDecay  # noqa: E402
+from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 # ===========================================================================

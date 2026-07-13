@@ -1,4 +1,4 @@
-"""CronIsolator 测试:cron 上下文隔离。
+﻿"""CronIsolator 测试:cron 上下文隔离。
 
 从 Orchestrator 提取的 cron 隔离职责:
 - build_isolation: 从 session_id 解析 CronIsolation context
@@ -9,11 +9,11 @@ CronIsolator 持有 Orchestrator 弱引用（方法对象模式），
 因为 cron 上下文构建依赖 memory_retriever / metrics / tool_registry 等多个组件。
 """
 import sys, os, asyncio
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from agent.cron_isolator import CronIsolator
+from hermes.agent.cron_isolator import CronIsolator
 
 
 class TestBuildIsolation:

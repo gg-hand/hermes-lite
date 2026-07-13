@@ -1,4 +1,4 @@
-"""Agent 文件工具 + PolicyEngine 单元测试。
+﻿"""Agent 文件工具 + PolicyEngine 单元测试。
 
 覆盖：file_list_uploads / file_query / file_read_uploaded 三个工具
 的行为，以及 PolicyEngine 规则、工具注册。
@@ -23,11 +23,11 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from src.files.upload_manager import UploadManager
-from src.files.etl_engine import ETLEngine
-from src.agent.tool_registry import ToolRegistry
-from src.agent.policy import PolicyEngine, DEFAULT_RULES
-from src.agent.tools.file_tools import register_file_tools
+from hermes.files.upload_manager import UploadManager
+from hermes.files.etl_engine import ETLEngine
+from hermes.agent.tool_registry import ToolRegistry
+from hermes.agent.policy import PolicyEngine, DEFAULT_RULES
+from hermes.agent.tools.file_tools import register_file_tools
 
 
 def _make_um(tmpdir):

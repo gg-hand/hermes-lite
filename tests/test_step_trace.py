@@ -1,4 +1,4 @@
-"""Task 3.4: step_trace.py 数据模型测试。
+﻿"""Task 3.4: step_trace.py 数据模型测试。
 
 覆盖：
 - 序列化 to_dict / from_dict roundtrip
@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from src.tasks.workflow.step_trace import StepTrace, ALLOWED_STEP_STATUSES
+from hermes.tasks.workflow.step_trace import StepTrace, ALLOWED_STEP_STATUSES
 
 
 class TestStepTraceSerialization(unittest.TestCase):

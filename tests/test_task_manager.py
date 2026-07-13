@@ -1,4 +1,4 @@
-"""TaskManager 只读解析单元测试（Phase 6 Task 2 重构）。
+﻿"""TaskManager 只读解析单元测试（Phase 6 Task 2 重构）。
 
 验证 ``src/tasks/task_manager.py`` 的 TaskManager 类在只读归档模式下
 的 Markdown 解析、查询、依赖编排与进度统计能力。
@@ -30,7 +30,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.tasks.task_manager import TaskManager  # noqa: E402
+from hermes.tasks.task_manager import TaskManager  # noqa: E402
 
 
 class TestTaskManagerReadOnly(unittest.TestCase):

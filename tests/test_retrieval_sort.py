@@ -1,4 +1,4 @@
-"""MemoryRetriever 排序逻辑测试（importance 参与检索排序）。
+﻿"""MemoryRetriever 排序逻辑测试（importance 参与检索排序）。
 
 覆盖 P5 任务引入的"similarity 分桶 + 桶内 importance 降序"排序策略：
 
@@ -22,7 +22,7 @@ import unittest
 # 路径与 mock 依赖初始化（必须在导入任何 src 模块之前完成）
 # ---------------------------------------------------------------------------
 
-# 将项目根目录加入 sys.path，使 from src.xxx import yyy 可用
+# 将项目根目录加入 sys.path，使 from hermes.xxx import yyy 可用
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -32,7 +32,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.memory.retrieval import MemoryRetriever, _sort_key, BUCKET_PRECISION  # noqa: E402
+from hermes.memory.retrieval import MemoryRetriever, _sort_key, BUCKET_PRECISION  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

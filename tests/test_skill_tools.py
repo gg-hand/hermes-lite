@@ -1,4 +1,4 @@
-"""Skill 管理工具（5 个 handler）单元测试。
+﻿"""Skill 管理工具（5 个 handler）单元测试。
 
 覆盖 skill__template / propose_skill / reload_skill / toggle_skill / list_skills
 共 5 个 handler，全部通过 ToolRegistry.execute_tool 调用。
@@ -36,9 +36,9 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.tool_registry import ToolRegistry  # noqa: E402
-from src.agent.skill_tools import register_skill_tools  # noqa: E402
-from src.skill.loader import Skill, SkillLoader  # noqa: E402
+from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
+from hermes.agent.skill_tools import register_skill_tools  # noqa: E402
+from hermes.skill.loader import Skill, SkillLoader  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ class TestProposeSkill(TestCase):
         if tools_input is None:
             tools_input = dict(self._DEFAULT_TOOL_INPUT)
         if patch_base:
-            with patch("src.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
+            with patch("hermes.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
                 return self.registry.execute_tool("skill__propose", tools_input)
         return self.registry.execute_tool("skill__propose", tools_input)
 
@@ -344,7 +344,7 @@ class TestProposeSkill(TestCase):
         # 以另一个 SKILL_BASE_DIR 运行（确保不通过 base dir 冲突）
         other_temp = Path(tempfile.mkdtemp())
         try:
-            with patch("src.agent.skill_tools.SKILL_BASE_DIR", other_temp):
+            with patch("hermes.agent.skill_tools.SKILL_BASE_DIR", other_temp):
                 result = self.registry.execute_tool(
                     "skill__propose",
                     {
@@ -407,7 +407,7 @@ class TestProposeSkill(TestCase):
         - skill 目录含 scripts/main.py 文件，内容与传入一致
         - 测试后由 tearDown 清理临时目录
         """
-        with patch("src.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
+        with patch("hermes.agent.skill_tools.SKILL_BASE_DIR", self.temp_dir):
             result = self.registry.execute_tool(
                 "skill__propose",
                 {
@@ -568,7 +568,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
                     "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
@@ -602,7 +602,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 self.registry.execute_tool(
                     "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
@@ -629,7 +629,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 self.registry.execute_tool(
                     "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
@@ -662,7 +662,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
                     "skill__toggle", {"name": name, "action": "disable"}
                 )
@@ -706,7 +706,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": [], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 # 先禁用
                 self.registry.execute_tool(
                     "skill__toggle", {"name": name, "action": "disable"}
@@ -750,7 +750,7 @@ class TestToggleSkill(TestCase):
             json.dumps({"disabled": ["my_skill"], "locked": []}), encoding="utf-8"
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 mock_skill = _build_mock_skill(name="my_skill")
                 self.skill_loader.load.return_value = mock_skill
                 self.registry.execute_tool(
@@ -825,7 +825,7 @@ class TestToggleSkill(TestCase):
         """锁定列表中的技能不可切换。"""
         state_path = _make_temp_state_file(locked=["my_skill"])
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
                     "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
@@ -839,7 +839,7 @@ class TestToggleSkill(TestCase):
         """锁定匹配不区分大小写。"""
         state_path = _make_temp_state_file(locked=["My_Skill"])
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool(
                     "skill__toggle", {"name": "my_skill", "action": "disable"}
                 )
@@ -852,7 +852,7 @@ class TestToggleSkill(TestCase):
     def test_toggle_state_file_not_found_uses_default(self):
         """状态文件不存在时使用默认（空列表），不阻塞操作。"""
         with patch(
-            "src.agent.skill_tools.SKILL_STATE_PATH",
+            "hermes.agent.skill_tools.SKILL_STATE_PATH",
             Path(tempfile.mktemp(suffix=".json")),
         ):
             result = self.registry.execute_tool(
@@ -915,7 +915,7 @@ class TestListSkills(TestCase):
 
     def test_list_overview_with_discovered_skills(self):
         """on_disk_skills 显示 skill_loader.discover() 发现的技能。"""
-        from src.skill.loader import SkillMeta
+        from hermes.skill.loader import SkillMeta
         meta = SkillMeta(
             name="disk_skill",
             version="0.2.0",
@@ -949,7 +949,7 @@ class TestListSkills(TestCase):
             disabled=["offline_skill"], locked=["locked_skill"]
         )
         try:
-            with patch("src.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
+            with patch("hermes.agent.skill_tools.SKILL_STATE_PATH", Path(state_path)):
                 result = self.registry.execute_tool("skill__list", {})
             data = json.loads(result)
             self.assertIn("offline_skill", data["disabled"])
@@ -997,7 +997,7 @@ class TestListSkills(TestCase):
         从 _metas 缓存或 discover() 取 SkillMeta，返回 meta 信息
         （含 body_preview / stub_registered 字段）。
         """
-        from src.skill.loader import SkillMeta
+        from hermes.skill.loader import SkillMeta
         meta = SkillMeta(
             name="lazy_load",
             version="0.1.0",
@@ -1060,7 +1060,7 @@ class TestListSkills(TestCase):
         (tmp_skills / "no_md_dir").mkdir(parents=True)
 
         try:
-            with patch("src.agent.skill_tools.SKILL_BASE_DIR", tmp_skills):
+            with patch("hermes.agent.skill_tools.SKILL_BASE_DIR", tmp_skills):
                 result = registry2.execute_tool("skill__list", {})
             data = json.loads(result)
             disk_names = [s["name"] for s in data["on_disk_skills"]]

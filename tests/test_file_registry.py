@@ -1,4 +1,4 @@
-"""FileOperationRegistry 会话级文件操作记录单元测试。
+﻿"""FileOperationRegistry 会话级文件操作记录单元测试。
 
 验证 ``src/agent/file_registry.py`` 的 ``FileOperationRegistry``：记录 /
 查询 / 会话隔离 / symlink 防御 / 路径规范化 / remove / 不持久化。
@@ -27,7 +27,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.file_registry import FileOperationRegistry  # noqa: E402
+from hermes.agent.file_registry import FileOperationRegistry  # noqa: E402
 
 
 class TestFileOperationRegistry(unittest.TestCase):

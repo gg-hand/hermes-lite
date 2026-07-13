@@ -1,4 +1,4 @@
-"""ApprovalManager 单元测试 — 验证审批队列的创建、resolve、wait_for_decision、
+﻿"""ApprovalManager 单元测试 — 验证审批队列的创建、resolve、wait_for_decision、
 超时自动拒绝、幂等、list_pending、get_status 等核心逻辑。
 
 由于 ``ApprovalManager.wait_for_decision`` 是 async 协程，测试方法内通过
@@ -24,7 +24,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.approval import ApprovalManager  # noqa: E402
+from hermes.agent.approval import ApprovalManager  # noqa: E402
 
 
 class TestApprovalManagerCreateAndResolve(unittest.TestCase):
@@ -227,7 +227,7 @@ class TestApprovalMetricsReporting(unittest.TestCase):
 
     def test_timeout_reports_timeout_decision(self):
         """超时路径上报 observe_approval_decision('timeout')。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         metrics = MetricsCollector()
         mgr = ApprovalManager(timeout=0.1, metrics=metrics)
@@ -264,7 +264,7 @@ class TestApprovalMetricsReporting(unittest.TestCase):
 
     def test_user_resolve_does_not_double_count_timeout(self):
         """用户主动 approve 后再 wait 不应触发 timeout 上报。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         metrics = MetricsCollector()
         mgr = ApprovalManager(timeout=5.0, metrics=metrics)
@@ -291,7 +291,7 @@ class TestMetricsApprovalDecisionCounter(unittest.TestCase):
 
     def test_observe_approval_decision_accumulates_by_decision(self):
         """observe_approval_decision 按 decision 分桶累加。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         collector = MetricsCollector()
         collector.observe_approval_decision("approve")
@@ -305,7 +305,7 @@ class TestMetricsApprovalDecisionCounter(unittest.TestCase):
 
     def test_reset_clears_approval_decisions(self):
         """reset 清空 approval_decisions_total。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         collector = MetricsCollector()
         collector.observe_approval_decision("approve")
@@ -315,7 +315,7 @@ class TestMetricsApprovalDecisionCounter(unittest.TestCase):
 
     def test_initial_snapshot_has_empty_approval_decisions(self):
         """新 collector 的 approval_decisions_total 为空 dict。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         collector = MetricsCollector()
         snap = collector.snapshot()

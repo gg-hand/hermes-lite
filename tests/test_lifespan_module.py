@@ -1,4 +1,4 @@
-# tests/test_lifespan_module.py（修改）
+﻿# tests/test_lifespan_module.py（修改）
 """测试 lifespan 模块使用 container.get() 而非手工 new。
 
 spec 2026-07-13 阶段 2：lifespan 从 796 行降至 ~200 行。
@@ -8,11 +8,7 @@ import sys
 import os
 from unittest.mock import MagicMock, patch, AsyncMock
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
 class TestLifespanUsesContainer:
 
     def test_lifespan_calls_container_get(self):

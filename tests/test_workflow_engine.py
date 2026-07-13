@@ -1,4 +1,4 @@
-"""WorkflowEngine 单元测试（Task 5.5）。
+﻿"""WorkflowEngine 单元测试（Task 5.5）。
 
 覆盖 16+ 用例：
 1. 线性执行 / 多步串联
@@ -21,10 +21,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
-from src.tasks.workflow.base import WorkflowContext, WorkflowResult
-from src.tasks.workflow.engine import WorkflowCycleError, WorkflowEngine
-from src.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
-from src.tasks.workflow.step_executor import (
+from hermes.tasks.workflow.base import WorkflowContext, WorkflowResult
+from hermes.tasks.workflow.engine import WorkflowCycleError, WorkflowEngine
+from hermes.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
+from hermes.tasks.workflow.step_executor import (
     DeterministicExecutor,
     LlmCallExecutor,
     StepExecutionError,
@@ -281,7 +281,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             result = engine.execute(spec, ctx)
 
         self.assertTrue(result.success)
@@ -314,7 +314,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             result = engine.execute(spec, ctx)
 
         # retry 2 次失败 → fallback
@@ -339,7 +339,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             result = engine.execute(spec, ctx)
 
         # s1 失败（NotImplementedError → notimplemented），不重试
@@ -405,7 +405,7 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             result = engine.execute(spec, ctx)
 
         # 仅调用 1 次（不重试）
@@ -430,7 +430,7 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             engine.execute(spec, ctx)
 
         # 重试 3 次（max_attempts）
@@ -531,7 +531,7 @@ class TestWorkflowEngineLLMFallbackChain(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("src.tasks.workflow.retry.time.sleep"):
+        with patch("hermes.tasks.workflow.retry.time.sleep"):
             result = engine.execute(spec, ctx)
 
         # primary 重试 2 次失败 → fallback 调用 1 次
@@ -640,7 +640,7 @@ class TestWorkflowEngineSimpleMode(unittest.TestCase):
 
     def test_simple_mode_calls_template(self):
         """简易模式（仅 template）应直接调用 WorkflowTemplate.execute。"""
-        from src.tasks.workflow import BUILTIN_TEMPLATES
+        from hermes.tasks.workflow import BUILTIN_TEMPLATES
 
         # mock 一个测试模板
         class _TestTemplate:
@@ -703,7 +703,7 @@ class TestWorkflowEngineTimeout(unittest.TestCase):
                 return 0.0
             return 100.0
 
-        with patch("src.tasks.workflow.engine.time.perf_counter", mock_perf_counter):
+        with patch("hermes.tasks.workflow.engine.time.perf_counter", mock_perf_counter):
             result = engine.execute(spec, ctx)
 
         # 至少 1 个 step 应被跳过

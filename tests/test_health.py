@@ -1,4 +1,4 @@
-"""HealthChecker 单元测试。
+﻿"""HealthChecker 单元测试。
 
 覆盖 CheckResult 构造、全组件健康→healthy、组件缺失→unhealthy/ degraded、
 异常安全（run_all 不抛异常）、日志断言。
@@ -19,7 +19,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.monitoring.health import (  # noqa: E402
+from hermes.monitoring.health import (  # noqa: E402
     CheckResult,
     HealthChecker,
     HealthSummary,
@@ -359,7 +359,7 @@ class TestHealthCheckerLogging(unittest.TestCase):
         checker._proposal.list.return_value = []
 
         # 接管 logger，捕获所有 WARNING+ 输出
-        logger = logging.getLogger("src.monitoring.health")
+        logger = logging.getLogger("hermes.monitoring.health")
         buf = io.StringIO()
         handler = logging.StreamHandler(buf)
         handler.setLevel(logging.WARNING)
@@ -374,7 +374,7 @@ class TestHealthCheckerLogging(unittest.TestCase):
     def test_warning_produces_log(self):
         mock_o = _make_mock_orchestrator(chroma_store=None)
         checker = HealthChecker(orchestrator=mock_o)
-        with self.assertLogs("src.monitoring.health", level="WARNING") as cm:
+        with self.assertLogs("hermes.monitoring.health", level="WARNING") as cm:
             checker.run_all()
         self.assertTrue(
             any("chroma" in msg for msg in cm.output),
@@ -383,7 +383,7 @@ class TestHealthCheckerLogging(unittest.TestCase):
 
     def test_critical_produces_error_log(self):
         checker = HealthChecker(orchestrator=None)
-        with self.assertLogs("src.monitoring.health", level="WARNING") as cm:
+        with self.assertLogs("hermes.monitoring.health", level="WARNING") as cm:
             checker.run_all()
         self.assertTrue(
             any("orchestrator" in msg for msg in cm.output),

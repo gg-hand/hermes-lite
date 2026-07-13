@@ -1,4 +1,4 @@
-# tests/test_routes_batch1_no_state.py
+﻿# tests/test_routes_batch1_no_state.py
 r"""测试 routes 批次 1 无 import state。
 
 spec 2026-07-13 阶段 2：health/memory/cron_tools/approvals 改 Depends。
@@ -12,10 +12,7 @@ import re
 import sys
 import os
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
 # 匹配 state. 但不匹配 .state.（如 request.app.state.xxx）
 # 负向 lookbehind：state 前一个字符不能是 '.'
 _STATE_MODULE_ACCESS = re.compile(r"(?<!\.)state\.")

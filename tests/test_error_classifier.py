@@ -1,4 +1,4 @@
-"""ErrorClassifier 全覆盖测试。
+﻿"""ErrorClassifier 全覆盖测试。
 
 mock 策略：无需 mock，ErrorClassifier 是纯函数，所有测试走真实逻辑。
 
@@ -22,7 +22,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.agent.error_classifier import ErrorClassifier, ErrorClass
+from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +618,7 @@ class TestPhaseDCompatibility(unittest.TestCase):
 
     def test_deprecated_flag_is_true(self):
         """DEPRECATED 标记位应为 True（Phase E 下线判定用）。"""
-        from src.agent.error_classifier import DEPRECATED
+        from hermes.agent.error_classifier import DEPRECATED
         self.assertTrue(DEPRECATED, "DEPRECATED should be True after Phase D")
 
 

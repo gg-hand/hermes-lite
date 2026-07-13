@@ -1,15 +1,11 @@
-"""阶段 2 最终验证：热重载 + 软重启 + 后台 task 重启。"""
+﻿"""阶段 2 最终验证：热重载 + 软重启 + 后台 task 重启。"""
 from __future__ import annotations
 import sys
 import os
 import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
 class TestHotReloadTaskRestart:
 
     def test_config_route_restarts_metrics_persist_task(self):

@@ -1,4 +1,4 @@
-"""write_cron_tool 工具 description 规范测试（Phase 8 Task 5.4 spec）。
+﻿"""write_cron_tool 工具 description 规范测试（Phase 8 Task 5.4 spec）。
 
 验证 ``write_cron_tool`` 的 description 已嵌入完整 cron_tool 写法规范：
 - TOOL.md 模板（含 frontmatter 字段 name/version/description/author/
@@ -36,7 +36,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
+from hermes.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

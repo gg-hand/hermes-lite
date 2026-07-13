@@ -1,4 +1,4 @@
-"""ReactLoop 单元测试 — 验证 end_turn / tool_use / 异常三分支覆盖。
+﻿"""ReactLoop 单元测试 — 验证 end_turn / tool_use / 异常三分支覆盖。
 
 运行方式:
     python -m unittest tests.test_react_loop -v
@@ -37,7 +37,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.react_loop import ReactLoop  # noqa: E402
+from hermes.agent.react_loop import ReactLoop  # noqa: E402
 
 
 def _make_llm_response(
@@ -886,7 +886,7 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
 
     async def test_permanent_error_sets_is_error_and_reports_class(self):
         """web_fetch 返回 404 时 metrics.observe_tool_error_class 被调用且 is_error=True。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         mock_llm = MagicMock()
         mock_llm.chat_main = AsyncMock(side_effect=[
@@ -930,7 +930,7 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
 
     async def test_anti_crawler_error_reports_anti_crawler_class(self):
         """web_fetch 返回 403 时 metrics 上报 anti_crawler 分类。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         mock_llm = MagicMock()
         mock_llm.chat_main = AsyncMock(side_effect=[
@@ -971,7 +971,7 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_does_not_report_error_class(self):
         """正常返回不触发 error_class 上报，也不累加 errors。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         mock_llm = MagicMock()
         mock_llm.chat_main = AsyncMock(side_effect=[
@@ -1043,7 +1043,7 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
 
     async def test_error_class_also_reports_retry(self):
         """Phase 2 反馈监控：error_class 识别时同步上报 observe_tool_retry。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         mock_llm = MagicMock()
         mock_llm.chat_main = AsyncMock(side_effect=[
@@ -1084,7 +1084,7 @@ class TestErrorClassifierMetricsReporting(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_does_not_report_retry(self):
         """Phase 2 反馈监控：成功路径不触发 retry 计数。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         mock_llm = MagicMock()
         mock_llm.chat_main = AsyncMock(side_effect=[
@@ -1258,7 +1258,7 @@ class TestAgentFailureSignalTrigger(unittest.IsolatedAsyncioTestCase):
         self.mock_tool_registry.execute_tool.return_value = "Error: 404 not found"
 
         # mock ErrorClassifier
-        from src.agent import error_classifier as ec_mod
+        from hermes.agent import error_classifier as ec_mod
         original_classify = ec_mod.ErrorClassifier.classify
         try:
             ec_mod.ErrorClassifier.classify = MagicMock(

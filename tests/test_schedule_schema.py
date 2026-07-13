@@ -1,4 +1,4 @@
-"""Phase 8 Task 1.6: Schedule config schema 扩展测试。
+﻿"""Phase 8 Task 1.6: Schedule config schema 扩展测试。
 
 验证 Schedule dataclass 新增字段：
 - ``cron_id`` / ``granted_tools`` / ``active_tools_snapshot`` /
@@ -23,7 +23,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from src.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
+from hermes.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
 
 
 class TestScheduleDataclassNewFields(unittest.TestCase):

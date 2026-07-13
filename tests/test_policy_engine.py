@@ -20,8 +20,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.policy import PolicyEngine, Decision, DEFAULT_RULES  # noqa: E402
-from src.agent.file_registry import FileOperationRegistry  # noqa: E402
+from hermes.agent.policy import PolicyEngine, Decision, DEFAULT_RULES  # noqa: E402
+from hermes.agent.file_registry import FileOperationRegistry  # noqa: E402
 
 
 class TestPolicyEngineDefaults(unittest.TestCase):
@@ -491,9 +491,9 @@ class TestPolicyEngineReadPath(unittest.TestCase):
     """
 
     def test_file_read_src_denied(self):
-        """file_read 读 src/server.py → deny，reason 含'黑名单'。"""
+        """file_read 读 hermes/server.py → deny，reason 含'黑名单'。"""
         engine = PolicyEngine(enabled=True)
-        d = engine.check("file_read", {"path": "src/server.py"})
+        d = engine.check("file_read", {"path": "hermes/server.py"})
         self.assertEqual(d.action, "deny")
         self.assertIn("黑名单", d.reason)
 
@@ -560,8 +560,8 @@ class TestPolicyEngineReadPath(unittest.TestCase):
         # secret/ 在自定义黑名单中 → deny
         d = engine.check("file_read", {"path": "secret/passwords.txt"})
         self.assertEqual(d.action, "deny")
-        # src/ 不在自定义黑名单中 → allow
-        d2 = engine.check("file_read", {"path": "src/server.py"})
+        # hermes/ 不在自定义黑名单中 → allow
+        d2 = engine.check("file_read", {"path": "hermes/server.py"})
         self.assertEqual(d2.action, "allow")
 
 

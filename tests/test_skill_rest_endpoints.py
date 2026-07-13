@@ -1,4 +1,4 @@
-"""Skill REST 端点单元测试（P1 双路径化 + 软禁用改造）。
+﻿"""Skill REST 端点单元测试（P1 双路径化 + 软禁用改造）。
 
 覆盖 ``src/server.py`` 的 4 个 Skill 端点：
 - ``GET /skills/{name}``：返回 meta 信息（含 stub_registered / disabled / body_preview）
@@ -41,10 +41,10 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.server import app  # noqa: E402
-from app import get_skill_loader, get_orchestrator  # noqa: E402
-from src.agent.tool_registry import ToolRegistry  # noqa: E402
-from src.skill.loader import (  # noqa: E402
+from hermes.server import app  # noqa: E402
+from hermes.app import get_skill_loader, get_orchestrator  # noqa: E402
+from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
+from hermes.skill.loader import (  # noqa: E402
     Skill,
     SkillLoader,
     SkillMeta,
@@ -128,7 +128,7 @@ class TestSkillRestEndpoints(unittest.TestCase):
         app.dependency_overrides[get_orchestrator] = lambda: self.orch
         # SKILL_STATE_PATH 仍通过 patch 注入（非 Depends 组件）
         self._patches = [
-            patch("src.server.SKILL_STATE_PATH", self.tmpdir / "state.json"),
+            patch("hermes.server.SKILL_STATE_PATH", self.tmpdir / "state.json"),
         ]
         for p in self._patches:
             p.start()

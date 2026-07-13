@@ -1,14 +1,10 @@
-# tests/test_routes_batch2_no_state.py
+﻿# tests/test_routes_batch2_no_state.py
 """测试 routes 批次 2 无 import state。"""
 from __future__ import annotations
 import sys
 import os
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
 class TestRoutesBatch2NoState:
 
     def test_chat_no_import_state(self):

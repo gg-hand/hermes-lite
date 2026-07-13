@@ -1,4 +1,4 @@
-"""Phase 4 Task 10: MCPClient 与 MCPManager 测试。"""
+﻿"""Phase 4 Task 10: MCPClient 与 MCPManager 测试。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
 
-from mcp.client import MCPClient, MCPServerDef
-from mcp.manager import MCPManager
+from hermes.mcp.client import MCPClient, MCPServerDef
+from hermes.mcp.manager import MCPManager
 
 
 class TestMCPServerDef(unittest.TestCase):
@@ -133,7 +133,7 @@ class TestMCPManager(unittest.TestCase):
             mock_client._connected = True
             mock_client.defn = MCPServerDef(name="test", transport="stdio", command="x")
             mock_client.list_tools = MagicMock(return_value=[])
-            with patch("mcp.manager.MCPClient", return_value=mock_client):
+            with patch("hermes.mcp.manager.MCPClient", return_value=mock_client):
                 ok = asyncio.run(manager.add_server(MCPServerDef(name="test", transport="stdio", command="x")))
             self.assertTrue(ok)
             self.assertIn("test", manager._clients)
@@ -154,7 +154,7 @@ class TestMCPManager(unittest.TestCase):
                 mock_client._connected = True
                 mock_client.defn = MCPServerDef(name=name, transport="stdio", command="x")
                 mock_client.list_tools = MagicMock(return_value=tools)
-                with patch("mcp.manager.MCPClient", return_value=mock_client):
+                with patch("hermes.mcp.manager.MCPClient", return_value=mock_client):
                     asyncio.run(manager.add_server(MCPServerDef(name=name, transport="stdio", command="x")))
             all_tools = manager.get_all_tools()
             self.assertEqual(len(all_tools), 2)

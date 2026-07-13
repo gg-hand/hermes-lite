@@ -1,4 +1,4 @@
-"""Orchestrator 会话标题生成单元测试 — 验证 asyncio task 引用持有。
+﻿"""Orchestrator 会话标题生成单元测试 — 验证 asyncio task 引用持有。
 
 运行方式:
     python -m unittest tests.test_orchestrator_title -v
@@ -25,8 +25,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.orchestrator import Orchestrator  # noqa: E402
-from src.agent.session_manager import SessionManager  # noqa: E402
+from hermes.orchestrator import Orchestrator  # noqa: E402
+from hermes.agent.session_manager import SessionManager  # noqa: E402
 
 
 def _make_llm_response(text: str) -> MagicMock:
@@ -154,7 +154,7 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
         with patch(
             "asyncio.create_task", side_effect=RuntimeError("no running loop")
         ):
-            with self.assertLogs("src.agent.session_manager", level="WARNING") as cm:
+            with self.assertLogs("hermes.agent.session_manager", level="WARNING") as cm:
                 orch.session_mgr.generate_title_async("sess-runtime", "some input")
 
         # task 未创建
@@ -176,7 +176,7 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
             return_value=_make_llm_response("")
         )
 
-        with self.assertLogs("src.agent.session_manager", level="INFO") as cm:
+        with self.assertLogs("hermes.agent.session_manager", level="INFO") as cm:
             orch.session_mgr.generate_title_async("sess-empty", "some input")
             await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 
@@ -200,7 +200,7 @@ class TestTitleTaskReference(unittest.IsolatedAsyncioTestCase):
             side_effect=asyncio.TimeoutError()
         )
 
-        with self.assertLogs("src.agent.session_manager", level="WARNING") as cm:
+        with self.assertLogs("hermes.agent.session_manager", level="WARNING") as cm:
             orch.session_mgr.generate_title_async("sess-timeout", "some input")
             await asyncio.gather(*orch.session_mgr._pending_title_tasks)
 

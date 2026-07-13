@@ -1,4 +1,4 @@
-"""ReactLoop 自动续接 + 重试检测 + 总熔断 单元测试（Phase 9 Task 7.9）。
+﻿"""ReactLoop 自动续接 + 重试检测 + 总熔断 单元测试（Phase 9 Task 7.9）。
 
 验证四道防线：
 1. 单工具重试检测：同工具同参数重复 3 次触发卡死，返回卡死消息，is_complete=False
@@ -28,12 +28,12 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.react_loop import ReactLoop  # noqa: E402
-from src.agent.context_builder import ContextBuilder  # noqa: E402
-from src.agent.cron_isolator import CronIsolator  # noqa: E402
-from src.agent.msg_persistence import MessagePersistence  # noqa: E402
-from src.agent.session_manager import SessionManager  # noqa: E402
-from src.agent.skill_manager import SkillManager  # noqa: E402
+from hermes.agent.react_loop import ReactLoop  # noqa: E402
+from hermes.agent.context_builder import ContextBuilder  # noqa: E402
+from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.agent.msg_persistence import MessagePersistence  # noqa: E402
+from hermes.agent.session_manager import SessionManager  # noqa: E402
+from hermes.agent.skill_manager import SkillManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -387,19 +387,19 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_has_unfinished_steps_none_dict(self):
         """todo_dict 为 None 时返回 False（不续接）。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         self.assertFalse(ContextBuilder.has_unfinished_steps(None))
 
     def test_has_unfinished_steps_empty_steps(self):
         """todo_dict 无 steps 时返回 False。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         self.assertFalse(
             ContextBuilder.has_unfinished_steps({"goal": "g", "steps": []})
         )
 
     def test_has_unfinished_steps_all_completed(self):
         """所有 step 均为 completed 时返回 False。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         todo_dict = {
             "goal": "g",
             "steps": [
@@ -412,7 +412,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_has_unfinished_steps_has_pending(self):
         """有 pending 步骤时返回 True。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         todo_dict = {
             "goal": "g",
             "steps": [
@@ -425,7 +425,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_has_unfinished_steps_has_in_progress(self):
         """有 in_progress 步骤时返回 True。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         todo_dict = {
             "goal": "g",
             "steps": [
@@ -437,7 +437,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_has_unfinished_steps_has_failed(self):
         """有 failed 步骤时返回 True（允许 LLM 重试）。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         todo_dict = {
             "goal": "g",
             "steps": [
@@ -449,7 +449,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_build_continuation_message_with_todo(self):
         """构造续接消息含 goal + 进度 + 未完成步骤。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         # 需要一个 Orchestrator 实例来调用实例方法（或用 unbound 调用）
         # _build_continuation_message 委托到 context_builder
         orch = object.__new__(Orchestrator)
@@ -473,7 +473,7 @@ class TestOrchestratorContinuation(unittest.TestCase):
 
     def test_build_continuation_message_none_todo(self):
         """todo_dict 为 None 时降级为通用续接消息。"""
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         orch = object.__new__(Orchestrator)
         orch.context_builder = ContextBuilder()
         msg = orch.context_builder.build_continuation_message(None)
@@ -491,8 +491,8 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
 
     def _make_orchestrator_with_mocks(self):
         """构造一个最小化的 Orchestrator 实例（跳过 __init__）。"""
-        from src.orchestrator import Orchestrator
-        from src.orchestrator.chat_handler import ChatHandler
+        from hermes.orchestrator import Orchestrator
+        from hermes.orchestrator.chat_handler import ChatHandler
         orch = object.__new__(Orchestrator)
         # 注入 mock 依赖
         orch.todo_registry = MagicMock()
@@ -681,7 +681,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
         验证非流式路径埋点：orchestrator.py:885-887 在 await react_loop.run() 后
         立即上报 termination_reason。
         """
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         orch = self._make_orchestrator_with_mocks()
         # 注入真实 metrics 实例（替换默认的 None）
@@ -706,7 +706,7 @@ class TestOrchestratorContinuationIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def test_observe_termination_reports_each_continuation_round(self):
         """Phase 1 反馈监控：自动续接场景下每次 run() 都上报 termination_reason。"""
-        from src.monitoring.metrics import MetricsCollector
+        from hermes.monitoring.metrics import MetricsCollector
 
         orch = self._make_orchestrator_with_mocks()
         metrics = MetricsCollector()

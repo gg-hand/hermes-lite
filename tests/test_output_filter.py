@@ -1,4 +1,4 @@
-"""OutputFilter 单元测试 — 验证输出侧 PII 过滤器的检测与替换逻辑。
+﻿"""OutputFilter 单元测试 — 验证输出侧 PII 过滤器的检测与替换逻辑。
 
 覆盖 Phase 9 Task 3 spec 中所有场景：
 - 各类 PII 检测与替换（手机号 / 身份证 / 邮箱 / 银行卡）
@@ -30,7 +30,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.guardrails.output_filter import OutputFilter  # noqa: E402
+from hermes.guardrails.output_filter import OutputFilter  # noqa: E402
 
 
 class TestOutputFilterPhone(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""StreamManager cancel_callback 槽位测试（spec Task 2）。
+﻿"""StreamManager cancel_callback 槽位测试（spec Task 2）。
 
 验证 spec 中三个核心场景：
 - 注册 callback → trigger_cancel → callback 被调用，返回 True
@@ -32,7 +32,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.stream_manager import StreamManager
+from hermes.stream_manager import StreamManager
 
 
 def _make_callback(call_flag: threading.Event, name: str = "cb"):

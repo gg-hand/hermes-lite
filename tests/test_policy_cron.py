@@ -1,4 +1,4 @@
-"""Phase 8 Task 4: PolicyEngine cron 预授权路径 + granted_tools 校验测试套件。
+﻿"""Phase 8 Task 4: PolicyEngine cron 预授权路径 + granted_tools 校验测试套件。
 
 覆盖 SubTask 4.1 / 4.2 / 4.3 / 4.7 / 4.8 的策略层实现：
 - SubTask 4.1: ``validate_granted_tools`` 严格/非严格校验、路径约束硬约束
@@ -33,9 +33,9 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.policy import PolicyEngine, Decision  # noqa: E402
-from src.agent.cron_tools import HARD_DISABLED_TOOLS  # noqa: E402
-from src.tasks.scheduler import (  # noqa: E402
+from hermes.agent.policy import PolicyEngine, Decision  # noqa: E402
+from hermes.agent.cron_tools import HARD_DISABLED_TOOLS  # noqa: E402
+from hermes.tasks.scheduler import (  # noqa: E402
     Schedule,
     validate_granted_tools,
     _VALID_GRANT_SCOPES,

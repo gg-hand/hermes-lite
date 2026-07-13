@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Hermes Lite Performance Benchmark Suite — Consolidated Runner.
 
 Measures end-to-end latency, subsystem overhead, memory, GC, and lock contention
@@ -42,7 +42,7 @@ console.setLevel(logging.INFO)
 console.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 logger.addHandler(console)
 
-SRC_DIR = str(Path(__file__).resolve().parent.parent.parent / "src")
+SRC_DIR = str(Path(__file__).resolve().parent.parent.parent / "hermes")
 PROJ_DIR = str(Path(__file__).resolve().parent.parent.parent)
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
@@ -59,7 +59,7 @@ _TEST_DIR = str(Path(__file__).resolve().parent.parent)
 if _TEST_DIR not in sys.path:
     sys.path.insert(0, _TEST_DIR)
 
-from llm import client as llm_client_module
+from hermes.llm import client as llm_client_module
 from performance.mock_backend import MockBackend, LLMResponse
 
 _original_create_backend = llm_client_module._create_backend
@@ -78,7 +78,7 @@ llm_client_module._create_backend = _mock_create_backend
 def _patched_llm_init(self, config_path=None, config=None, metrics_collector=None):
     """Bypass API key validation for mock provider."""
     if config is None:
-        from config import load_config
+        from hermes.config import load_config
         config = load_config(config_path)
     llm_cfg = config.get("llm", {})
     self._metrics_collector = metrics_collector
@@ -314,8 +314,8 @@ class BenchmarkSession:
 
 def seed_test_data(data_dir: str):
     """Pre-seed test data stores for consistent baselines."""
-    from storage.chroma_store import ChromaMemoryStore
-    from storage.sqlite_log import SessionLogger
+    from hermes.storage.chroma_store import ChromaMemoryStore
+    from hermes.storage.sqlite_log import SessionLogger
 
     logger.info("Seeding test data...")
 
@@ -637,7 +637,7 @@ def run_scenario_e(data_dir: str, n: int = 3):
 
 def _create_orchestrator(data_dir: str, scenario: str, max_loops: int = 1, consolidation_threshold: int = 9999):
     """Factory: create Orchestrator with test config."""
-    from orchestrator import Orchestrator
+    from hermes.orchestrator import Orchestrator
 
     # Update global test config with given threshold
     make_test_config(data_dir, max_loops=max_loops, consolidation_threshold=consolidation_threshold)

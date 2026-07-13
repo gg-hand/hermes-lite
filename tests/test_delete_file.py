@@ -1,4 +1,4 @@
-"""delete_file 工具单元测试 — 验证基础版与 v2 版本（注入 file_registry）的删除行为。
+﻿"""delete_file 工具单元测试 — 验证基础版与 v2 版本（注入 file_registry）的删除行为。
 
 覆盖场景：
 - 基础版 delete_file：删除文件 / 文件不存在 / symlink 拒绝
@@ -27,13 +27,13 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.tools.file_tools import (  # noqa: E402
+from hermes.agent.tools.file_tools import (  # noqa: E402
     delete_file,
     write_file,
 )
-from src.agent.tools import register_builtin_tools  # noqa: E402
-from src.agent.file_registry import FileOperationRegistry  # noqa: E402
-from src.agent.tool_registry import ToolRegistry  # noqa: E402
+from hermes.agent.tools import register_builtin_tools  # noqa: E402
+from hermes.agent.file_registry import FileOperationRegistry  # noqa: E402
+from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
 
 
 class TestDeleteFileBasic(unittest.TestCase):
@@ -109,7 +109,7 @@ class TestWriteFileV2WithRegistry(unittest.TestCase):
 
     def _make_v2_write_file(self):
         """构造一个 v2 版 write_file closure，模拟 register_builtin_tools 注入。"""
-        from src.agent.tools.file_tools import _register_write_file_v2
+        from hermes.agent.tools.file_tools import _register_write_file_v2
 
         # 用 ToolRegistry 注册 v2 版
         tr = ToolRegistry()
@@ -139,7 +139,7 @@ class TestWriteFileV2WithRegistry(unittest.TestCase):
 
     def test_write_file_no_session_id_skip_record(self):
         """session_id 为 None 时跳过记录（向后兼容）。"""
-        from src.agent.tools.file_tools import _register_write_file_v2
+        from hermes.agent.tools.file_tools import _register_write_file_v2
 
         tr = ToolRegistry()
         # get_session_id 返回 None
@@ -182,7 +182,7 @@ class TestDeleteFileV2WithRegistry(unittest.TestCase):
 
     def _make_v2_delete_file(self):
         """构造一个 v2 版 delete_file closure。"""
-        from src.agent.tools.file_tools import _register_delete_file_v2
+        from hermes.agent.tools.file_tools import _register_delete_file_v2
 
         tr = ToolRegistry()
         _register_delete_file_v2(tr, self.registry, lambda: self.session_id)
@@ -244,7 +244,7 @@ class TestDeleteFileV2WithRegistry(unittest.TestCase):
 
     def test_delete_file_no_session_id_skip_remove(self):
         """session_id 为 None 时跳过从 registry 移除（但文件仍被删除）。"""
-        from src.agent.tools.file_tools import _register_delete_file_v2
+        from hermes.agent.tools.file_tools import _register_delete_file_v2
 
         tr = ToolRegistry()
         _register_delete_file_v2(tr, self.registry, lambda: None)

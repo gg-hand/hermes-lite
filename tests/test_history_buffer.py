@@ -1,4 +1,4 @@
-"""HistoryBuffer FIFO 配对淘汰单元测试 — Phase 9 Task 6 方案 A。
+﻿"""HistoryBuffer FIFO 配对淘汰单元测试 — Phase 9 Task 6 方案 A。
 
 验证 tool_use/tool_result 配对原子删除行为，覆盖以下场景：
 
@@ -37,7 +37,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.storage.history_buffer import HistoryBuffer  # noqa: E402
+from hermes.storage.history_buffer import HistoryBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

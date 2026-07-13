@@ -1,4 +1,4 @@
-"""Orchestrator 装配 file_registry 集成测试（T9）。
+﻿"""Orchestrator 装配 file_registry 集成测试（T9）。
 
 验证 Orchestrator.__init__ 正确装配 FileOperationRegistry：
 1. self.file_registry 属性存在且为 FileOperationRegistry 实例
@@ -44,7 +44,7 @@ class TestOrchestratorFileRegistryAssembly(unittest.TestCase):
         我们 patch LLMClient 为一个简单的 stub，避免加载 DeepSeek API key 等。
         """
         # 延迟导入，确保 install_mocks() 已执行
-        from src.orchestrator import Orchestrator  # noqa: E402
+        from hermes.orchestrator import Orchestrator  # noqa: E402
 
         cls.Orchestrator = Orchestrator
 
@@ -58,7 +58,7 @@ class TestOrchestratorFileRegistryAssembly(unittest.TestCase):
             Orchestrator 实例（LLMClient 被 mock 替换）。
         """
         # patch LLMClient 类本身，返回一个简单 stub 实例
-        with patch("src.orchestrator.LLMClient") as mock_llm_cls:
+        with patch("hermes.orchestrator.LLMClient") as mock_llm_cls:
             mock_llm_cls.return_value = object()  # 简单 stub
             return self.Orchestrator(config_path=config_path)
 
@@ -69,7 +69,7 @@ class TestOrchestratorFileRegistryAssembly(unittest.TestCase):
 
     def test_file_registry_is_instance(self):
         """self.file_registry 为 FileOperationRegistry 实例（非 None）。"""
-        from src.agent.file_registry import FileOperationRegistry
+        from hermes.agent.file_registry import FileOperationRegistry
 
         orch = self._make_orchestrator("config.yaml")
         self.assertIsNotNone(orch.file_registry)

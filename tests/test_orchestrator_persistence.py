@@ -1,4 +1,4 @@
-"""Orchestrator.chat_stream 流式过程消息持久化测试（T6）。
+﻿"""Orchestrator.chat_stream 流式过程消息持久化测试（T6）。
 
 验证 chat_stream 在流式过程中实时收集事件，并在 finally 块中按事件顺序
 批量写入 session_logger：
@@ -37,15 +37,15 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.orchestrator import Orchestrator  # noqa: E402
-from src.orchestrator.chat_handler import ChatHandler  # noqa: E402
-from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
-from src.tasks.todo_list import TodoListRegistry  # noqa: E402
-from src.agent.context_builder import ContextBuilder  # noqa: E402
-from src.agent.cron_isolator import CronIsolator  # noqa: E402
-from src.agent.msg_persistence import MessagePersistence  # noqa: E402
-from src.agent.session_manager import SessionManager  # noqa: E402
-from src.agent.skill_manager import SkillManager  # noqa: E402
+from hermes.orchestrator import Orchestrator  # noqa: E402
+from hermes.orchestrator.chat_handler import ChatHandler  # noqa: E402
+from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from hermes.tasks.todo_list import TodoListRegistry  # noqa: E402
+from hermes.agent.context_builder import ContextBuilder  # noqa: E402
+from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.agent.msg_persistence import MessagePersistence  # noqa: E402
+from hermes.agent.session_manager import SessionManager  # noqa: E402
+from hermes.agent.skill_manager import SkillManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

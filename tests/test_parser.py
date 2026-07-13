@@ -1,4 +1,4 @@
-"""WaterfallParser 单元测试。
+﻿"""WaterfallParser 单元测试。
 
 覆盖：文本格式(txt/md)、PDF、DOCX、图片OCR、编码回退、L3降级、超时。
 
@@ -24,7 +24,7 @@ install_mocks()
 
 from tests.test_helpers import minimal_png
 
-from src.files.parser import WaterfallParser, ParseError  # noqa: E402
+from hermes.files.parser import WaterfallParser, ParseError  # noqa: E402
 
 
 class TestParserTextFormats(unittest.TestCase):
@@ -94,7 +94,7 @@ class TestParserOCR(unittest.TestCase):
 
     def test_09_image_no_text_raises_parse_error(self):
         """图片无文字时 parser 层仍应抛 ParseError（由 ETL 层处理）。"""
-        with patch("src.files.parser.pytesseract.image_to_string", return_value=""):
+        with patch("hermes.files.parser.pytesseract.image_to_string", return_value=""):
             with self.assertRaises(ParseError):
                 self.parser.parse(minimal_png(), "photo.png")
 

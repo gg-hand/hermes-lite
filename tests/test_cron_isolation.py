@@ -1,4 +1,4 @@
-"""Phase 8 Task 1.4 + 1.5: Cron 隔离层上下文路由测试。
+﻿"""Phase 8 Task 1.4 + 1.5: Cron 隔离层上下文路由测试。
 
 验证：
 - CronIsolation.from_session_id 正确解析 cron: 前缀
@@ -29,12 +29,12 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.llm.prompts import SYSTEM_PROMPT  # noqa: E402
-from src.memory.context_manager import ContextManager  # noqa: E402
-from src.memory.cron_isolation import CronIsolation  # noqa: E402
-from src.agent.cron_isolator import CronIsolator  # noqa: E402
-from src.orchestrator import Orchestrator  # noqa: E402
-from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from hermes.llm.prompts import SYSTEM_PROMPT  # noqa: E402
+from hermes.memory.context_manager import ContextManager  # noqa: E402
+from hermes.memory.cron_isolation import CronIsolation  # noqa: E402
+from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.orchestrator import Orchestrator  # noqa: E402
+from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

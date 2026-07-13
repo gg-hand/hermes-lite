@@ -1,4 +1,4 @@
-"""Phase 8 Task 5: cron_tool 动态工具系统测试套件（SubTask 5.10）。
+﻿"""Phase 8 Task 5: cron_tool 动态工具系统测试套件（SubTask 5.10）。
 
 覆盖：
 - ``cron_tool_loader``：TOOL.md 解析 + 子进程执行 + 列表辅助（SubTask 5.2）
@@ -37,8 +37,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.cron_tool_registry import CronToolRegistry  # noqa: E402
-from src.tasks.cron_tool_loader import (  # noqa: E402
+from hermes.agent.cron_tool_registry import CronToolRegistry  # noqa: E402
+from hermes.tasks.cron_tool_loader import (  # noqa: E402
     CronToolError,
     CronToolNotFoundError,
     CronToolParseError,
@@ -50,9 +50,9 @@ from src.tasks.cron_tool_loader import (  # noqa: E402
     list_tools,
     load_tool,
 )
-from src.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
-from src.agent.context_builder import ContextBuilder  # noqa: E402
-from src.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
+from hermes.agent.context_builder import ContextBuilder  # noqa: E402
+from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -782,8 +782,8 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.cron_tool_registry = CronToolRegistry(base_dir=self.sandbox.base_dir)
         self.react_loop = _MockReactLoopForCache()
         # 构造 Orchestrator（绕过完整初始化，只设置需要的属性）
-        from src.orchestrator import Orchestrator
-        from src.orchestrator.enhanced_context import EnhancedContextBuilder
+        from hermes.orchestrator import Orchestrator
+        from hermes.orchestrator.enhanced_context import EnhancedContextBuilder
         self.orch = Orchestrator.__new__(Orchestrator)
         self.orch.tool_registry = self.global_registry
         self.orch.react_loop = self.react_loop
@@ -1000,7 +1000,7 @@ class TestReactLoopDispatch(unittest.TestCase):
     """ReactLoop._execute_tool_with_dispatch 优先派发 cron_tool_registry。"""
 
     def setUp(self):
-        from src.agent.react_loop import ReactLoop
+        from hermes.agent.react_loop import ReactLoop
         self.loop = ReactLoop.__new__(ReactLoop)
         # 不设置 cron_tool_registry（模拟未注入）
         self.loop.cron_tool_registry = None
@@ -1113,13 +1113,13 @@ class TestEndToEndIntegration(unittest.TestCase):
         sched = {"active_tools_snapshot": ["search"]}
         cron_sched = _MockCronSchedulerForCache({"e2e": sched})
 
-        from src.orchestrator import Orchestrator
+        from hermes.orchestrator import Orchestrator
         orch = Orchestrator.__new__(Orchestrator)
         orch.tool_registry = global_reg
         orch.cron_scheduler = cron_sched
         orch.cron_tool_registry = registry
 
-        from src.agent.react_loop import ReactLoop
+        from hermes.agent.react_loop import ReactLoop
         react_loop = ReactLoop.__new__(ReactLoop)
         react_loop.cron_tool_registry = None
         react_loop.tool_registry = global_reg

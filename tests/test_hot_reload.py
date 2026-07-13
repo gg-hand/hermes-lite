@@ -1,4 +1,4 @@
-"""热重载测试：LLM/安全/存储三种场景（Task 5）。
+﻿"""热重载测试：LLM/安全/存储三种场景（Task 5）。
 
 验证 Container.reload() 的原子性重建、级联重建、ComponentRef 代理转发。
 同时验证 detect_changed_sections 的顶层段比较逻辑。
@@ -12,15 +12,12 @@ import time
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-if os.path.join(_PROJECT_ROOT, "src") not in sys.path:
-    sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
-
 from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
 import pytest  # noqa: E402
-from container import (  # noqa: E402
+from hermes.container import (  # noqa: E402
     Container,
     ComponentRef,
     ConfigReloadError,
@@ -159,7 +156,7 @@ class TestSensitiveFieldSeparation:
     """验证 write_config_with_sensitive_separation 将敏感字段写入 .env。"""
 
     def test_sensitive_field_moved_to_env(self, tmp_path):
-        from config import write_config_with_sensitive_separation
+        from hermes.config import write_config_with_sensitive_separation
         config_path = tmp_path / "config.yaml"
         env_path = tmp_path / ".env"
         new_config = {
@@ -178,7 +175,7 @@ class TestSensitiveFieldSeparation:
         assert "LLM_MAIN_API_KEY=sk-secret-key" in env_content
 
     def test_already_placeholder_not_re_written(self, tmp_path):
-        from config import write_config_with_sensitive_separation
+        from hermes.config import write_config_with_sensitive_separation
         config_path = tmp_path / "config.yaml"
         env_path = tmp_path / ".env"
         new_config = {
@@ -202,12 +199,12 @@ class TestLifespanContainerInjection:
 
     def test_inject_lifespan_instances_exists(self):
         """inject_lifespan_instances 函数应存在于 app 模块。"""
-        from app import inject_lifespan_instances
+        from hermes.app import inject_lifespan_instances
         assert callable(inject_lifespan_instances)
 
     def test_inject_all_instances_bypasses_factories(self):
         """注入后 container.get() 应返回注入的实例而非工厂创建的。"""
-        from app import init_container, register_components, inject_lifespan_instances, get_container
+        from hermes.app import init_container, register_components, inject_lifespan_instances, get_container
         config = {"storage": {}, "monitoring": {}, "security": {},
                   "tasks": {}, "skills": {}, "files": {}, "llm": {},
                   "memory": {}, "guardrails": {}, "cron": {},

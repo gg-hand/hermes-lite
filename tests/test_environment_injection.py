@@ -1,4 +1,4 @@
-"""运行环境信息注入功能测试。
+﻿"""运行环境信息注入功能测试。
 
 验证：
 - Orchestrator._build_environment_section 构造含必需字段
@@ -31,13 +31,13 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.llm.prompts import SYSTEM_PROMPT  # noqa: E402
-from src.memory.context_manager import ContextManager  # noqa: E402
-from src.memory.cron_isolation import CronIsolation  # noqa: E402
-from src.agent.context_builder import ContextBuilder  # noqa: E402
-from src.agent.cron_isolator import CronIsolator  # noqa: E402
-from src.orchestrator import Orchestrator  # noqa: E402
-from src.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from hermes.llm.prompts import SYSTEM_PROMPT  # noqa: E402
+from hermes.memory.context_manager import ContextManager  # noqa: E402
+from hermes.memory.cron_isolation import CronIsolation  # noqa: E402
+from hermes.agent.context_builder import ContextBuilder  # noqa: E402
+from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.orchestrator import Orchestrator  # noqa: E402
+from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

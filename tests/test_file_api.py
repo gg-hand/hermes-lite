@@ -1,4 +1,4 @@
-"""HTTP 端点集成测试（使用 FastAPI TestClient + ContextManager 集成）。
+﻿"""HTTP 端点集成测试（使用 FastAPI TestClient + ContextManager 集成）。
 
 注意：server.py 的 lifespan 需要完整的 Orchestrator 初始化，这些测试
 仅验证端点路由和基本的错误处理路径（mock 模式下）。
@@ -23,9 +23,9 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from src.files.upload_manager import UploadManager
-from src.files.context_injector import FileContextInjector
-from src.memory.context_manager import ContextManager
+from hermes.files.upload_manager import UploadManager
+from hermes.files.context_injector import FileContextInjector
+from hermes.memory.context_manager import ContextManager
 
 
 class TestContextManagerIntegration(unittest.TestCase):

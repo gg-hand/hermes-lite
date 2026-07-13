@@ -1,4 +1,4 @@
-"""ConsolidationEngine 命名空间路由测试（Phase 8 Task 1.2）。
+﻿"""ConsolidationEngine 命名空间路由测试（Phase 8 Task 1.2）。
 
 验证：
 - ``consolidate(session_id="cron:xxx")`` 写入 ``namespace=cron`` + ``cron_id=xxx``
@@ -31,8 +31,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.memory.consolidation import ConsolidationEngine  # noqa: E402
-from src.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from hermes.memory.consolidation import ConsolidationEngine  # noqa: E402
+from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 def _make_llm_response(text: str) -> MagicMock:

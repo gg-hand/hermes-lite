@@ -1,4 +1,4 @@
-"""Task 4.3: WorkflowValidator 测试。
+﻿"""Task 4.3: WorkflowValidator 测试。
 
 覆盖 13 个用例：
 - id 重复
@@ -21,8 +21,8 @@ from __future__ import annotations
 import unittest
 from typing import Any, Dict, List
 
-from src.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
-from src.tasks.workflow.validator import (
+from hermes.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
+from hermes.tasks.workflow.validator import (
     HARD_DISABLED_TOOLS,
     ValidationError,
     ValidationResult,

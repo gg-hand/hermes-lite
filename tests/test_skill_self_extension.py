@@ -1,4 +1,4 @@
-"""Integration test for full skill lifecycle.
+﻿"""Integration test for full skill lifecycle.
 
 Tests the 5 skill management tools (skill__template / propose_skill / reload_skill /
 toggle_skill / list_skills) registered by register_skill_tools, along with
@@ -18,13 +18,13 @@ from unittest.mock import MagicMock, patch
 # inside src/agent/skill_tools.py (e.g. ``from ..skill.loader import ...``)
 # resolve correctly: ``..`` goes from the ``agent`` package up to ``src``,
 # which is a proper package (it has __init__.py).
-_src = Path(__file__).parent.parent / "src"
+_src = Path(__file__).parent.parent / "hermes"
 sys.path.insert(0, str(_src.parent))  # hermes-lite/  — enables src.agent etc.
 sys.path.insert(0, str(_src))         # hermes-lite/src/  — enables direct agent.*
 
-from src.agent.tool_registry import ToolRegistry
-from src.agent.skill_tools import register_skill_tools
-from src.skill.loader import Skill, SkillLoader
+from hermes.agent.tool_registry import ToolRegistry
+from hermes.agent.skill_tools import register_skill_tools
+from hermes.skill.loader import Skill, SkillLoader
 
 
 class TestSkillLifecycle(TestCase):
@@ -135,8 +135,8 @@ class TestSkillLifecycle(TestCase):
             # same temp directory so the existing-check passes.
             self.skill_loader.skill_dir = tmp
 
-            with patch("src.agent.skill_tools.SKILL_BASE_DIR", tmp), \
-                 patch("src.agent.skill_tools.SKILL_STATE_PATH", tmp / "state.json"):
+            with patch("hermes.agent.skill_tools.SKILL_BASE_DIR", tmp), \
+                 patch("hermes.agent.skill_tools.SKILL_STATE_PATH", tmp / "state.json"):
 
                 # ---- propose ----
                 result = self._call(

@@ -1,4 +1,4 @@
-"""RetryBudget 单元测试（Task 5.2）。
+﻿"""RetryBudget 单元测试（Task 5.2）。
 
 覆盖 6 类用例：
 1. fixed backoff 策略
@@ -16,12 +16,12 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.tasks.workflow.retry import (
+from hermes.tasks.workflow.retry import (
     DEFAULT_RETRYABLE_ERRORS,
     NON_RETRYABLE_ERRORS,
     RetryBudget,
 )
-from src.tasks.workflow.spec import RetryPolicy
+from hermes.tasks.workflow.spec import RetryPolicy
 
 
 class TestRetryBudgetFixed(unittest.TestCase):
@@ -225,7 +225,7 @@ class TestRetryBudgetShouldRetryLogic(unittest.TestCase):
         )
         budget = RetryBudget(policy=policy)
         budget.increment()
-        with patch("src.tasks.workflow.retry.time.sleep") as mock_sleep:
+        with patch("hermes.tasks.workflow.retry.time.sleep") as mock_sleep:
             budget.sleep_backoff()
             mock_sleep.assert_called_once_with(0.5)
 
@@ -235,7 +235,7 @@ class TestRetryBudgetShouldRetryLogic(unittest.TestCase):
         budget = RetryBudget(policy=policy)
         # attempt=0 → compute_backoff_ms 返回 0
         self.assertEqual(budget.compute_backoff_ms(), 0)
-        with patch("src.tasks.workflow.retry.time.sleep") as mock_sleep:
+        with patch("hermes.tasks.workflow.retry.time.sleep") as mock_sleep:
             budget.sleep_backoff()
             mock_sleep.assert_not_called()
 

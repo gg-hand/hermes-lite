@@ -1,4 +1,4 @@
-"""OpenAICompatBackend 缓存命中字段采集单元测试（P0b）。
+﻿"""OpenAICompatBackend 缓存命中字段采集单元测试（P0b）。
 
 验证 DeepSeek（OpenAI 兼容扩展）返回的 ``prompt_cache_hit_tokens`` /
 ``prompt_cache_miss_tokens`` 被正确映射到 ``LLMResponse.usage`` 的
@@ -35,7 +35,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.llm.client import LLMResponse, OpenAICompatBackend  # noqa: E402
+from hermes.llm.client import LLMResponse, OpenAICompatBackend  # noqa: E402
 
 
 class _Usage:
@@ -373,7 +373,7 @@ class TestAnthropicBackendUnchanged(unittest.TestCase):
 
     def test_anthropic_still_uses_native_cache_fields(self):
         """AnthropicBackend 应直接读取 Anthropic 风格字段。"""
-        client_path = Path(_PROJECT_ROOT) / "src" / "llm" / "client.py"
+        client_path = Path(_PROJECT_ROOT) / "hermes" / "llm" / "client.py"
         source = client_path.read_text(encoding="utf-8")
 
         # AnthropicBackend.chat 与 chat_stream 中的 usage 采集应使用 getattr
@@ -391,7 +391,7 @@ class TestAnthropicBackendUnchanged(unittest.TestCase):
 
     def test_openai_uses_deepseek_cache_fields(self):
         """OpenAICompatBackend 应映射 DeepSeek 扩展字段。"""
-        client_path = Path(_PROJECT_ROOT) / "src" / "llm" / "client.py"
+        client_path = Path(_PROJECT_ROOT) / "hermes" / "llm" / "client.py"
         source = client_path.read_text(encoding="utf-8")
 
         # _extract_cache_usage 应映射 prompt_cache_miss_tokens / prompt_cache_hit_tokens

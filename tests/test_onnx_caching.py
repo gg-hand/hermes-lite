@@ -1,4 +1,4 @@
-"""P0-1 ONNX 模型缓存测试 — 验证 _embed() 的模型实例缓存行为。
+﻿"""P0-1 ONNX 模型缓存测试 — 验证 _embed() 的模型实例缓存行为。
 
 运行方式:
     python -m unittest tests.test_onnx_caching -v
@@ -26,7 +26,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.storage.chroma_store import ChromaMemoryStore, _get_embedding_fn
+from hermes.storage.chroma_store import ChromaMemoryStore, _get_embedding_fn
 
 
 class TestOnnxCachingContract(unittest.TestCase):

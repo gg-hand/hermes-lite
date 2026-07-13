@@ -1,4 +1,4 @@
-"""ConsolidationEngine 单元测试 — 验证阈值触发与 facts JSON 容错解析。
+﻿"""ConsolidationEngine 单元测试 — 验证阈值触发与 facts JSON 容错解析。
 
 运行方式:
     python -m unittest tests.test_consolidation -v
@@ -24,7 +24,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.memory.consolidation import ConsolidationEngine  # noqa: E402
+from hermes.memory.consolidation import ConsolidationEngine  # noqa: E402
 
 
 def _make_llm_response(text: str) -> MagicMock:

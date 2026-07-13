@@ -1,4 +1,4 @@
-"""P2-6 find_duplicates n_results 上限测试 — 验证 cap 不影响结果正确性。
+﻿"""P2-6 find_duplicates n_results 上限测试 — 验证 cap 不影响结果正确性。
 
 运行方式:
     python -m unittest tests.test_find_duplicates_cap -v
@@ -24,7 +24,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.storage.chroma_store import ChromaMemoryStore
+from hermes.storage.chroma_store import ChromaMemoryStore
 
 
 class TestFindDuplicatesCapContract(unittest.TestCase):

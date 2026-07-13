@@ -1,4 +1,4 @@
-"""CronScheduler archive_callback cron 分支迁移测试
+﻿"""CronScheduler archive_callback cron 分支迁移测试
 （ops-reliability-uplift Task 6.6）。
 
 验证：
@@ -37,8 +37,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.tasks.run_summary import RunSummary  # noqa: E402
-from src.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
+from hermes.tasks.run_summary import RunSummary  # noqa: E402
+from hermes.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
 
 
 def _make_scheduler(runs_store: MagicMock) -> CronScheduler:

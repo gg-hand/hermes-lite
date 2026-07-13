@@ -1,9 +1,9 @@
-"""DI 容器测试:注册/获取/热重载/级联/循环检测/原子性回滚。"""
+﻿"""DI 容器测试:注册/获取/热重载/级联/循环检测/原子性回滚。"""
 import sys, os, threading, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
 
 import pytest
-from container import Container, ContainerConfigError, ConfigReloadError, ComponentRef
+from hermes.container import Container, ContainerConfigError, ConfigReloadError, ComponentRef
 
 
 class FakeLLM:
@@ -126,19 +126,19 @@ class TestConfigMapping:
 
     def test_llm_maps_to_orchestrator(self):
         """llm 配置变更应触发 orchestrator 重建。"""
-        from container import CONFIG_TO_COMPONENTS
+        from hermes.container import CONFIG_TO_COMPONENTS
         assert "orchestrator" in CONFIG_TO_COMPONENTS.get("llm", [])
 
     def test_monitoring_section_exists(self):
         """monitoring 配置段应映射到 metrics 组件。"""
-        from container import CONFIG_TO_COMPONENTS
+        from hermes.container import CONFIG_TO_COMPONENTS
         assert "metrics_collector" in CONFIG_TO_COMPONENTS.get("monitoring", [])
         assert "metrics_store" in CONFIG_TO_COMPONENTS.get("monitoring", [])
         assert "audit_logger" in CONFIG_TO_COMPONENTS.get("monitoring", [])
 
     def test_all_config_sections_covered(self):
         """所有配置段都应在 CONFIG_TO_COMPONENTS 中有映射。"""
-        from container import CONFIG_TO_COMPONENTS
+        from hermes.container import CONFIG_TO_COMPONENTS
         expected = {"llm", "security", "storage", "memory", "monitoring",
                     "tasks", "skills", "files", "guardrails", "cron",
                     "history", "tools", "server"}
@@ -147,7 +147,7 @@ class TestConfigMapping:
 
     def test_llm_does_not_map_to_llm_client(self):
         """方案B：llm 不再映射到独立的 llm_client，而是 orchestrator 整体。"""
-        from container import CONFIG_TO_COMPONENTS
+        from hermes.container import CONFIG_TO_COMPONENTS
         assert "llm_client" not in CONFIG_TO_COMPONENTS.get("llm", [])
 
 
@@ -156,12 +156,12 @@ class TestRegisterComponents:
 
     def test_register_components_exists(self):
         """register_components 函数应存在于 app 模块。"""
-        from app import register_components
+        from hermes.app import register_components
         assert callable(register_components)
 
     def test_register_all_external_components(self):
         """register_components 应注册15个组件工厂。"""
-        from app import register_components
+        from hermes.app import register_components
         c = Container({"storage": {}, "monitoring": {}, "security": {},
                        "tasks": {}, "skills": {}, "files": {}, "llm": {},
                        "memory": {}, "guardrails": {}, "cron": {},
@@ -179,7 +179,7 @@ class TestRegisterComponents:
 
     def test_container_validate_no_cycles(self):
         """注册后容器应通过循环依赖检测。"""
-        from app import register_components
+        from hermes.app import register_components
         c = Container({"storage": {}, "monitoring": {}, "security": {},
                        "tasks": {}, "skills": {}, "files": {}, "llm": {},
                        "memory": {}, "guardrails": {}, "cron": {},

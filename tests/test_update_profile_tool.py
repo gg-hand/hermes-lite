@@ -1,4 +1,4 @@
-"""profile_update 工具三层防线（黑名单 + 长度 + 频次）单元测试。
+﻿"""profile_update 工具三层防线（黑名单 + 长度 + 频次）单元测试。
 
 覆盖规范 9.2 Task 0b SubTask 0b.8-0b.12：
 - 0b.8 黑名单拒绝：12 条正则模式覆盖系统架构/项目描述同义词
@@ -25,9 +25,9 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.agent._cancel_context import current_session_id
-from src.agent.tools.memory_tools import _register_update_profile
-from src.agent.tool_registry import ToolRegistry
+from hermes.agent._cancel_context import current_session_id
+from hermes.agent.tools.memory_tools import _register_update_profile
+from hermes.agent.tool_registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------

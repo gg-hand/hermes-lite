@@ -1,4 +1,4 @@
-"""Task 3.3: spec.py 数据模型测试。
+﻿"""Task 3.3: spec.py 数据模型测试。
 
 覆盖：
 - from_dict 解析多步 / 简易模式
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.tasks.workflow.spec import (
+from hermes.tasks.workflow.spec import (
     ALLOWED_ON_FAILURE_ACTIONS,
     ALLOWED_STEP_TYPES,
     OnFailure,

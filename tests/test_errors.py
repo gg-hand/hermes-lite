@@ -1,4 +1,4 @@
-"""统一异常处理测试（Task 6）。
+﻿"""统一异常处理测试（Task 6）。
 
 验证全局异常处理器将 ToolError/ConfigError 子类映射为正确的 HTTP 状态码和 JSON 响应。
 """
@@ -10,9 +10,6 @@ import sys
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
-if os.path.join(_PROJECT_ROOT, "src") not in sys.path:
-    sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
-
 from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
@@ -21,7 +18,7 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from errors import (  # noqa: E402
+from hermes.errors import (  # noqa: E402
     ToolNotFoundError,
     ToolExecutionError,
     ToolPermissionDenied,
@@ -34,7 +31,7 @@ from errors import (  # noqa: E402
 
 def _make_test_app() -> FastAPI:
     """创建注册了全局异常处理器的测试 app。"""
-    from app import register_exception_handlers
+    from hermes.app import register_exception_handlers
     app = FastAPI()
 
     @app.get("/raise/tool_not_found")

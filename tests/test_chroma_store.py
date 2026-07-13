@@ -1,4 +1,4 @@
-"""ChromaMemoryStore 单元测试 — 验证 find_duplicates 的 ANN 查询行为。
+﻿"""ChromaMemoryStore 单元测试 — 验证 find_duplicates 的 ANN 查询行为。
 
 运行方式：
     python -m unittest tests.test_chroma_store -v
@@ -35,7 +35,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 class TestFindDuplicates(unittest.TestCase):

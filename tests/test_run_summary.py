@@ -1,4 +1,4 @@
-"""RunSummary + RunsJsonlStore 单元测试（Phase 8 Task 2.8 + 2.9 + 2.13）。
+﻿"""RunSummary + RunsJsonlStore 单元测试（Phase 8 Task 2.8 + 2.9 + 2.13）。
 
 覆盖：
 - ``RunSummary`` dataclass 结构、``to_dict`` / ``from_dict`` 序列化往返
@@ -35,7 +35,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.tasks.run_summary import (  # noqa: E402
+from hermes.tasks.run_summary import (  # noqa: E402
     RunSummary,
     RunsJsonlStore,
     build_default_llm_summary,

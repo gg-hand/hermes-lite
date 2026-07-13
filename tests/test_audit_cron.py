@@ -1,4 +1,4 @@
-"""Phase 8 Task 4: AuditLogger cron 审计增强测试套件。
+﻿"""Phase 8 Task 4: AuditLogger cron 审计增强测试套件。
 
 覆盖 SubTask 4.4 / 4.5 / 4.8 的审计层实现：
 - SubTask 4.4: ``log_tool_call`` 新增 ``decision_source`` / ``schedule_id`` /
@@ -34,7 +34,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.audit import AuditLogger  # noqa: E402
+from hermes.agent.audit import AuditLogger  # noqa: E402
 
 
 class TestAuditLoggerNewFields(unittest.TestCase):

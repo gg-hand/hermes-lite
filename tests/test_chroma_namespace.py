@@ -1,4 +1,4 @@
-"""ChromaMemoryStore namespace + cron_id 隔离层测试（Phase 8 Task 1.1）。
+﻿"""ChromaMemoryStore namespace + cron_id 隔离层测试（Phase 8 Task 1.1）。
 
 验证：
 - ``add_memory`` 写入时注入 ``metadata.namespace`` 与 ``metadata.cron_id``
@@ -31,7 +31,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 class TestNamespaceWrite(unittest.TestCase):

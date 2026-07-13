@@ -1,4 +1,4 @@
-"""Phase 9 Task 5: AuditLogger 护栏决策审计测试套件。
+﻿"""Phase 9 Task 5: AuditLogger 护栏决策审计测试套件。
 
 覆盖 ``log_guardrail_decision`` 方法的写入、内存缓冲、JSONL 持久化、
 向后兼容与查询过滤：
@@ -41,7 +41,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.agent.audit import AuditLogger  # noqa: E402
+from hermes.agent.audit import AuditLogger  # noqa: E402
 
 
 class TestLogGuardrailDecision(unittest.TestCase):

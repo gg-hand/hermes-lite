@@ -1,4 +1,4 @@
-"""Hermes Lite Performance Benchmark Runner.
+﻿"""Hermes Lite Performance Benchmark Runner.
 
 Runs 5 benchmark scenarios against the orchestrator with mock LLM backend,
 collects latency, memory, GC, and lock contention metrics.
@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # Ensure we can import from hermes-lite src
-SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
+SRC_DIR = str(Path(__file__).resolve().parent.parent / "hermes")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
@@ -46,7 +46,7 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 def _patch_llm_client():
     """Replace LLMClient._create_backend to return MockBackend for 'mock' provider."""
-    from llm import client as llm_client_module
+    from hermes.llm import client as llm_client_module
     from tests.performance.mock_backend import MockBackend
 
     _original_create_backend = llm_client_module.LLMClient._create_backend
@@ -68,10 +68,10 @@ def _patch_llm_client():
 
     def _patched_init(self, config_path=None, config=None, metrics_collector=None):
         """Skip API key validation for mock provider."""
-        from llm.client import _PROVIDER_DEFAULT_ENV_KEY
+        from hermes.llm.client import _PROVIDER_DEFAULT_ENV_KEY
 
         if config is None:
-            from config import load_config
+            from hermes.config import load_config
             config = load_config(config_path)
 
         llm_config = config.get("llm", {})
@@ -104,7 +104,7 @@ def _patch_llm_client():
 def _patch_sqlite_logger_with_lock_profiler():
     """Wrap SessionLogger locks with ProfiledLock."""
     from tests.performance.lock_profiler import get_lock
-    from storage import sqlite_log as sqlite_log_module
+    from hermes.storage import sqlite_log as sqlite_log_module
 
     if hasattr(sqlite_log_module.SessionLogger, '_lock') and not hasattr(sqlite_log_module.SessionLogger, '_profiled'):
         original_lock = sqlite_log_module.SessionLogger._lock
@@ -120,7 +120,7 @@ def _patch_metrics_lock():
     """Wrap MetricsCollector lock with ProfiledLock."""
     try:
         from tests.performance.lock_profiler import get_lock
-        from monitoring import metrics as metrics_module
+        from hermes.monitoring import metrics as metrics_module
 
         if hasattr(metrics_module.MetricsCollector, '_lock') and not hasattr(metrics_module.MetricsCollector, '_profiled'):
             metrics_module.MetricsCollector._profiled = True
@@ -375,7 +375,7 @@ def create_test_config(data_dir: str, scenario: str, max_react_loops: int = 5) -
 
 def create_orchestrator(data_dir: str, scenario: str, max_react_loops: int = 5):
     """Create an Orchestrator with mock backend and test config."""
-    from orchestrator import Orchestrator
+    from hermes.orchestrator import Orchestrator
 
     config = create_test_config(data_dir, scenario, max_react_loops)
 

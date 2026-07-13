@@ -1,4 +1,4 @@
-"""server.py reasoning 路由与 SSE 透传测试。
+﻿"""server.py reasoning 路由与 SSE 透传测试。
 
 spec integrate-llm-reasoning-mode Task 22 SubTask 22.18-22.21：
 - SubTask 22.18: done 事件 SSE 透传 usage 字段单测
@@ -20,11 +20,7 @@ from typing import Generator
 import pytest
 
 # 确保 src 在 path 中
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
 @pytest.fixture
 def mock_orchestrator():
     """创建 mock orchestrator + llm_client，通过 DI overrides 注入。
@@ -32,8 +28,8 @@ def mock_orchestrator():
     Task 11: server.py 全局变量已删除，统一通过 app.dependency_overrides
     注入 mock。路由通过 Depends(get_xxx) 获取组件实例。
     """
-    from server import app
-    from app import (
+    from hermes.server import app
+    from hermes.app import (
         get_orchestrator, get_session_logger, get_stream_manager,
         get_metrics_collector, get_metrics_store,
     )
@@ -75,7 +71,7 @@ def mock_orchestrator():
 def client(mock_orchestrator):
     """FastAPI TestClient，mock orchestrator 已注入。"""
     from fastapi.testclient import TestClient
-    from server import app
+    from hermes.server import app
     return TestClient(app)
 
 
@@ -342,8 +338,8 @@ class TestMetricsReset:
 
     def test_reset_metrics_success(self, client):
         """正常重置：返回 ok=True，metrics_collector.reset() 被调用。"""
-        from server import app
-        from app import get_metrics_collector
+        from hermes.server import app
+        from hermes.app import get_metrics_collector
         mock_collector = MagicMock()
         app.dependency_overrides[get_metrics_collector] = lambda: mock_collector
         try:
@@ -358,8 +354,8 @@ class TestMetricsReset:
 
     def test_reset_metrics_when_disabled(self, client):
         """监控未启用（metrics_collector=None）时返回 400。"""
-        from server import app
-        from app import get_metrics_collector
+        from hermes.server import app
+        from hermes.app import get_metrics_collector
         app.dependency_overrides[get_metrics_collector] = lambda: None
         try:
             resp = client.post("/metrics/reset")
@@ -372,8 +368,8 @@ class TestMetricsReset:
 
     def test_reset_metrics_sets_baseline_reset_flag(self, client):
         """重置后 metrics_reset_event.set() 被调用（供 baseline 重置检查）。"""
-        from server import app
-        from app import get_metrics_collector
+        from hermes.server import app
+        from hermes.app import get_metrics_collector
         mock_collector = MagicMock()
         app.dependency_overrides[get_metrics_collector] = lambda: mock_collector
         # 重置 mock 以清除 fixture 中可能的 set 调用
@@ -424,7 +420,7 @@ class TestMetricsPersistLoop:
     def test_first_flush_uses_short_delay(self):
         """首次 flush 使用 INITIAL_FLUSH_DELAY（10秒）而非 flush_interval（60分钟）。"""
         import asyncio
-        from background_loops import metrics_persist_loop
+        from hermes.background_loops import metrics_persist_loop
 
         sleep_calls = []
         original_sleep = asyncio.sleep
@@ -438,7 +434,7 @@ class TestMetricsPersistLoop:
         mock_store = MagicMock()
         reset_event = asyncio.Event()
 
-        with patch("background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
+        with patch("hermes.background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 
@@ -467,7 +463,7 @@ class TestMetricsPersistLoop:
     def test_baseline_reset_flag_checked(self):
         """reset_event.set() 时，baseline 被重置。"""
         import asyncio
-        from background_loops import metrics_persist_loop
+        from hermes.background_loops import metrics_persist_loop
 
         original_sleep = asyncio.sleep
 
@@ -479,7 +475,7 @@ class TestMetricsPersistLoop:
         mock_store = MagicMock()
         reset_event = asyncio.Event()
 
-        with patch("background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
+        with patch("hermes.background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 
@@ -507,7 +503,7 @@ class TestMetricsPersistLoop:
     def test_config_read_failure_uses_default(self):
         """load_config 失败时使用默认 60min，不退出 loop。"""
         import asyncio
-        from background_loops import metrics_persist_loop
+        from hermes.background_loops import metrics_persist_loop
 
         original_sleep = asyncio.sleep
 
@@ -519,7 +515,7 @@ class TestMetricsPersistLoop:
         mock_store = MagicMock()
         reset_event = asyncio.Event()
 
-        with patch("background_loops.load_config", side_effect=Exception("config read failed")), \
+        with patch("hermes.background_loops.load_config", side_effect=Exception("config read failed")), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 

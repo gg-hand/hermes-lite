@@ -1,4 +1,4 @@
-"""UploadManager 单元测试。
+﻿"""UploadManager 单元测试。
 
 覆盖：校验、存储（去重/并发）、CRUD、持久化、TTL 追踪。
 
@@ -24,7 +24,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
-from src.files.upload_manager import UploadManager  # noqa: E402
+from hermes.files.upload_manager import UploadManager  # noqa: E402
 
 
 def _make_db_path(tmpdir: str) -> str:

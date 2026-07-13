@@ -1,4 +1,4 @@
-"""异步 Backend 单元测试（spec async-llm-backend Task 3 SubTask 3.12）。
+﻿"""异步 Backend 单元测试（spec async-llm-backend Task 3 SubTask 3.12）。
 
 验证 :class:`AsyncOpenAICompatBackend.chat_stream` 与超时/取消机制的三个核心场景：
 
@@ -40,14 +40,14 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.llm.client import (  # noqa: E402
+from hermes.llm.client import (  # noqa: E402
     ActivityTimeout,
     AsyncOpenAICompatBackend,
     _is_retryable,
     _with_activity_timeout,
     async_retry_on_failure,
 )
-from src.stream_manager import StreamCancelled  # noqa: E402
+from hermes.stream_manager import StreamCancelled  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +660,7 @@ class TestStripThinkingBlocks(unittest.TestCase):
 
     def test_removes_thinking_blocks_from_content(self):
         """thinking block 从 content 列表中移除。"""
-        from llm.client import AsyncAnthropicBackend
+        from hermes.llm.client import AsyncAnthropicBackend
         msgs = [{
             "role": "assistant",
             "content": [
@@ -675,7 +675,7 @@ class TestStripThinkingBlocks(unittest.TestCase):
 
     def test_removes_reasoning_content_field(self):
         """reasoning_content 字段从消息中移除。"""
-        from llm.client import AsyncAnthropicBackend
+        from hermes.llm.client import AsyncAnthropicBackend
         msgs = [{
             "role": "assistant",
             "content": "hello",
@@ -686,14 +686,14 @@ class TestStripThinkingBlocks(unittest.TestCase):
 
     def test_preserves_string_content(self):
         """字符串 content 原样保留。"""
-        from llm.client import AsyncAnthropicBackend
+        from hermes.llm.client import AsyncAnthropicBackend
         msgs = [{"role": "user", "content": "hello world"}]
         result = AsyncAnthropicBackend._strip_thinking_blocks(msgs)
         self.assertEqual(result[0]["content"], "hello world")
 
     def test_preserves_tool_use_blocks(self):
         """tool_use block 保留。"""
-        from llm.client import AsyncAnthropicBackend
+        from hermes.llm.client import AsyncAnthropicBackend
         msgs = [{
             "role": "assistant",
             "content": [
@@ -708,7 +708,7 @@ class TestStripThinkingBlocks(unittest.TestCase):
 
     def test_does_not_modify_input(self):
         """不修改入参（返回新列表）。"""
-        from llm.client import AsyncAnthropicBackend
+        from hermes.llm.client import AsyncAnthropicBackend
         original = [{
             "role": "assistant",
             "content": [
@@ -726,7 +726,7 @@ class TestReasoningConfigInvalidClassification(unittest.TestCase):
 
     def test_budget_tokens_error(self):
         """budget_tokens 关键词识别。"""
-        from agent.error_classifier import ErrorClassifier, ErrorClass
+        from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
         ec, _ = ErrorClassifier.classify(
             "llm_call", {},
             "Error: thinking budget_tokens must be at least 1024"
@@ -735,7 +735,7 @@ class TestReasoningConfigInvalidClassification(unittest.TestCase):
 
     def test_max_tokens_budget_error(self):
         """max_tokens < budget 错误识别。"""
-        from agent.error_classifier import ErrorClassifier, ErrorClass
+        from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
         ec, _ = ErrorClassifier.classify(
             "llm_call", {},
             "max_tokens must be greater than budget_tokens"
@@ -744,7 +744,7 @@ class TestReasoningConfigInvalidClassification(unittest.TestCase):
 
     def test_thinking_type_enabled_error(self):
         """thinking type enabled 错误识别。"""
-        from agent.error_classifier import ErrorClassifier, ErrorClass
+        from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
         ec, _ = ErrorClassifier.classify(
             "llm_call", {},
             "thinking.type must be 'enabled' or 'disabled'"
@@ -753,7 +753,7 @@ class TestReasoningConfigInvalidClassification(unittest.TestCase):
 
     def test_reasoning_effort_error(self):
         """reasoning effort 错误识别。"""
-        from agent.error_classifier import ErrorClassifier, ErrorClass
+        from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
         ec, _ = ErrorClassifier.classify(
             "llm_call", {},
             "invalid reasoning effort 'ultra'"
@@ -762,7 +762,7 @@ class TestReasoningConfigInvalidClassification(unittest.TestCase):
 
     def test_normal_error_not_misclassified(self):
         """普通错误不被误分类为 REASONING_CONFIG_INVALID。"""
-        from agent.error_classifier import ErrorClassifier, ErrorClass
+        from hermes.agent.error_classifier import ErrorClassifier, ErrorClass
         ec, _ = ErrorClassifier.classify(
             "bash_exec", {},
             "文件不存在: /tmp/test.txt"
@@ -778,8 +778,8 @@ class TestChatConsolidationNoSideEffect(unittest.IsolatedAsyncioTestCase):
 
     async def test_original_reasoning_cfg_not_modified(self):
         """传入的 reasoning_cfg.enabled 在调用后保持原值。"""
-        from src.llm.reasoning_profiles import ReasoningConfig
-        from src.llm.client import LLMClient
+        from hermes.llm.reasoning_profiles import ReasoningConfig
+        from hermes.llm.client import LLMClient
         from unittest.mock import MagicMock, AsyncMock
 
         original_cfg = ReasoningConfig(enabled=True, effort="high", budget_tokens=10000)

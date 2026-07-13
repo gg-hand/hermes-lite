@@ -1,4 +1,4 @@
-"""Phase 4 Task 10: ToolRegistry Core/Deferred 分层测试。"""
+﻿"""Phase 4 Task 10: ToolRegistry Core/Deferred 分层测试。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 # 添加 src 到 sys.path（与既有测试一致）
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
 
-from agent.tool_registry import ToolRegistry, ToolDef
+from hermes.agent.tool_registry import ToolRegistry, ToolDef
 
 
 class TestToolRegistryLayered(unittest.TestCase):
@@ -125,7 +125,7 @@ class TestToolRegistryLayered(unittest.TestCase):
 
     def test_execute_tool_unloaded_deferred(self):
         """未加载 Deferred 工具抛 ToolNotFoundError。"""
-        from agent.tool_error import ToolNotFoundError
+        from hermes.agent.tool_error import ToolNotFoundError
         self.registry.register_deferred(
             "unloaded", "未加载工具", {"type": "object"}, self._make_handler("x"),
         )
@@ -225,7 +225,7 @@ class TestToolRegistryDisable(unittest.TestCase):
 
     def test_disabled_tool_execute(self):
         """禁用状态下执行工具应抛 ToolNotFoundError，且 handler 不被调用。"""
-        from agent.tool_error import ToolNotFoundError
+        from hermes.agent.tool_error import ToolNotFoundError
         call_count = [0]
 
         def counting_handler(**kwargs):

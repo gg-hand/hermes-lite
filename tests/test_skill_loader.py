@@ -1,4 +1,4 @@
-"""Phase 4 Task 10: SkillLoader 测试。"""
+﻿"""Phase 4 Task 10: SkillLoader 测试。"""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import unittest
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
 
-from skill.loader import SkillLoader, SkillMeta, Skill, load_skill_to_registry
+from hermes.skill.loader import SkillLoader, SkillMeta, Skill, load_skill_to_registry
 
 
 class TestSkillLoader(unittest.TestCase):
@@ -155,7 +155,7 @@ class TestLoadSkillToRegistry(unittest.TestCase):
 
     def test_register_skill_tools_to_deferred(self):
         """Skill 工具注册到 Deferred Tier。"""
-        from agent.tool_registry import ToolRegistry
+        from hermes.agent.tool_registry import ToolRegistry
         registry = ToolRegistry()
         skill = Skill(
             name="test-skill",

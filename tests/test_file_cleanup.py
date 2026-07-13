@@ -1,4 +1,4 @@
-"""TTL 清理与并发测试。
+﻿"""TTL 清理与并发测试。
 
 覆盖：TTL 正常清理、跳过 processing、知识库不受影响、并发场景。
 
@@ -22,7 +22,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from src.files.upload_manager import UploadManager
+from hermes.files.upload_manager import UploadManager
 
 
 class TestTTLCleanup(unittest.TestCase):

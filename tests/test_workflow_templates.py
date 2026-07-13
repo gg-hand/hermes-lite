@@ -1,4 +1,4 @@
-"""工作流模板系统单元测试（Phase 8 Task 2.1 ~ 2.7 + 2.13）。
+﻿"""工作流模板系统单元测试（Phase 8 Task 2.1 ~ 2.7 + 2.13）。
 
 覆盖：
 - ``WorkflowTemplate`` 抽象基类 + ``WorkflowContext`` + ``WorkflowResult``
@@ -37,7 +37,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.tasks.workflow import (  # noqa: E402
+from hermes.tasks.workflow import (  # noqa: E402
     BUILTIN_TEMPLATES,
     CleanupSuggestTemplate,
     CustomTemplate,
@@ -1108,7 +1108,7 @@ class TestCustomTemplate(unittest.TestCase):
             )
             # mock cron_tool_loader.execute_tool 返回成功结果
             with patch(
-                "src.tasks.workflow.custom._execute_cron_tool",
+                "hermes.tasks.workflow.custom._execute_cron_tool",
                 return_value="echo: hello world",
             ):
                 result = template.execute(
@@ -1145,7 +1145,7 @@ class TestCustomTemplate(unittest.TestCase):
             current_time=datetime(2026, 6, 30, 10, 0, 0),
         )
         with patch(
-            "src.tasks.workflow.custom._execute_cron_tool",
+            "hermes.tasks.workflow.custom._execute_cron_tool",
             side_effect=RuntimeError("subprocess crashed"),
         ):
             result = template.execute(
@@ -1174,7 +1174,7 @@ class TestCustomTemplate(unittest.TestCase):
             current_time=datetime(2026, 6, 30, 10, 0, 0),
         )
         with patch(
-            "src.tasks.workflow.custom._execute_cron_tool",
+            "hermes.tasks.workflow.custom._execute_cron_tool",
             return_value="data: 42",
         ):
             result = template.execute(
@@ -1325,13 +1325,13 @@ class TestWorkflowDefectD2TemplateNotFound(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _new_scheduler(self):
-        from src.tasks.scheduler import CronScheduler
+        from hermes.tasks.scheduler import CronScheduler
         return CronScheduler(schedules_file=self.sched_file)
 
     def test_d2_unknown_template_returns_failure_result(self):
         """D2-路径3：引用未知模板名返回 success=False + 错误描述。"""
-        from src.tasks.scheduler import CronScheduler, Schedule
-        from src.tasks.workflow import WorkflowResult
+        from hermes.tasks.scheduler import CronScheduler, Schedule
+        from hermes.tasks.workflow import WorkflowResult
 
         scheduler = self._new_scheduler()
         schedule = Schedule(
@@ -1357,7 +1357,7 @@ class TestWorkflowDefectD2TemplateNotFound(unittest.TestCase):
 
     def test_d2_missing_template_field_returns_failure_result(self):
         """D2-路径2：缺 template 字段返回 success=False。"""
-        from src.tasks.scheduler import Schedule
+        from hermes.tasks.scheduler import Schedule
 
         scheduler = self._new_scheduler()
         schedule = Schedule(
@@ -1531,8 +1531,8 @@ class TestWorkflowDefectD5ErrorChannel(unittest.TestCase):
 
     def test_d5_error_channel_merged_to_workflow_result_errors(self):
         """D5-2：WorkflowEngine.execute 合并 error_channel 到 result.errors。"""
-        from src.tasks.workflow.engine import WorkflowEngine
-        from src.tasks.workflow.spec import StepSpec, WorkflowSpec
+        from hermes.tasks.workflow.engine import WorkflowEngine
+        from hermes.tasks.workflow.spec import StepSpec, WorkflowSpec
 
         # 构造简易 spec（单 step）
         spec = WorkflowSpec(

@@ -1,4 +1,4 @@
-"""P1-3 reinforce() 优化测试 — 验证 O(1) 直接 ID 查询的正确性。
+﻿"""P1-3 reinforce() 优化测试 — 验证 O(1) 直接 ID 查询的正确性。
 
 运行方式:
     python -m unittest tests.test_reinforce_optimization -v
@@ -25,7 +25,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from src.storage.chroma_store import ChromaMemoryStore
+from hermes.storage.chroma_store import ChromaMemoryStore
 
 
 class TestReinforceContract(unittest.TestCase):
