@@ -22,7 +22,7 @@ if [ -z "${DEEPSEEK_API_KEY}" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
     exit 1
 fi
 
-exec python -m uvicorn src.server:app \
+exec python -m uvicorn hermes.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers 1

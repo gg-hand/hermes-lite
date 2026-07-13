@@ -108,7 +108,7 @@ Write-Host ""
 
 # start python in background, let it own its own log file
 $process = Start-Process -FilePath "python" `
-    -ArgumentList "-m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1" `
+    -ArgumentList "-m uvicorn hermes.app:app --host 0.0.0.0 --port 8000 --workers 1" `
     -WorkingDirectory $ScriptDir `
     -PassThru `
     -WindowStyle Hidden

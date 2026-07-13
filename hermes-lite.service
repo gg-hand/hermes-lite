@@ -11,7 +11,7 @@ WorkingDirectory=/opt/hermes-lite
 EnvironmentFile=/opt/hermes-lite/.env
 
 # 启动命令（可调整 port 和 host）
-ExecStart=/opt/hermes-lite/.venv/bin/uvicorn src.server:app \
+ExecStart=/opt/hermes-lite/.venv/bin/uvicorn hermes.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --workers 1 \

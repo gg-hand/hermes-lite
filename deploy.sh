@@ -51,7 +51,7 @@ echo "[3/6] 部署项目文件..."
 mkdir -p ${APP_DIR}
 
 # 如果当前目录有源码，直接复制
-if [ -f "src/server.py" ]; then
+if [ -f "hermes/__main__.py" ]; then
   rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='.git' --exclude='.env' --exclude='data/' \
     ./ ${APP_DIR}/
@@ -108,7 +108,7 @@ WorkingDirectory=/opt/hermes-lite
 EnvironmentFile=/opt/hermes-lite/.env
 
 # 启动命令
-ExecStart=/opt/hermes-lite/.venv/bin/uvicorn src.server:app \
+ExecStart=/opt/hermes-lite/.venv/bin/uvicorn hermes.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --workers 1 \
