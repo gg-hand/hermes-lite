@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
 
 # 直接从源模块导入辅助函数（不再依赖 server.py re-export）
@@ -56,7 +56,7 @@ def get_config():
 
 
 @router.put("/config", response_model=ConfigUpdateResponse)
-def update_config(req: ConfigUpdateRequest):
+async def update_config(req: ConfigUpdateRequest, request: Request):
     config_path = _get_config_path()
     try:
         with _config_write_lock:
@@ -91,6 +91,41 @@ def update_config(req: ConfigUpdateRequest):
                             reloaded_components = container.reload(changed_sections, merged_config)
                 except Exception as e:
                     logger.warning("容器热重载失败（降级到原有热更新）: %s", e)
+
+            # 热重载后重启持有旧实例的后台 task
+            if reloaded_components:
+                try:
+                    task_registry = request.app.state.task_registry
+                    from background_loops import cleanup_loop, file_cleanup_loop, metrics_persist_loop
+
+                    if "metrics_collector" in reloaded_components or "metrics_store" in reloaded_components:
+                        new_mc = container.get("metrics_collector")
+                        new_ms = container.get("metrics_store")
+                        reset_event = getattr(request.app.state, "metrics_reset_event", None)
+                        await task_registry.restart(
+                            "metrics_persist",
+                            lambda: metrics_persist_loop(new_mc, new_ms, reset_event)
+                        )
+
+                    if "session_logger" in reloaded_components or "metrics_store" in reloaded_components:
+                        await task_registry.restart(
+                            "cleanup",
+                            lambda: cleanup_loop(
+                                container.get("session_logger"),
+                                container.get("metrics_store"),
+                                container.get("orchestrator"),
+                            )
+                        )
+
+                    if "upload_manager" in reloaded_components:
+                        await task_registry.restart(
+                            "file_cleanup",
+                            lambda: file_cleanup_loop(container.get("upload_manager"))
+                        )
+                except AttributeError:
+                    pass  # task_registry 不存在（测试环境）
+                except Exception as e:
+                    logger.warning("热重载后重启后台 task 失败: %s", e)
 
         if needs_restart:
             message = "配置已保存。部分项（LLM/路径/端口）需重启服务生效。"
