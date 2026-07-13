@@ -45,6 +45,10 @@ from hermes.agent.tools.file_tools import register_file_tools
 from hermes.agent.tools.shell_tools import register_bash_tool
 _CRON_TOOL_BASE_DIR = os.environ.get("HERMES_CRON_TOOL_DIR", "cron_tool")
 
+# 导入为无条件绝对导入，若失败模块本身无法加载，因此标志恒为 True
+SKILL_MCP_AVAILABLE = True
+CRON_AVAILABLE = True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
