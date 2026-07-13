@@ -80,6 +80,10 @@ class MCPManager:
                 tools.append({"mcp_server": name, **tool})
         return tools
 
+    def list_servers(self) -> List[str]:
+        """返回已连接的 MCP Server 名称列表。"""
+        return list(self._clients.keys())
+
     async def call_tool(
         self, server_name: str, tool_name: str, args: dict
     ) -> str:

@@ -1,8 +1,5 @@
 # src/lifespan.py（重构后）
-"""FastAPI lifespan: 启动时初始化资源，关闭时释放。
-
-重构后：通过 container.get() 触发工厂创建，仅保留异步预热 + 后台 task 启动。
-"""
+"""FastAPI lifespan: 启动时初始化资源，关闭时释放。重构后通过 container.get() 触发工厂创建。"""
 from __future__ import annotations
 
 import asyncio
@@ -39,6 +36,11 @@ from hermes.agent.cron_proposals import ProposalStore
 from hermes.agent.cron_tools import register_cron_tools
 from hermes.agent.cron_tool_registry import CronToolRegistry
 from hermes.agent.cron_tool_writer import register_write_cron_tool
+from hermes.agent.skill_tools import (
+    _make_skill_activate_handler,
+    register_skill_tools,
+    _load_skill_state,
+)
 from hermes.tasks.scheduler import CronScheduler
 from hermes.tasks.cron_expr import CronExpr
 from hermes.agent.tools.file_tools import register_file_tools
@@ -164,24 +166,36 @@ async def _init_mcp_servers(container, config, mcp_manager):
             except Exception as e:
                 logger.warning("MCP server 连接失败: %s", e)
         if orchestrator := container.get("orchestrator"):
-            register_mcp_tools_to_registry(orchestrator.tool_registry, mcp_manager)
+            for server_name in mcp_manager.list_servers():
+                try:
+                    count = register_mcp_tools_to_registry(
+                        orchestrator.tool_registry, mcp_manager, server_name
+                    )
+                    logger.info("MCP Server '%s' 注册了 %d 个工具", server_name, count)
+                except Exception as e:
+                    logger.warning("MCP Server '%s' 工具注册失败: %s", server_name, e)
         logger.info("MCP 服务器初始化完成")
     except Exception as e:
         logger.error("MCP 初始化失败: %s", e)
 
 
 def _register_skill_tools(container, orchestrator, skill_loader):
-    """Skill stub 注册 + 状态恢复。"""
+    """Skill stub 注册 + 管理工具注册 + 状态恢复。"""
     if not SKILL_MCP_AVAILABLE or skill_loader is None or orchestrator is None:
         return
     try:
-        skills_cfg = load_config(CONFIG_PATH).get("skills", {}) or {}
-        skill_dir = skills_cfg.get("skill_dir", "skills")
-        loaded = skill_loader.load_all(skill_dir)
-        for skill_name in loaded:
-            register_skill_stub(orchestrator.tool_registry, skill_name, skill_loader)
-        skill_loader.restore_state()
-        logger.info("Skill 工具注册完成: %d 个", len(loaded))
+        discovered = skill_loader.discover()
+        for meta in discovered:
+            handler = _make_skill_activate_handler(skill_loader, orchestrator, meta.name)
+            register_skill_stub(orchestrator.tool_registry, meta, handler)
+        register_skill_tools(orchestrator.tool_registry, skill_loader, orchestrator)
+        skill_state = _load_skill_state()
+        for skill_name in skill_state.get("disabled", []):
+            try:
+                orchestrator.tool_registry.disable_skill(skill_name)
+            except Exception:
+                pass
+        logger.info("Skill 工具注册完成: %d 个", len(discovered))
     except Exception as e:
         logger.warning("Skill 注册失败: %s", e)
 
