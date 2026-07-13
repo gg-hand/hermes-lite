@@ -34,7 +34,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from src.server import (  # noqa: E402
+# Task 11: 配置辅助函数直接从 config_helpers 导入（server.py 不再 re-export）
+from src.config_helpers import (  # noqa: E402
     _deep_merge_config,
     _atomic_write_config,
     _backup_config,
@@ -131,18 +132,27 @@ class TestPutConfigEndpoint(unittest.TestCase):
     """验证 PUT /config 接口的部分更新、原子写入、备份、Schema 校验与并发安全。"""
 
     def setUp(self):
-        """每个测试用例使用独立的临时 config.yaml，并 patch CONFIG_PATH 与 orchestrator。"""
+        """每个测试用例使用独立的临时 config.yaml，并 patch CONFIG_PATH。
+
+        Task 11: orchestrator 通过 app.dependency_overrides[get_orchestrator]
+        注入 None（不再 patch src.server.orchestrator 全局变量）。
+        """
         self.tmpdir = tempfile.mkdtemp()
         self.config_path = os.path.join(self.tmpdir, "config.yaml")
         with open(self.config_path, "w", encoding="utf-8") as f:
             f.write(_INITIAL_CONFIG_YAML)
-        # 用 patch.start/stop 保证整个测试方法执行期间 patch 持续生效
+        # CONFIG_PATH 仍保留在 server.py，继续用 patch
         self._patches = [
             patch("src.server.CONFIG_PATH", self.config_path),
-            patch("src.server.orchestrator", None),
         ]
         for p in self._patches:
             p.start()
+        # 通过 DI override 注入 orchestrator=None，使 _apply_runtime_config 早退
+        from src.server import app  # noqa: E402
+        from app import get_orchestrator  # noqa: E402
+        self._app = app
+        self._get_orchestrator = get_orchestrator
+        app.dependency_overrides[get_orchestrator] = lambda: None
 
     def tearDown(self):
         for p in self._patches:
@@ -150,13 +160,14 @@ class TestPutConfigEndpoint(unittest.TestCase):
                 p.stop()
             except RuntimeError:
                 pass
+        # 清理 DI overrides
+        self._app.dependency_overrides.pop(self._get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _get_client(self):
         """构建 TestClient（patch 已在 setUp 中启动，整个测试方法期间生效）。"""
-        from src.server import app
         from fastapi.testclient import TestClient
-        return TestClient(app)
+        return TestClient(self._app)
 
     def test_put_config_partial_update_preserves_other_sections(self):
         """部分配置不丢失其他段"""
@@ -304,15 +315,29 @@ class TestCheckNeedsRestartRobustness(unittest.TestCase):
 class TestApplyRuntimeConfigSentinel(unittest.TestCase):
     """验证 _apply_runtime_config 不将空 dict 误判为缺失。"""
 
+    def setUp(self):
+        """注入 mock orchestrator via app.dependency_overrides。"""
+        from src.server import app  # noqa: E402
+        from app import get_orchestrator  # noqa: E402
+        self._app = app
+        self._get_orchestrator = get_orchestrator
+
+    def _inject_orchestrator(self, mock_orch):
+        """通过 DI override 注入 mock orchestrator。"""
+        self._app.dependency_overrides[self._get_orchestrator] = lambda: mock_orch
+
+    def tearDown(self):
+        self._app.dependency_overrides.pop(self._get_orchestrator, None)
+
     def test_apply_runtime_config_does_not_misjudge_empty_dict(self):
         """val: {} 不被误判为缺失"""
         # 用 mock orchestrator
         mock_orch = MagicMock()
         mock_orch.consolidation_engine = MagicMock()
         mock_orch.consolidation_engine.threshold = 5
+        self._inject_orchestrator(mock_orch)
         # val 走到 int({}) 时会抛 TypeError，标记 applied=False
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config({"memory": {"consolidation_threshold": {}}})
+        applied = _apply_runtime_config({"memory": {"consolidation_threshold": {}}})
         # 应该返回 dict，且该项标记为 False（int({}) 抛错）
         self.assertIn("memory.consolidation_threshold", applied)
         self.assertFalse(applied["memory.consolidation_threshold"])
@@ -325,6 +350,20 @@ class TestApplyRuntimeConfigSentinel(unittest.TestCase):
 class TestGuardrailSwitchHotUpdate(unittest.TestCase):
     """验证防护开关通过 _RUNTIME_HOTUPDATE_MAP 热更新即时生效。"""
 
+    def setUp(self):
+        """注入 mock orchestrator via app.dependency_overrides。"""
+        from src.server import app  # noqa: E402
+        from app import get_orchestrator  # noqa: E402
+        self._app = app
+        self._get_orchestrator = get_orchestrator
+
+    def _inject_orchestrator(self, mock_orch):
+        """通过 DI override 注入 mock orchestrator。"""
+        self._app.dependency_overrides[self._get_orchestrator] = lambda: mock_orch
+
+    def tearDown(self):
+        self._app.dependency_overrides.pop(self._get_orchestrator, None)
+
     def _build_mock_orchestrator(self):
         """构造 mock orchestrator，policy_engine / guardrail_engine 非 None。"""
         mock_orch = MagicMock()
@@ -335,8 +374,8 @@ class TestGuardrailSwitchHotUpdate(unittest.TestCase):
     def test_security_enabled_hot_update_calls_setattr(self):
         """security.enabled=True 通过 setattr 写入 policy_engine.enabled。"""
         mock_orch = self._build_mock_orchestrator()
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config({"security": {"enabled": False}})
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config({"security": {"enabled": False}})
         self.assertTrue(applied.get("security.enabled"))
         # setattr(mock, "enabled", False) → mock.enabled = False
         self.assertEqual(mock_orch.policy_engine.enabled, False)
@@ -344,30 +383,30 @@ class TestGuardrailSwitchHotUpdate(unittest.TestCase):
     def test_guardrails_input_scan_enabled_hot_update(self):
         """guardrails.input_scan.enabled 通过 setattr 写入 guardrail_engine。"""
         mock_orch = self._build_mock_orchestrator()
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config(
-                {"guardrails": {"input_scan": {"enabled": False}}}
-            )
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config(
+            {"guardrails": {"input_scan": {"enabled": False}}}
+        )
         self.assertTrue(applied.get("guardrails.input_scan.enabled"))
         self.assertEqual(mock_orch.guardrail_engine.input_scan_enabled, False)
 
     def test_guardrails_sanitizer_enabled_hot_update(self):
         """guardrails.sanitizer.enabled 通过 setattr 写入 guardrail_engine。"""
         mock_orch = self._build_mock_orchestrator()
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config(
-                {"guardrails": {"sanitizer": {"enabled": False}}}
-            )
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config(
+            {"guardrails": {"sanitizer": {"enabled": False}}}
+        )
         self.assertTrue(applied.get("guardrails.sanitizer.enabled"))
         self.assertEqual(mock_orch.guardrail_engine.sanitizer_enabled, False)
 
     def test_guardrails_output_filter_enabled_hot_update(self):
         """guardrails.output_filter.enabled 通过 setattr 写入 guardrail_engine。"""
         mock_orch = self._build_mock_orchestrator()
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config(
-                {"guardrails": {"output_filter": {"enabled": False}}}
-            )
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config(
+            {"guardrails": {"output_filter": {"enabled": False}}}
+        )
         self.assertTrue(applied.get("guardrails.output_filter.enabled"))
         self.assertEqual(mock_orch.guardrail_engine.output_filter_enabled, False)
 
@@ -375,18 +414,18 @@ class TestGuardrailSwitchHotUpdate(unittest.TestCase):
         """policy_engine 为 None 时 security.enabled 标记 False 不崩溃。"""
         mock_orch = MagicMock()
         mock_orch.policy_engine = None  # 初始化失败降级
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config({"security": {"enabled": False}})
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config({"security": {"enabled": False}})
         self.assertFalse(applied.get("security.enabled"))
 
     def test_guardrail_engine_none_marks_false(self):
         """guardrail_engine 为 None 时 guardrails.*.enabled 标记 False 不崩溃。"""
         mock_orch = MagicMock()
         mock_orch.guardrail_engine = None
-        with patch("src.server.orchestrator", mock_orch):
-            applied = _apply_runtime_config(
-                {"guardrails": {"input_scan": {"enabled": False}}}
-            )
+        self._inject_orchestrator(mock_orch)
+        applied = _apply_runtime_config(
+            {"guardrails": {"input_scan": {"enabled": False}}}
+        )
         self.assertFalse(applied.get("guardrails.input_scan.enabled"))
 
 
@@ -397,6 +436,30 @@ class TestGuardrailSwitchHotUpdate(unittest.TestCase):
 class TestHilDisableResolveAll(unittest.TestCase):
     """验证关闭 HIL 时 _apply_runtime_config 调用 approval_manager.resolve_all。"""
 
+    def setUp(self):
+        """通过 app.dependency_overrides 注入 mock 组件。"""
+        from src.server import app  # noqa: E402
+        from app import (  # noqa: E402
+            get_orchestrator,
+            get_approval_manager,
+            get_audit_logger,
+        )
+        self._app = app
+        self._get_orchestrator = get_orchestrator
+        self._get_approval_manager = get_approval_manager
+        self._get_audit_logger = get_audit_logger
+
+    def _inject(self, mock_orch, mock_approval=None, mock_audit=None):
+        """注入 orchestrator / approval_manager / audit_logger。"""
+        self._app.dependency_overrides[self._get_orchestrator] = lambda: mock_orch
+        self._app.dependency_overrides[self._get_approval_manager] = lambda: mock_approval
+        self._app.dependency_overrides[self._get_audit_logger] = lambda: mock_audit
+
+    def tearDown(self):
+        self._app.dependency_overrides.pop(self._get_orchestrator, None)
+        self._app.dependency_overrides.pop(self._get_approval_manager, None)
+        self._app.dependency_overrides.pop(self._get_audit_logger, None)
+
     def test_disable_hil_calls_resolve_all(self):
         """security.enabled 翻转为 False 时调用 approval_manager.resolve_all('deny')。"""
         mock_orch = MagicMock()
@@ -404,10 +467,8 @@ class TestHilDisableResolveAll(unittest.TestCase):
         mock_orch.guardrail_engine = MagicMock()
         mock_approval = MagicMock()
         mock_approval.resolve_all.return_value = 2
-        with patch("src.server.orchestrator", mock_orch), \
-             patch("src.server.approval_manager", mock_approval), \
-             patch("src.server.audit_logger", None):
-            _apply_runtime_config({"security": {"enabled": False}})
+        self._inject(mock_orch, mock_approval, None)
+        _apply_runtime_config({"security": {"enabled": False}})
         mock_approval.resolve_all.assert_called_once_with(
             "deny", "HIL 已关闭，审批自动拒绝"
         )
@@ -418,10 +479,8 @@ class TestHilDisableResolveAll(unittest.TestCase):
         mock_orch.policy_engine = MagicMock()
         mock_orch.guardrail_engine = MagicMock()
         mock_approval = MagicMock()
-        with patch("src.server.orchestrator", mock_orch), \
-             patch("src.server.approval_manager", mock_approval), \
-             patch("src.server.audit_logger", None):
-            _apply_runtime_config({"security": {"enabled": True}})
+        self._inject(mock_orch, mock_approval, None)
+        _apply_runtime_config({"security": {"enabled": True}})
         mock_approval.resolve_all.assert_not_called()
 
     def test_disable_hil_with_zero_pending_no_audit(self):
@@ -432,10 +491,8 @@ class TestHilDisableResolveAll(unittest.TestCase):
         mock_approval = MagicMock()
         mock_approval.resolve_all.return_value = 0
         mock_audit = MagicMock()
-        with patch("src.server.orchestrator", mock_orch), \
-             patch("src.server.approval_manager", mock_approval), \
-             patch("src.server.audit_logger", mock_audit):
-            _apply_runtime_config({"security": {"enabled": False}})
+        self._inject(mock_orch, mock_approval, mock_audit)
+        _apply_runtime_config({"security": {"enabled": False}})
         mock_approval.resolve_all.assert_called_once()
         mock_audit.log_guardrail_decision.assert_not_called()
 
@@ -447,10 +504,8 @@ class TestHilDisableResolveAll(unittest.TestCase):
         mock_approval = MagicMock()
         mock_approval.resolve_all.return_value = 3
         mock_audit = MagicMock()
-        with patch("src.server.orchestrator", mock_orch), \
-             patch("src.server.approval_manager", mock_approval), \
-             patch("src.server.audit_logger", mock_audit):
-            _apply_runtime_config({"security": {"enabled": False}})
+        self._inject(mock_orch, mock_approval, mock_audit)
+        _apply_runtime_config({"security": {"enabled": False}})
         mock_audit.log_guardrail_decision.assert_called_once()
         call_kwargs = mock_audit.log_guardrail_decision.call_args
         self.assertEqual(call_kwargs.kwargs.get("layer"), "policy_switch")
@@ -463,11 +518,9 @@ class TestHilDisableResolveAll(unittest.TestCase):
         mock_orch = MagicMock()
         mock_orch.policy_engine = MagicMock()
         mock_orch.guardrail_engine = MagicMock()
-        with patch("src.server.orchestrator", mock_orch), \
-             patch("src.server.approval_manager", None), \
-             patch("src.server.audit_logger", None):
-            # 不应抛异常
-            applied = _apply_runtime_config({"security": {"enabled": False}})
+        self._inject(mock_orch, None, None)
+        # 不应抛异常
+        applied = _apply_runtime_config({"security": {"enabled": False}})
         self.assertTrue(applied.get("security.enabled"))
 
 

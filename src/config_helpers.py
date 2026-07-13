@@ -1,7 +1,8 @@
 """配置文件工具函数。
 
 从 server.py 提取，包含配置合并、备份、原子写入、校验、重启检测与运行时应用。
-_apply_runtime_config 通过延迟 import server 访问运行时全局组件。
+_apply_runtime_config 通过 DI 容器 / app.dependency_overrides 获取运行时组件，
+不再反射 server 模块全局变量。
 """
 from __future__ import annotations
 
@@ -258,22 +259,48 @@ def _check_needs_restart(old_config: dict, new_config: dict) -> bool:
     return False
 
 
+def _resolve_component(getter_func, container_key: str):
+    """解析组件实例，优先尊重 app.dependency_overrides（供测试注入 mock）。
+
+    解析顺序：
+    1. app.dependency_overrides 中是否注册了 getter_func 的 override（测试场景）；
+    2. 全局 DI 容器（生产场景，由 lifespan 初始化）；
+    3. 返回 None。
+    """
+    try:
+        from app import app
+        if getter_func in app.dependency_overrides:
+            return app.dependency_overrides[getter_func]()
+    except Exception:
+        pass
+    try:
+        from app import get_container
+        container = get_container()
+        if container is None:
+            return None
+        return container.get(container_key)
+    except Exception:
+        return None
+
+
 def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
     """将可热更新的运行时配置即时应用到内存中的 orchestrator 组件。
 
-    通过延迟 import server 访问运行时全局组件（orchestrator / approval_manager /
-    audit_logger / etl_engine），避免循环导入。兼容 src.server 和 server 两种导入路径。
+    重构后：通过 DI 容器 / app.dependency_overrides 获取组件，不再反射 server 模块
+    全局变量。生产环境由 lifespan 初始化容器；测试环境通过
+    ``app.dependency_overrides[get_orchestrator] = lambda: mock_orch`` 注入。
     """
-    import sys
+    from app import (
+        get_orchestrator,
+        get_approval_manager,
+        get_audit_logger,
+        get_etl_engine,
+    )
 
-    server_mod = sys.modules.get("src.server") or sys.modules.get("server")
-    if server_mod is None:
-        return {}
-
-    orchestrator = server_mod.orchestrator
-    approval_manager = server_mod.approval_manager
-    audit_logger = server_mod.audit_logger
-    etl_engine = server_mod.etl_engine
+    orchestrator = _resolve_component(get_orchestrator, "orchestrator")
+    approval_manager = _resolve_component(get_approval_manager, "approval_manager")
+    audit_logger = _resolve_component(get_audit_logger, "audit_logger")
+    etl_engine = _resolve_component(get_etl_engine, "etl_engine")
 
     applied: Dict[str, bool] = {}
     if orchestrator is None:

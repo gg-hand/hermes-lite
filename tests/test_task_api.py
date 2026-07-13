@@ -39,6 +39,8 @@ install_mocks()
 
 from src.server import app  # noqa: E402
 from src.tasks.scheduler import CronScheduler  # noqa: E402
+# Task 11: server.py 全局变量已删除，通过 app.dependency_overrides 注入 mock
+from app import get_orchestrator, get_cron_scheduler  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -66,13 +68,10 @@ class TestScheduleApi(unittest.TestCase):
         # 真实 CronScheduler 指向临时文件，保证端点逻辑被真实执行
         self.cs = CronScheduler(schedules_file=self.sched_file)
         self.orch = MockOrchestrator()
-        # patch 模块级全局，整个测试方法期间生效
-        self._patches = [
-            patch("src.server.cron_scheduler", self.cs),
-            patch("src.server.orchestrator", self.orch),
-        ]
-        for p in self._patches:
-            p.start()
+        # Task 11: 通过 DI overrides 注入 mock（不再 patch src.server 全局变量）
+        app.dependency_overrides[get_cron_scheduler] = lambda: self.cs
+        app.dependency_overrides[get_orchestrator] = lambda: self.orch
+        self._patches = []
 
     def tearDown(self):
         for p in self._patches:
@@ -80,6 +79,8 @@ class TestScheduleApi(unittest.TestCase):
                 p.stop()
             except RuntimeError:
                 pass
+        app.dependency_overrides.pop(get_cron_scheduler, None)
+        app.dependency_overrides.pop(get_orchestrator, None)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _client(self) -> TestClient:

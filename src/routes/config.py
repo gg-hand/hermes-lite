@@ -1,7 +1,8 @@
 """config 路由：配置读取与更新（含热重载逻辑）。
 
-Task 11: 从 server.py 迁移 2 个端点。
-辅助函数仍保留在 server.py，通过 sys.modules 兼容两种导入方式。
+Task 11: 从 server.py 迁移 2 个端点。重构后直接从 config_helpers / config
+导入辅助函数，不再通过 server 模块 re-export 访问。CONFIG_PATH 仍从 server
+模块读取（常量保留在 server.py，且测试通过 patch("server.CONFIG_PATH") 注入）。
 """
 from __future__ import annotations
 
@@ -11,21 +12,43 @@ import sys
 from fastapi import APIRouter, HTTPException
 from schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
 
+# 直接从源模块导入辅助函数（不再依赖 server.py re-export）
+from config import load_config, clear_config_cache
+from config_helpers import (
+    _config_write_lock,
+    _deep_merge_config,
+    _validate_config_schema,
+    _backup_config,
+    _atomic_write_config,
+    _apply_runtime_config,
+    _check_needs_restart,
+)
+
 logger = logging.getLogger("hermes.server")
 
 router = APIRouter()
 
 
 def _server():
-    """获取已加载的 server 模块（兼容 src.server 和 server）。"""
+    """获取已加载的 server 模块（兼容 src.server 和 server）。
+
+    仅用于读取 CONFIG_PATH 常量（仍保留在 server.py）。
+    """
     return sys.modules.get("src.server") or sys.modules.get("server")
+
+
+def _get_config_path() -> str:
+    """获取 CONFIG_PATH（兼容测试 patch src.server.CONFIG_PATH / server.CONFIG_PATH）。"""
+    srv = _server()
+    if srv is not None:
+        return getattr(srv, "CONFIG_PATH", "config.yaml")
+    return "config.yaml"
 
 
 @router.get("/config", response_model=ConfigResponse)
 def get_config():
-    srv = _server()
     try:
-        config = srv.load_config(srv.CONFIG_PATH)
+        config = load_config(_get_config_path())
         return ConfigResponse(config=config)
     except Exception as e:
         logger.exception("读取配置失败: %s", e)
@@ -34,27 +57,27 @@ def get_config():
 
 @router.put("/config", response_model=ConfigUpdateResponse)
 def update_config(req: ConfigUpdateRequest):
-    srv = _server()
+    config_path = _get_config_path()
     try:
-        with srv._config_write_lock:
+        with _config_write_lock:
             try:
-                old_config = srv.load_config(srv.CONFIG_PATH)
+                old_config = load_config(config_path)
             except Exception:
                 old_config = {}
 
-            merged_config = srv._deep_merge_config(old_config, req.config)
+            merged_config = _deep_merge_config(old_config, req.config)
 
             try:
-                srv._validate_config_schema(merged_config)
+                _validate_config_schema(merged_config)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-            srv._backup_config(srv.CONFIG_PATH)
-            srv._atomic_write_config(srv.CONFIG_PATH, merged_config)
-            srv.clear_config_cache()
+            _backup_config(config_path)
+            _atomic_write_config(config_path, merged_config)
+            clear_config_cache()
 
-            applied = srv._apply_runtime_config(merged_config)
-            needs_restart = srv._check_needs_restart(old_config, merged_config)
+            applied = _apply_runtime_config(merged_config)
+            needs_restart = _check_needs_restart(old_config, merged_config)
 
             reloaded_components: list[str] = []
             if not needs_restart:

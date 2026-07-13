@@ -27,10 +27,10 @@ if _SRC_DIR not in sys.path:
 
 @pytest.fixture
 def mock_orchestrator():
-    """创建 mock orchestrator + llm_client，注入 server 模块全局变量 + DI overrides。
+    """创建 mock orchestrator + llm_client，通过 DI overrides 注入。
 
-    注意：routes/* 已改为 Depends 注入，patch("server.orchestrator") 仅对
-    server.py 内部代码生效；路由通过 dependency_overrides 注入 mock。
+    Task 11: server.py 全局变量已删除，统一通过 app.dependency_overrides
+    注入 mock。路由通过 Depends(get_xxx) 获取组件实例。
     """
     from server import app
     from app import (
@@ -62,10 +62,7 @@ def mock_orchestrator():
     if not hasattr(app.state, "metrics_reset_event"):
         app.state.metrics_reset_event = MagicMock()
 
-    with patch("server.orchestrator", mock_orch), \
-         patch("server.session_logger", mock_session), \
-         patch("server.stream_manager", mock_sm):
-        yield mock_orch
+    yield mock_orch
 
     app.dependency_overrides.pop(get_orchestrator, None)
     app.dependency_overrides.pop(get_session_logger, None)
@@ -399,8 +396,9 @@ class TestMetricsReset:
 class TestMetricsPersistLoop:
     """metrics_persist_loop 调度行为测试。
 
-    验证首次 flush 不等待 flush_interval（60分钟），而是快速执行；
-    以及 baseline 重置标志被正确检查。
+    Task 11: metrics_persist_loop 已迁移至 background_loops.py，参数注入
+    metrics_collector / metrics_store / reset_event。不再反射 server 模块
+    全局变量或 _metrics_baseline_reset 标志。
     """
 
     def _make_snapshot(self, llm_calls=1):
@@ -426,7 +424,7 @@ class TestMetricsPersistLoop:
     def test_first_flush_uses_short_delay(self):
         """首次 flush 使用 INITIAL_FLUSH_DELAY（10秒）而非 flush_interval（60分钟）。"""
         import asyncio
-        import server as srv
+        from background_loops import metrics_persist_loop
 
         sleep_calls = []
         original_sleep = asyncio.sleep
@@ -438,15 +436,16 @@ class TestMetricsPersistLoop:
         mock_collector = MagicMock()
         mock_collector.snapshot.return_value = self._make_snapshot()
         mock_store = MagicMock()
+        reset_event = asyncio.Event()
 
-        with patch("server.metrics_collector", mock_collector), \
-             patch("server.metrics_store", mock_store), \
-             patch("server.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
+        with patch("background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 
             async def run_and_cancel():
-                task = asyncio.create_task(srv.metrics_persist_loop())
+                task = asyncio.create_task(
+                    metrics_persist_loop(mock_collector, mock_store, reset_event)
+                )
                 await original_sleep(0.05)
                 task.cancel()
                 try:
@@ -466,9 +465,9 @@ class TestMetricsPersistLoop:
             assert mock_store.upsert_daily.called
 
     def test_baseline_reset_flag_checked(self):
-        """_metrics_baseline_reset=True 时，baseline 被重置。"""
+        """reset_event.set() 时，baseline 被重置。"""
         import asyncio
-        import server as srv
+        from background_loops import metrics_persist_loop
 
         original_sleep = asyncio.sleep
 
@@ -478,17 +477,19 @@ class TestMetricsPersistLoop:
         mock_collector = MagicMock()
         mock_collector.snapshot.return_value = self._make_snapshot()
         mock_store = MagicMock()
+        reset_event = asyncio.Event()
 
-        with patch("server.metrics_collector", mock_collector), \
-             patch("server.metrics_store", mock_store), \
-             patch("server.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
+        with patch("background_loops.load_config", return_value={"monitoring": {"flush_interval_minutes": 60}}), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 
-                srv._metrics_baseline_reset = True
+                # 在 loop 启动前 set 事件，使首次循环检测到重置
+                reset_event.set()
 
                 async def run_and_cancel():
-                    task = asyncio.create_task(srv.metrics_persist_loop())
+                    task = asyncio.create_task(
+                        metrics_persist_loop(mock_collector, mock_store, reset_event)
+                    )
                     await original_sleep(0.05)
                     task.cancel()
                     try:
@@ -498,15 +499,15 @@ class TestMetricsPersistLoop:
 
                 asyncio.run(run_and_cancel())
 
-                # baseline 重置后标志应被清零
-                assert srv._metrics_baseline_reset is False
+                # reset_event 被 clear（loop 处理后清零）
+                assert not reset_event.is_set()
                 # upsert_daily 应被调用
                 assert mock_store.upsert_daily.called
 
     def test_config_read_failure_uses_default(self):
         """load_config 失败时使用默认 60min，不退出 loop。"""
         import asyncio
-        import server as srv
+        from background_loops import metrics_persist_loop
 
         original_sleep = asyncio.sleep
 
@@ -516,15 +517,16 @@ class TestMetricsPersistLoop:
         mock_collector = MagicMock()
         mock_collector.snapshot.return_value = self._make_snapshot()
         mock_store = MagicMock()
+        reset_event = asyncio.Event()
 
-        with patch("server.metrics_collector", mock_collector), \
-             patch("server.metrics_store", mock_store), \
-             patch("server.load_config", side_effect=Exception("config read failed")), \
+        with patch("background_loops.load_config", side_effect=Exception("config read failed")), \
              patch("asyncio.sleep", fast_sleep), \
              patch("asyncio.to_thread", new=AsyncMock(side_effect=lambda fn, *a, **kw: fn(*a, **kw))):
 
                 async def run_and_cancel():
-                    task = asyncio.create_task(srv.metrics_persist_loop())
+                    task = asyncio.create_task(
+                        metrics_persist_loop(mock_collector, mock_store, reset_event)
+                    )
                     await original_sleep(0.05)
                     task.cancel()
                     try:

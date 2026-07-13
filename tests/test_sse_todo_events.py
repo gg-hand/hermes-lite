@@ -34,6 +34,13 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 from src.server import app  # noqa: E402
+# Task 11: server.py 全局变量已删除，通过 app.dependency_overrides 注入 mock
+from app import (  # noqa: E402
+    get_orchestrator,
+    get_session_logger,
+    get_stream_manager,
+    get_cron_scheduler,
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 
@@ -51,7 +58,7 @@ class _MockOrchestrator:
     def __init__(self, events):
         self._events = list(events)
 
-    async def chat_stream(self, session_id, message, cancel_event=None):
+    async def chat_stream(self, session_id, message, cancel_event=None, **kwargs):
         for evt in self._events:
             yield evt
 
@@ -97,6 +104,7 @@ class TestSseTodoEvents(unittest.TestCase):
 
     def setUp(self):
         self._patches = []
+        self._override_keys = []
 
     def tearDown(self):
         for p in self._patches:
@@ -104,26 +112,37 @@ class TestSseTodoEvents(unittest.TestCase):
                 p.stop()
             except RuntimeError:
                 pass
+        # 清理 DI overrides
+        for key in self._override_keys:
+            app.dependency_overrides.pop(key, None)
+        self._override_keys = []
 
-    def _setup(self, events, extra_patches=None, session_id="test-session-001"):
-        """patch orchestrator/session_logger 并创建 TestClient。
+    def _setup(self, events, extra_patches=None, session_id="test-session-001",
+               extra_overrides=None):
+        """通过 DI overrides 注入 orchestrator/session_logger 并创建 TestClient。
 
         参数:
             events: orchestrator.chat_stream yield 的预设事件 dict 列表。
-            extra_patches: 额外需要启动的 patch 列表（如 cron_scheduler）。
+            extra_patches: 额外需要启动的 patch 列表（保留兼容）。
             session_id: mock session_logger.create_session 返回的 session_id。
+            extra_overrides: 额外的 (getter_func, mock_instance) 列表。
         """
         orch = _make_orchestrator(events)
         sess_logger = _make_session_logger(session_id)
-        patches = [
-            patch("src.server.orchestrator", orch),
-            patch("src.server.session_logger", sess_logger),
-        ]
+        # Task 11: 通过 DI overrides 注入（不再 patch src.server 全局变量）
+        app.dependency_overrides[get_orchestrator] = lambda: orch
+        app.dependency_overrides[get_session_logger] = lambda: sess_logger
+        # stream_manager 默认 None（chat_stream 路由依赖此参数）
+        app.dependency_overrides[get_stream_manager] = lambda: None
+        self._override_keys = [get_orchestrator, get_session_logger, get_stream_manager]
+        if extra_overrides:
+            for getter, instance in extra_overrides:
+                app.dependency_overrides[getter] = lambda i=instance: i
+                self._override_keys.append(getter)
         if extra_patches:
-            patches.extend(extra_patches)
-        self._patches = patches
-        for p in self._patches:
-            p.start()
+            self._patches = list(extra_patches)
+            for p in self._patches:
+                p.start()
         return TestClient(app)
 
     def _post_stream(self, client, message="hello", session_id=None):
@@ -264,7 +283,7 @@ class TestSseTodoEvents(unittest.TestCase):
 
         client = self._setup(
             [{"type": "done", "response": "不会被触发"}],
-            extra_patches=[patch("src.server.stream_manager", mock_sm)],
+            extra_overrides=[(get_stream_manager, mock_sm)],
             session_id="test-session-001",
         )
         text = self._post_stream(client, session_id="test-session-001")
@@ -302,7 +321,7 @@ class TestSseTodoEvents(unittest.TestCase):
         mock_cs.list_schedules.return_value = []
         client = self._setup(
             [{"type": "done", "response": "ok"}],
-            extra_patches=[patch("src.server.cron_scheduler", mock_cs)],
+            extra_overrides=[(get_cron_scheduler, mock_cs)],
         )
         resp = client.get("/schedules")
         self.assertEqual(resp.status_code, 200)
