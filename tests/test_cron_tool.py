@@ -53,6 +53,7 @@ from hermes.tasks.cron_tool_loader import (  # noqa: E402
 from hermes.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
 from hermes.agent.context_builder import ContextBuilder  # noqa: E402
 from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from hermes.agent.tool_error import ToolNotFoundError  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -509,9 +510,9 @@ class TestCronToolRegistry(unittest.TestCase):
         self.assertEqual(result, "echo: via_registry")
 
     def test_execute_tool_not_registered(self):
-        """execute_tool 未注册工具返回错误信息字符串。"""
-        result = self.registry.execute_tool("nonexistent", {})
-        self.assertIn("未注册", result)
+        """execute_tool 未注册工具抛 ToolNotFoundError。"""
+        with self.assertRaises(ToolNotFoundError):
+            self.registry.execute_tool("nonexistent", {})
 
     def test_get_tool_handler_returns_callable(self):
         """get_tool_handler 返回 handler callable。"""
@@ -575,6 +576,13 @@ class TestWriteCronTool(unittest.TestCase):
 
         class MockToolRegistry:
             def register_core(inner_self, name, description, input_schema, handler):
+                self.registered_tools[name] = {
+                    "description": description,
+                    "input_schema": input_schema,
+                    "handler": handler,
+                }
+
+            def register_deferred(inner_self, name, description, input_schema, handler):
                 self.registered_tools[name] = {
                     "description": description,
                     "input_schema": input_schema,
@@ -1022,9 +1030,9 @@ class TestReactLoopDispatch(unittest.TestCase):
         self.loop.tool_registry = None
 
     def test_dispatch_no_registries_returns_error(self):
-        """两个 registry 都为 None 时返回错误字符串。"""
-        result = self.loop._execute_tool_with_dispatch("any_tool", {})
-        self.assertIn("未注册", result)
+        """两个 registry 都为 None 时抛 ToolNotFoundError。"""
+        with self.assertRaises(ToolNotFoundError):
+            self.loop._execute_tool_with_dispatch("any_tool", {})
 
     def test_dispatch_cron_tool_registry_priority(self):
         """cron_tool_registry 命中时优先派发（不调全局 registry）。"""
