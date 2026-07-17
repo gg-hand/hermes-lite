@@ -248,7 +248,8 @@ def list_cron_tools(orchestrator=Depends(get_orchestrator)):
 def delete_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
     """删除已激活的 cron_tool：从 registry 注销 + 删除目录。
 
-    Phase 8 Task 5.6。
+    Phase 8 Task 5.6。Q5: ``name`` 为 URL 传入的裸目录名，``unregister``
+    需要带 ``cron_tool__`` 前缀的 ``registered_name``，此处补前缀。
     """
     cron_tool_registry = _get_cron_tool_registry(orchestrator)
     if cron_tool_registry is None:
@@ -259,15 +260,16 @@ def delete_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
         raise HTTPException(
             status_code=404, detail=f"cron_tool {name} 不存在"
         )
-    # 先从 registry 注销
-    cron_tool_registry.unregister(name)
+    # 先从 registry 注销（Q5: 用带前缀的 registered_name）
+    registered_name = f"cron_tool__{name}"
+    cron_tool_registry.unregister(registered_name)
     # 再删除目录
     try:
         shutil.rmtree(str(active_path))
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"删除目录失败: {exc}"
-        ) from exc
+        ) as exc
     logger.info("cron_tool %s 已删除并从 registry 注销", name)
     return {
         "status": "deleted",

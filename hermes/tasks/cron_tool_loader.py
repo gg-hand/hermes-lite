@@ -88,6 +88,11 @@ class CronToolMeta:
         tool_dir: 工具目录绝对路径（``cron_tool/{name}/``）。
         run_script: run.* 脚本的绝对路径（``{tool_dir}/run.*``）。
         run_interpreter: 解释器命令列表（如 ``["python"]``）。
+        dir_name: Q5 决策。裸目录名（如 ``blog_monitor_joyehuang``），
+            用于文件路径拼接（_execute_tool 的 name 参数）。
+        registered_name: Q5 决策。带前缀的 registry key（如
+            ``cron_tool__blog_monitor_joyehuang``），用于 ``_tools`` /
+            ``_handlers`` 字典 key 与 LLM schema 的 name 字段。
     """
 
     name: str
@@ -99,6 +104,9 @@ class CronToolMeta:
     tool_dir: str = ""
     run_script: str = ""
     run_interpreter: list = field(default_factory=list)
+    # === Q5 新增 ===
+    dir_name: str = ""
+    registered_name: str = ""
 
     def get_timeout(self, default: int = DEFAULT_TIMEOUT) -> int:
         """返回生效的超时秒数。
@@ -108,6 +116,14 @@ class CronToolMeta:
         if self.timeout is None or self.timeout <= 0:
             return default
         return int(self.timeout)
+
+    def get_registered_name(self) -> str:
+        """Q5: 返回 registry 注册名（带前缀）。
+
+        ``registered_name`` 未设置（空串）时回退到 ``name``，保证向后兼容
+        （未通过 ``CronToolRegistry.register`` 注册的 meta 仍可调 ``to_schema``）。
+        """
+        return self.registered_name or self.name
 
     def to_schema(self) -> Dict[str, Any]:
         """返回 Anthropic tool use 格式的 schema dict。

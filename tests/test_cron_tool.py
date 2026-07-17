@@ -1,4 +1,4 @@
-﻿"""Phase 8 Task 5: cron_tool 动态工具系统测试套件（SubTask 5.10）。
+"""Phase 8 Task 5: cron_tool 动态工具系统测试套件（SubTask 5.10）。
 
 覆盖：
 - ``cron_tool_loader``：TOOL.md 解析 + 子进程执行 + 列表辅助（SubTask 5.2）
@@ -440,14 +440,16 @@ class TestCronToolRegistry(unittest.TestCase):
         """register 解析 TOOL.md 并返回 CronToolMeta。"""
         meta = self.registry.register("echo_text")
         self.assertEqual(meta.name, "echo_text")
-        self.assertTrue(self.registry.has_tool("echo_text"))
+        # Q5: has_tool 接受带前缀名
+        self.assertTrue(self.registry.has_tool("cron_tool__echo_text"))
 
     def test_get_tools_schema_format(self):
         """get_tools_schema 返回 Anthropic 格式 schema 列表。"""
         self.registry.register("echo_text")
         schemas = self.registry.get_tools_schema()
         self.assertEqual(len(schemas), 1)
-        self.assertEqual(schemas[0]["name"], "echo_text")
+        # Q5: schema name 用 registered_name（带前缀）
+        self.assertEqual(schemas[0]["name"], "cron_tool__echo_text")
         self.assertIn("input_schema", schemas[0])
 
     def test_get_tools_schema_multiple(self):
@@ -456,14 +458,16 @@ class TestCronToolRegistry(unittest.TestCase):
         self.registry.register("second_tool")
         schemas = self.registry.get_tools_schema()
         self.assertEqual(len(schemas), 2)
-        self.assertEqual(schemas[0]["name"], "echo_text")
-        self.assertEqual(schemas[1]["name"], "second_tool")
+        # Q5: schema name 用 registered_name（带前缀）
+        self.assertEqual(schemas[0]["name"], "cron_tool__echo_text")
+        self.assertEqual(schemas[1]["name"], "cron_tool__second_tool")
 
     def test_unregister_removes_tool(self):
         """unregister 移除工具（仅内存，不删磁盘）。"""
         self.registry.register("echo_text")
-        self.assertTrue(self.registry.unregister("echo_text"))
-        self.assertFalse(self.registry.has_tool("echo_text"))
+        # Q5: unregister 接受带前缀名
+        self.assertTrue(self.registry.unregister("cron_tool__echo_text"))
+        self.assertFalse(self.registry.has_tool("cron_tool__echo_text"))
         # 磁盘文件仍在
         tool_dir = Path(self.sandbox.base_dir) / "echo_text"
         self.assertTrue(tool_dir.exists())
@@ -490,15 +494,18 @@ class TestCronToolRegistry(unittest.TestCase):
         (bad_dir / "TOOL.md").write_text(_ECHO_TOOL_MD.replace(
             "echo_text", "broken"), encoding="utf-8")
         loaded = self.registry.load_all()
-        # echo_text 与 second_tool 加载成功，broken 跳过
-        self.assertIn("echo_text", loaded)
-        self.assertIn("second_tool", loaded)
-        self.assertNotIn("broken", loaded)
+        # Q5: loaded key 为 registered_name（带前缀）
+        self.assertIn("cron_tool__echo_text", loaded)
+        self.assertIn("cron_tool__second_tool", loaded)
+        self.assertNotIn("cron_tool__broken", loaded)
 
     def test_execute_tool_success(self):
         """execute_tool 通过子进程执行返回结果。"""
         self.registry.register("echo_text")
-        result = self.registry.execute_tool("echo_text", {"text": "via_registry"})
+        # Q5: execute_tool 接受带前缀名
+        result = self.registry.execute_tool(
+            "cron_tool__echo_text", {"text": "via_registry"}
+        )
         self.assertEqual(result, "echo: via_registry")
 
     def test_execute_tool_not_registered(self):
@@ -509,7 +516,8 @@ class TestCronToolRegistry(unittest.TestCase):
     def test_get_tool_handler_returns_callable(self):
         """get_tool_handler 返回 handler callable。"""
         self.registry.register("echo_text")
-        handler = self.registry.get_tool_handler("echo_text")
+        # Q5: get_tool_handler 接受带前缀名
+        handler = self.registry.get_tool_handler("cron_tool__echo_text")
         self.assertIsNotNone(handler)
         self.assertTrue(callable(handler))
         result = handler(text="via_handler")
@@ -522,7 +530,8 @@ class TestCronToolRegistry(unittest.TestCase):
     def test_get_tool_meta(self):
         """get_tool_meta 返回 CronToolMeta。"""
         self.registry.register("echo_text")
-        meta = self.registry.get_tool_meta("echo_text")
+        # Q5: get_tool_meta 接受带前缀名
+        meta = self.registry.get_tool_meta("cron_tool__echo_text")
         self.assertIsNotNone(meta)
         self.assertEqual(meta.name, "echo_text")
 
@@ -530,7 +539,11 @@ class TestCronToolRegistry(unittest.TestCase):
         """list_tool_names 按注册顺序返回。"""
         self.registry.register("echo_text")
         self.registry.register("second_tool")
-        self.assertEqual(self.registry.list_tool_names(), ["echo_text", "second_tool"])
+        # Q5: 返回 registered_name（带前缀）
+        self.assertEqual(
+            self.registry.list_tool_names(),
+            ["cron_tool__echo_text", "cron_tool__second_tool"],
+        )
 
     def test_set_context_provider_injects_context(self):
         """set_context_provider 注入的回调在 handler 执行时被调用。"""
@@ -542,7 +555,8 @@ class TestCronToolRegistry(unittest.TestCase):
             return {"session_id": "cron:test", "schedule_id": "test"}
 
         self.registry.set_context_provider(provider)
-        self.registry.execute_tool("echo_text", {"text": "ctx"})
+        # Q5: execute_tool 接受带前缀名
+        self.registry.execute_tool("cron_tool__echo_text", {"text": "ctx"})
         self.assertTrue(captured.get("called"))
 
 
@@ -842,8 +856,8 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         # snapshot 只允许 builtin_a
         self.assertIn("builtin_a", names)
         self.assertNotIn("builtin_b", names)
-        # cron_tool 始终可见（不受 snapshot 限制）
-        self.assertIn("cron_echo", names)
+        # Q5: cron_tool schema name 用 registered_name（带前缀），始终可见
+        self.assertIn("cron_tool__cron_echo", names)
 
     def test_cron_session_empty_snapshot_returns_all(self):
         """active_tools_snapshot 为空时返回完整内置工具集 + cron_tool。"""
@@ -859,7 +873,8 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         names = [t["name"] for t in tools_override]
         self.assertIn("builtin_a", names)
         self.assertIn("builtin_b", names)
-        self.assertIn("cron_echo", names)
+        # Q5: cron_tool schema name 用 registered_name（带前缀）
+        self.assertIn("cron_tool__cron_echo", names)
 
     def test_cron_session_none_snapshot_returns_all(self):
         """active_tools_snapshot 为 None 时返回完整工具集 + cron_tool。"""
@@ -1093,12 +1108,12 @@ class TestEndToEndIntegration(unittest.TestCase):
         # 1. 注册
         meta = registry.register("echo_text")
         self.assertEqual(meta.name, "echo_text")
-        # 2. schema 可用
+        # 2. schema 可用（Q5: name 用 registered_name 带前缀）
         schemas = registry.get_tools_schema()
         self.assertEqual(len(schemas), 1)
-        self.assertEqual(schemas[0]["name"], "echo_text")
-        # 3. 子进程执行
-        result = registry.execute_tool("echo_text", {"text": "e2e"})
+        self.assertEqual(schemas[0]["name"], "cron_tool__echo_text")
+        # 3. 子进程执行（Q5: execute_tool 接受带前缀名）
+        result = registry.execute_tool("cron_tool__echo_text", {"text": "e2e"})
         self.assertEqual(result, "echo: e2e")
 
     def test_full_lifecycle_with_orchestrator_filter(self):
@@ -1132,14 +1147,119 @@ class TestEndToEndIntegration(unittest.TestCase):
         tools_override = orch.cron_isolator.build_cron_tools("cron:e2e")
         names = [t["name"] for t in tools_override]
         self.assertIn("search", names)  # snapshot 允许
-        self.assertIn("echo_text", names)  # cron_tool 始终可见
+        # Q5: cron_tool schema name 用 registered_name（带前缀）
+        self.assertIn("cron_tool__echo_text", names)
 
         # react_loop 已注入 cron_tool_registry，可派发执行
+        # Q5: dispatch 用 registered_name（带前缀）
         self.assertIs(react_loop.cron_tool_registry, registry)
         result = react_loop._execute_tool_with_dispatch(
-            "echo_text", {"text": "dispatched"}
+            "cron_tool__echo_text", {"text": "dispatched"}
         )
         self.assertEqual(result, "echo: dispatched")
+
+
+# ---------------------------------------------------------------------------
+# Q5 决策：CronToolMeta 分离 dir_name / registered_name
+# ---------------------------------------------------------------------------
+
+
+class TestCronToolMetaPrefixSeparation(unittest.TestCase):
+    """Q5: 分离 dir_name（文件系统标识）与 registered_name（registry 标识）。"""
+
+    def test_meta_has_dir_name_and_registered_name_fields(self):
+        """CronToolMeta 新增 dir_name / registered_name 字段，默认空串。"""
+        from hermes.tasks.cron_tool_loader import CronToolMeta
+        meta = CronToolMeta(
+            name="blog_monitor", version="1.0.0", description="d",
+            author="a", input_schema={},
+        )
+        self.assertEqual(meta.dir_name, "")
+        self.assertEqual(meta.registered_name, "")
+
+    def test_get_registered_name_fallback_to_name(self):
+        """registered_name 未设置时回退到 name。"""
+        from hermes.tasks.cron_tool_loader import CronToolMeta
+        meta = CronToolMeta(
+            name="blog_monitor", version="1.0.0", description="d",
+            author="a", input_schema={},
+        )
+        self.assertEqual(meta.get_registered_name(), "blog_monitor")
+
+    def test_get_registered_name_returns_prefixed(self):
+        """registered_name 设置后返回带前缀名。"""
+        from hermes.tasks.cron_tool_loader import CronToolMeta
+        meta = CronToolMeta(
+            name="blog_monitor", version="1.0.0", description="d",
+            author="a", input_schema={},
+            dir_name="blog_monitor",
+            registered_name="cron_tool__blog_monitor",
+        )
+        self.assertEqual(meta.get_registered_name(), "cron_tool__blog_monitor")
+
+
+class TestCronToolRegistryRegisterWithPrefix(unittest.TestCase):
+    """Q5: register 用 registered_name 作 key，_build_handler 用 dir_name。"""
+
+    def setUp(self):
+        self.sandbox = _CronToolSandbox()
+        self.sandbox.make_tool("echo_text")
+        self.registry = CronToolRegistry(base_dir=self.sandbox.base_dir)
+
+    def tearDown(self):
+        self.sandbox.cleanup()
+
+    def test_register_stores_under_prefixed_key(self):
+        """register 后 _tools key 为 cron_tool__{dir_name}。"""
+        self.registry.register("echo_text")
+        self.assertIn("cron_tool__echo_text", self.registry._tools)
+        self.assertNotIn("echo_text", self.registry._tools)
+
+    def test_has_tool_accepts_prefixed_name(self):
+        """has_tool 接受带前缀名。"""
+        self.registry.register("echo_text")
+        self.assertTrue(self.registry.has_tool("cron_tool__echo_text"))
+
+    def test_has_tool_rejects_unprefixed_name(self):
+        """Q5: 移除 _normalize_name 后，裸名不再被接受。"""
+        self.registry.register("echo_text")
+        self.assertFalse(self.registry.has_tool("echo_text"))
+
+    def test_get_tools_schema_uses_registered_name(self):
+        """schema 的 name 字段用 registered_name（带前缀）。"""
+        self.registry.register("echo_text")
+        schemas = self.registry.get_tools_schema()
+        self.assertEqual(len(schemas), 1)
+        self.assertEqual(schemas[0]["name"], "cron_tool__echo_text")
+
+    def test_get_tool_meta_with_prefixed_name(self):
+        """get_tool_meta 接受带前缀名。"""
+        self.registry.register("echo_text")
+        meta = self.registry.get_tool_meta("cron_tool__echo_text")
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.dir_name, "echo_text")
+        self.assertEqual(meta.registered_name, "cron_tool__echo_text")
+
+    def test_get_tool_handler_with_prefixed_name(self):
+        """get_tool_handler 接受带前缀名并返回可执行 handler。"""
+        self.registry.register("echo_text")
+        handler = self.registry.get_tool_handler("cron_tool__echo_text")
+        self.assertIsNotNone(handler)
+        self.assertTrue(callable(handler))
+
+    def test_execute_tool_with_prefixed_name(self):
+        """execute_tool 接受带前缀名并执行。"""
+        self.registry.register("echo_text")
+        result = self.registry.execute_tool(
+            "cron_tool__echo_text", {"text": "prefixed"}
+        )
+        self.assertEqual(result, "echo: prefixed")
+
+    def test_unregister_with_prefixed_name(self):
+        """unregister 接受带前缀名。"""
+        self.registry.register("echo_text")
+        self.assertTrue(self.registry.unregister("cron_tool__echo_text"))
+        self.assertFalse(self.registry.has_tool("cron_tool__echo_text"))
 
 
 if __name__ == "__main__":

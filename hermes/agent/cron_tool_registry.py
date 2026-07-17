@@ -55,6 +55,10 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_JSONSCHEMA = False
 
+#: Q5 决策：cron_tool registry key 前缀（与 schedules.yaml 的
+#: granted_tools / active_tools_snapshot / step.config.tool 命名约定一致）
+_PREFIX = "cron_tool__"
+
 
 class CronToolRegistry:
     """cron_tool 独立注册中心（与全局 ToolRegistry 接口兼容，但不进全局）。
@@ -62,11 +66,16 @@ class CronToolRegistry:
     所有 cron_tool 工具通过子进程执行（:func:`cron_tool_loader.execute_tool`），
     schema 由 TOOL.md 的 input_schema 字段生成。
 
+    Q5 决策：``_tools`` / ``_handlers`` 的 key 统一为带前缀的
+    ``registered_name``（``cron_tool__{dir_name}``），与 schedules.yaml 的
+    naming convention 对齐。``_build_handler`` 内部用 ``meta.dir_name``
+    拼接文件路径，避免前缀导致的路径错误。
+
     Attributes:
         base_dir: cron_tool 根目录，默认 :data:`DEFAULT_BASE_DIR`。
-        _tools: 已注册工具的 name → :class:`CronToolMeta` 映射。
-        _handlers: 已注册工具的 name → handler callable 映射（闭包捕获
-            meta 与 base_dir，调用 ``_execute_tool``）。
+        _tools: 已注册工具的 registered_name → :class:`CronToolMeta` 映射。
+        _handlers: 已注册工具的 registered_name → handler callable 映射
+            （闭包捕获 meta 与 base_dir，调用 ``_execute_tool``）。
     """
 
     def __init__(self, base_dir: str = DEFAULT_BASE_DIR) -> None:
@@ -79,7 +88,7 @@ class CronToolRegistry:
         self.base_dir = base_dir
         self._tools: Dict[str, CronToolMeta] = {}
         self._handlers: Dict[str, Callable[..., str]] = {}
-        # schema validator 缓存：name -> Draft7Validator
+        # schema validator 缓存：registered_name -> Draft7Validator
         self._schema_cache: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
@@ -89,22 +98,34 @@ class CronToolRegistry:
     def register(self, name: str) -> CronToolMeta:
         """注册一个 cron_tool（解析 TOOL.md 并缓存 meta）。
 
+        Q5 决策：分离 ``dir_name``（文件系统标识）与 ``registered_name``
+        （registry key）。传入的 ``name`` 可带 ``cron_tool__`` 前缀也可
+        不带，统一剥离后作为 ``dir_name``，再加前缀生成 ``registered_name``。
+
         重复注册同名工具会覆盖旧定义（重新加载场景）。
 
         参数:
-            name: cron_tool 名称（与目录名一致）。
+            name: cron_tool 名称（可带 ``cron_tool__`` 前缀，也可裸目录名）。
 
         返回:
-            解析得到的 :class:`CronToolMeta`。
+            解析得到的 :class:`CronToolMeta`（已填充 dir_name / registered_name）。
 
         Raises:
             CronToolError: TOOL.md 解析失败或 run.* 脚本缺失。
         """
-        meta = _load_tool(name, base_dir=self.base_dir)
-        self._tools[name] = meta
+        # Q5: 剥离前缀得到裸目录名（用于文件路径）
+        dir_name = name[len(_PREFIX):] if name.startswith(_PREFIX) else name
+        meta = _load_tool(dir_name, base_dir=self.base_dir)
+        # Q5: 填充 dir_name / registered_name
+        meta.dir_name = dir_name
+        meta.registered_name = f"{_PREFIX}{dir_name}"
+        self._tools[meta.registered_name] = meta
         # 构造 handler 闭包（捕获 meta，避免每次执行重新解析 TOOL.md）
-        self._handlers[name] = self._build_handler(meta)
-        logger.info("已注册 cron_tool: %s (version=%s)", name, meta.version)
+        self._handlers[meta.registered_name] = self._build_handler(meta)
+        logger.info(
+            "已注册 cron_tool: %s (dir=%s, version=%s)",
+            meta.registered_name, meta.dir_name, meta.version,
+        )
         return meta
 
     def unregister(self, name: str) -> bool:
@@ -113,8 +134,10 @@ class CronToolRegistry:
         仅移除内存中的 meta 与 handler，**不删除磁盘文件**。删除文件由
         上层（server.py 端点）负责。
 
+        Q5: ``name`` 应为带前缀的 ``registered_name``（与 ``_tools`` key 一致）。
+
         参数:
-            name: 工具名。
+            name: 工具名（带 ``cron_tool__`` 前缀）。
 
         返回:
             ``True`` 表示已移除；``False`` 表示工具未注册。
@@ -125,6 +148,8 @@ class CronToolRegistry:
             removed = True
         if name in self._handlers:
             del self._handlers[name]
+        if name in self._schema_cache:
+            del self._schema_cache[name]
         if removed:
             logger.info("已注销 cron_tool: %s", name)
         return removed
@@ -135,7 +160,7 @@ class CronToolRegistry:
         等价于 ``register``（覆盖式注册），语义上强调「重新加载」。
 
         参数:
-            name: 工具名。
+            name: 工具名（可带前缀也可裸目录名）。
 
         返回:
             重新解析得到的 :class:`CronToolMeta`。
@@ -149,14 +174,14 @@ class CronToolRegistry:
         加载（防御性：单工具损坏不影响其他工具）。
 
         返回:
-            成功加载的 name → meta 映射。
+            成功加载的 registered_name → meta 映射（Q5: key 为带前缀名）。
         """
         names = _list_tools(base_dir=self.base_dir)
         loaded: Dict[str, CronToolMeta] = {}
         for name in names:
             try:
                 meta = self.register(name)
-                loaded[name] = meta
+                loaded[meta.registered_name] = meta
             except CronToolError as exc:
                 logger.warning(
                     "启动加载 cron_tool '%s' 失败，跳过: %s", name, exc
@@ -170,22 +195,28 @@ class CronToolRegistry:
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """返回所有已注册 cron_tool 的 schema 列表（Anthropic tool use 格式）。
 
-        与全局 :meth:`ToolRegistry.get_tools_schema` 的 Core Tier 一致，返回
-        完整 schema（含 name/description/input_schema）。
+        Q5: schema 的 ``name`` 字段用 ``meta.get_registered_name()``（带前缀），
+        与 schedules.yaml / LLM tool_use 命名约定一致。
 
         返回:
             schema 列表，按注册顺序。
         """
-        return [meta.to_schema() for meta in self._tools.values()]
+        return [
+            {
+                "name": meta.get_registered_name(),
+                "description": meta.description,
+                "input_schema": meta.input_schema,
+            }
+            for meta in self._tools.values()
+        ]
 
     def get_tool_handler(self, name: str) -> Optional[Callable[..., str]]:
         """返回指定工具的 handler callable。
 
-        与全局 ToolRegistry 不同，本方法返回的 handler 已闭包捕获 meta，
-        调用时只需传工具入参（keyword args）。
+        Q5: ``name`` 应为带前缀的 ``registered_name``。未注册返回 ``None``。
 
         参数:
-            name: 工具名。
+            name: 工具名（带 ``cron_tool__`` 前缀）。
 
         返回:
             handler callable，未注册返回 ``None``。
@@ -195,8 +226,10 @@ class CronToolRegistry:
     def get_tool_meta(self, name: str) -> Optional[CronToolMeta]:
         """返回指定工具的 meta（含 version / timeout 等元数据）。
 
+        Q5: ``name`` 应为带前缀的 ``registered_name``。
+
         参数:
-            name: 工具名。
+            name: 工具名（带 ``cron_tool__`` 前缀）。
 
         返回:
             :class:`CronToolMeta`，未注册返回 ``None``。
@@ -204,11 +237,18 @@ class CronToolRegistry:
         return self._tools.get(name)
 
     def has_tool(self, name: str) -> bool:
-        """判断工具是否已注册。"""
+        """判断工具是否已注册。
+
+        Q5: ``name`` 应为带前缀的 ``registered_name``。裸目录名不再被接受
+        （移除 ``_normalize_name`` 后调用方需统一传带前缀名）。
+        """
         return name in self._tools
 
     def list_tool_names(self) -> List[str]:
-        """返回所有已注册工具名（按注册顺序）。"""
+        """返回所有已注册工具名（按注册顺序）。
+
+        Q5: 返回的是 ``registered_name``（带前缀）。
+        """
         return list(self._tools.keys())
 
     # ------------------------------------------------------------------
@@ -224,8 +264,10 @@ class CronToolRegistry:
         - 子进程返回错误 JSON → 由 :func:`from_cron_error` 归一化
         - 其他异常 → 由 :func:`from_exception` 归一化
 
+        Q5: ``tool_name`` 应为带前缀的 ``registered_name``。
+
         参数:
-            tool_name: 工具名。
+            tool_name: 工具名（带 ``cron_tool__`` 前缀）。
             tool_input: 工具入参 dict。
 
         返回:
@@ -297,7 +339,10 @@ class CronToolRegistry:
             raise from_exception(tool_name, exc) from exc
 
     def _get_validator(self, name: str, schema: dict):
-        """获取（或编译缓存）jsonschema Draft7Validator。"""
+        """获取（或编译缓存）jsonschema Draft7Validator。
+
+        Q5: ``name`` 为 ``registered_name``（带前缀），与 ``_tools`` key 一致。
+        """
         if name not in self._schema_cache:
             self._schema_cache[name] = jsonschema.Draft7Validator(schema)
         return self._schema_cache[name]
@@ -315,8 +360,11 @@ class CronToolRegistry:
         ``context`` dict（context 由调用方通过 ``set_context_provider``
         注入或为空），调用 :func:`cron_tool_loader.execute_tool`。
 
+        Q5: 用 ``meta.dir_name``（裸目录名）作为 ``_execute_tool`` 的 ``name``
+        参数，避免带前缀名导致的文件路径错误。
+
         参数:
-            meta: 工具元数据。
+            meta: 工具元数据（必须已填充 dir_name）。
 
         返回:
             handler callable，签名 ``(**kwargs) -> str``。
@@ -332,7 +380,7 @@ class CronToolRegistry:
                 except Exception:
                     context = {}
             return _execute_tool(
-                name=meta.name,
+                name=meta.dir_name,  # Q5: 用裸目录名拼路径
                 input=kwargs,
                 context=context,
                 meta=meta,
