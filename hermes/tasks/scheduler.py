@@ -51,7 +51,11 @@ from hermes.agent.tool_error import (
     ValidationError,
     WorkflowExecutionError,
 )
+from hermes.config import load_config
+
 logger = logging.getLogger(__name__)
+
+CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +586,23 @@ class CronScheduler:
 
         return _archive_cron_evicted
 
+    def _rebuild_hooks(self) -> None:
+        """spec 8.2: 从最新配置重建 HookRegistry（per-call 热更新）。
+
+        每次 ``_run_schedule`` 调用前执行，从 ``config.yaml`` 读取最新
+        ``cron.hooks`` 配置重建 hook 实例。hook 实例无状态，重建开销可忽略。
+        ``_failure_counts`` 在 ``CronScheduler`` 实例上（长生命周期），
+        不随 HookRegistry 重建而丢失。
+        """
+        from hermes.tasks.hooks.registry import HookRegistry
+        try:
+            cfg = load_config(CONFIG_PATH)
+            hooks_cfg = cfg.get("cron", {}).get("hooks", {})
+        except Exception as e:
+            logger.warning("加载 cron.hooks 配置失败，使用默认配置: %s", e)
+            hooks_cfg = {}
+        self.hooks = HookRegistry(config=hooks_cfg, scheduler_ref=self)
+
     async def _run_schedule(
         self, orchestrator: Any, schedule: Schedule,
         started_at_dt: Optional[datetime] = None,
@@ -618,6 +639,8 @@ class CronScheduler:
             schedule: 待触发的调度项。
         """
         session_id = f"cron:{schedule.id}"
+        # spec 8.2: per-call 重建 HookRegistry（cron.hooks.* 热更新即时生效）
+        self._rebuild_hooks()
         # ops-reliability-uplift Task 4.1: 触发前清空 history_buffer 隔离上下文
         self._clear_cron_history(orchestrator, session_id)
 

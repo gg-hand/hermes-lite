@@ -38,6 +38,9 @@ class TestRunScheduleHookIntegration(unittest.TestCase):
         self.scheduler._cron_exprs = {}
         self.scheduler.runs_store = MagicMock()
         self.scheduler.workflow_context_factory = None
+        # spec 8.2: _rebuild_hooks 在 _run_schedule 开头调用，
+        # 测试中 mock 为 no-op 以保留上方 mocked hooks
+        self.scheduler._rebuild_hooks = MagicMock()
         # Mock _clear_cron_history / _build_cron_archive_callback as no-ops
         self.scheduler._clear_cron_history = MagicMock()
         self.scheduler._build_cron_archive_callback = MagicMock(return_value=None)
@@ -119,6 +122,46 @@ class TestRunScheduleDirect(unittest.TestCase):
         self.assertIs(call_args[0][0], scheduler._orchestrator)
         self.assertIs(call_args[0][1], mock_schedule)
         self.assertIsInstance(call_args[0][2], datetime)
+
+
+class TestRunScheduleRebuildsHooksPerCall(unittest.TestCase):
+    """spec 8.2: _run_schedule 每次调用时从最新配置重建 HookRegistry（热更新）。"""
+
+    def setUp(self):
+        from hermes.tasks.scheduler import CronScheduler
+        from hermes.tasks.hooks.registry import HookRegistry
+        self.scheduler = CronScheduler.__new__(CronScheduler)
+        self.scheduler._failure_counts = {}
+        self.scheduler._orchestrator = MagicMock()
+        # 初始 hooks（默认配置，retry enabled, max_retries=3）
+        self.scheduler.hooks = HookRegistry(config={}, scheduler_ref=self.scheduler)
+
+    def test_rebuild_hooks_reads_latest_config(self):
+        """_rebuild_hooks 从 load_config 读取最新 cron.hooks 配置，禁用的 hook 不加载。"""
+        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+            mock_load.return_value = {
+                "cron": {"hooks": {"retry": {"enabled": False}}}
+            }
+            self.scheduler._rebuild_hooks()
+            # retry 被禁用 → get_retry_max 返回 0
+            self.assertEqual(self.scheduler.hooks.get_retry_max(), 0)
+
+    def test_rebuild_hooks_reflects_max_retries_change(self):
+        """_rebuild_hooks 反映 max_retries 配置变更（热更新即时生效）。"""
+        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+            mock_load.return_value = {
+                "cron": {"hooks": {"retry": {"enabled": True, "max_retries": 10}}}
+            }
+            self.scheduler._rebuild_hooks()
+            self.assertEqual(self.scheduler.hooks.get_retry_max(), 10)
+
+    def test_rebuild_hooks_creates_new_instance(self):
+        """_rebuild_hooks 创建新的 HookRegistry 实例（非原地修改）。"""
+        old_hooks = self.scheduler.hooks
+        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+            mock_load.return_value = {"cron": {"hooks": {}}}
+            self.scheduler._rebuild_hooks()
+        self.assertIsNot(self.scheduler.hooks, old_hooks)
 
 
 if __name__ == "__main__":
