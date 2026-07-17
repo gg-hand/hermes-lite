@@ -46,6 +46,11 @@ from hermes.tasks.workflow import (
     WorkflowSpec,
     render_time_variables,
 )
+from hermes.agent.tool_error import (
+    HookAbortError,
+    ValidationError,
+    WorkflowExecutionError,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -317,6 +322,16 @@ class CronScheduler:
         # Phase 3 Task 15 并发改造时使用，每个 schedule 一个 asyncio.Lock 防 overlap
         self._cron_locks: Dict[str, "asyncio.Lock"] = {}
 
+        # === 调度执行强化（3.6/3.7/6.1）===
+        # HookRegistry 按 config.hooks 开关加载 4 个 hook（validate/catchup/retry/notify）
+        from hermes.tasks.hooks.registry import HookRegistry
+        self.hooks = HookRegistry(config={}, scheduler_ref=self)
+        # Q8: _failure_counts 放在 CronScheduler 实例上（长生命周期），
+        # 避免 HookRegistry 重建时迁移失败计数
+        self._failure_counts: Dict[str, int] = {}
+        # _orchestrator 由 server.py 装配时注入，供 _run_schedule_direct 使用
+        self._orchestrator: Optional[Any] = None
+
         # 启动时加载已持久化的调度项
         self._load_persisted()
 
@@ -423,7 +438,7 @@ class CronScheduler:
                     self._last_triggered_minute[schedule.id] = (
                         current_minute_key
                     )
-                    await self._trigger(orchestrator, schedule)
+                    await self._run_schedule(orchestrator, schedule, datetime.now())
 
             # 可中断的 60s 等待
             try:
@@ -554,10 +569,11 @@ class CronScheduler:
 
         return _archive_cron_evicted
 
-    async def _trigger(
-        self, orchestrator: Any, schedule: Schedule
+    async def _run_schedule(
+        self, orchestrator: Any, schedule: Schedule,
+        started_at_dt: Optional[datetime] = None,
     ) -> None:
-        """触发单个调度项。
+        """触发单个调度项（3.6 重命名：_trigger → _run_schedule）。
 
         Phase 8 Task 2.12: 根据调度项是否含 ``workflow`` 字段分两条路径：
         - **workflow 路径**：构造 :class:`WorkflowContext`，调用
@@ -569,6 +585,9 @@ class CronScheduler:
 
         触发中的异常被捕获并记录，不影响其他调度项。``started_at`` /
         ``finished_at`` / ``duration_seconds`` 自动记录。
+
+        3.6 新增：3 个 hook 调用点（before_execute / on_failure / after_execute），
+        ``started_at_dt`` 参数允许外部传入（CatchUpHook 补偿执行用）。
 
         上下文隔离（ops-reliability-uplift Task 4）：触发前清空该 schedule 的
         history_buffer，确保 LLM 上下文不含上一次执行的 user/assistant 消息，
@@ -619,7 +638,8 @@ class CronScheduler:
                 _new_archive_cb = None  # 标记未生效
 
         try:
-            started_at_dt = datetime.now()
+            if started_at_dt is None:
+                started_at_dt = datetime.now()
             started_at = started_at_dt.isoformat()
 
             # Task 10：提前生成 run_id，供 WorkflowContext 注入与 RunSummary 持久化
@@ -635,6 +655,24 @@ class CronScheduler:
                     task_text,
                     current_time=started_at_dt,
                     last_run_time=last_run_dt,
+                )
+
+            # === 3.6: hook 调用点 ① before_execute（校验 + 补偿运行时空操作）===
+            ctx = self._build_workflow_context(
+                orchestrator, schedule, started_at_dt, last_run_dt,
+                run_id, session_id,
+            )
+            ctx.schedule = schedule  # Q2: 新增字段填充
+            ctx.retry_max = self.hooks.get_retry_max()  # Q11
+            try:
+                ctx = await self.hooks.before_execute(ctx)
+                if getattr(ctx, "validation_errors", None):
+                    raise ValidationError(errors=ctx.validation_errors)
+            except (HookAbortError, ValidationError) as e:
+                return await self._finalize_failure(
+                    ctx, e, schedule=schedule,
+                    started_at=started_at, orchestrator=orchestrator,
+                    task_text=task_text,
                 )
 
             success = True
@@ -741,6 +779,27 @@ class CronScheduler:
                         session_id, e,
                     )
 
+            # === 3.6: hook 调用点 ③ after_execute（无条件调用，P0 修复）===
+            try:
+                _hook_result = WorkflowResult(
+                    success=success,
+                    assistant_response=assistant_response,
+                    tool_calls=tool_calls,
+                    outputs=outputs,
+                    errors=list(errors),
+                    workflow_name=workflow_name or schedule.name,
+                )
+                if hasattr(ctx, "last_error"):
+                    ctx.last_error = None if success else (
+                        errors[-1] if errors else "未知错误"
+                    )
+                await self.hooks.after_execute(ctx, _hook_result)
+            except Exception as hook_err:
+                logger.warning(
+                    "after_execute hook 异常 schedule_id=%s: %s",
+                    schedule.id, hook_err,
+                )
+
             finished_at_dt = datetime.now()
             finished_at = finished_at_dt.isoformat()
             duration_seconds = (finished_at_dt - started_at_dt).total_seconds()
@@ -787,6 +846,104 @@ class CronScheduler:
                         schedule.id,
                         exc_info=True,
                     )
+
+    async def _finalize_failure(
+        self,
+        ctx: Any,
+        error: Exception,
+        schedule: Optional[Schedule] = None,
+        started_at: str = "",
+        orchestrator: Optional[Any] = None,
+        task_text: str = "",
+        wf_result: Optional[WorkflowResult] = None,
+    ) -> None:
+        """P1 修复：校验/钩子终止时的统一收尾（3.6）。
+
+        当 ``before_execute`` 抛 ``HookAbortError`` / ``ValidationError`` 时，
+        _run_schedule 调用此方法完成：
+        1. 构造失败的 WorkflowResult（若未传入）
+        2. 调用 ``hooks.after_execute``（确保通知层能感知失败）
+        3. 更新 last_run / next_run 并持久化
+        4. append RunSummary（失败记录）
+
+        参数:
+            ctx: WorkflowContext（hooks 可能需要读取 schedule 等字段）
+            error: 触发终止的异常
+            schedule: 调度项（持久化与 next_run 更新需要）
+            started_at: 开始时间 ISO 字符串
+            orchestrator: 编排器（session_logger 写入需要）
+            task_text: 渲染后的任务文本
+            wf_result: 预构造的 WorkflowResult（None 时内部构造失败 result）
+        """
+        if wf_result is None:
+            wf_result = WorkflowResult(
+                success=False,
+                errors=[str(error)],
+                workflow_name=schedule.name if schedule else "",
+            )
+        if hasattr(ctx, "last_error"):
+            ctx.last_error = error
+
+        # 调用 after_execute（通知层感知失败）
+        try:
+            await self.hooks.after_execute(ctx, wf_result)
+        except Exception as hook_err:
+            logger.warning(
+                "_finalize_failure after_execute 异常: %s", hook_err
+            )
+
+        # 持久化 + next_run 更新
+        if schedule is not None:
+            finished_at_dt = datetime.now()
+            finished_at = finished_at_dt.isoformat()
+            schedule.last_run = finished_at
+            cron_expr = self._cron_exprs.get(schedule.id)
+            if cron_expr is not None:
+                try:
+                    schedule.next_run = cron_expr.next_run(
+                        finished_at_dt
+                    ).isoformat()
+                except Exception:
+                    pass
+            self._persist()
+
+            # append RunSummary（失败记录）
+            duration_seconds = (
+                finished_at_dt - datetime.fromisoformat(started_at)
+            ).total_seconds() if started_at else 0.0
+            try:
+                self._append_run_summary(
+                    schedule,
+                    started_at,
+                    finished_at,
+                    duration_seconds,
+                    False,  # success
+                    task_text,
+                    "",  # assistant_response
+                    [],  # tool_calls
+                    [],  # outputs
+                    [str(error)],  # errors
+                )
+            except Exception:
+                logger.warning(
+                    "_finalize_failure append RunSummary 失败",
+                    exc_info=True,
+                )
+
+    async def _run_schedule_direct(self, schedule: Schedule) -> None:
+        """CatchUpHook 专用的补偿执行入口（5.1）。
+
+        Thin wrapper：从 ``self._orchestrator`` 读取 orchestrator，
+        调用 ``_run_schedule`` 执行补偿任务。与 ``run_loop`` / ``trigger_now``
+        不同，此方法不经过 cron 触发逻辑，由 CatchUpHook 在检测到漏执行时
+        主动调用。
+
+        参数:
+            schedule: 待补偿执行的调度项。
+        """
+        started_at_dt = datetime.now()
+        orchestrator = self._orchestrator
+        await self._run_schedule(orchestrator, schedule, started_at_dt)
 
     def _execute_workflow(
         self,
@@ -1330,7 +1487,7 @@ class CronScheduler:
         schedule = self._find_schedule(schedule_id)
         if schedule is None:
             return False
-        await self._trigger(orchestrator, schedule)
+        await self._run_schedule(orchestrator, schedule, datetime.now())
         return True
 
     def stop(self) -> None:
