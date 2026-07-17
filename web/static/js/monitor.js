@@ -1174,6 +1174,85 @@
   }
 
   // ----------------------------------------------------------------
+  // 调度执行强化（spec 7.2）：今日统计 + 连续失败告警
+  // ----------------------------------------------------------------
+  const FAILURE_ALERT_THRESHOLD = 3;
+
+  async function loadCronStats() {
+    const stats = await fetchJson('/cron_tools/runs/stats');
+    $('cronTodaySuccess').textContent = fmtNum(stats.today_success || 0);
+    $('cronTodayFailure').textContent = fmtNum(stats.today_failure || 0);
+    $('cronTodayTotal').textContent = fmtNum(stats.today_total || 0);
+    const dur = stats.total_duration_seconds;
+    $('cronTotalDuration').textContent = dur != null ? fmtMs(dur * 1000) : '—';
+  }
+
+  async function loadFailureAlerts() {
+    const data = await fetchJson('/cron_tools/runs/recent?limit=100');
+    const runs = (data && data.runs) || [];
+
+    // 按 schedule_id 分组，每组按 started_at 倒序，从最新一次起统计连续失败
+    const groups = new Map();
+    for (const r of runs) {
+      const sid = r.schedule_id || 'unknown';
+      if (!groups.has(sid)) groups.set(sid, []);
+      groups.get(sid).push(r);
+    }
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => {
+        const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+        const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+        return tb - ta;
+      });
+    }
+
+    const alerts = [];
+    for (const [sid, arr] of groups.entries()) {
+      let consec = 0;
+      for (const r of arr) {
+        const ok = r.success === true || r.success === 'true';
+        if (ok) break;
+        consec++;
+      }
+      if (consec >= FAILURE_ALERT_THRESHOLD) {
+        const latest = arr[0];
+        alerts.push({
+          schedule_id: sid,
+          schedule_name: latest.schedule_name || sid,
+          count: consec,
+          last_time: latest.started_at,
+          last_error: latest.error_message || latest.llm_summary || '',
+        });
+      }
+    }
+
+    const statusEl = $('failureAlertsStatus');
+    const cardsEl = $('cronAlertCards');
+
+    if (alerts.length === 0) {
+      statusEl.textContent = '正常';
+      statusEl.className = 'section-status is-healthy';
+      cardsEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">无连续失败告警</div></div>';
+      return;
+    }
+
+    statusEl.textContent = `${alerts.length} 项告警`;
+    statusEl.className = 'section-status is-unhealthy';
+
+    cardsEl.innerHTML = alerts.map((a) => `
+      <div class="cron-alert-card">
+        <div class="alert-icon">⚠</div>
+        <div class="alert-body">
+          <div class="alert-name">${escapeHtml(a.schedule_name)}</div>
+          <div class="alert-count">连续失败 ${a.count} 次</div>
+          <div class="alert-time">最近失败：${fmtTime(a.last_time)}</div>
+          ${a.last_error ? `<div class="alert-detail">${escapeHtml(truncate(a.last_error, 120))}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ----------------------------------------------------------------
   // 轮询主循环
   // ----------------------------------------------------------------
   async function refreshAll() {
@@ -1201,6 +1280,13 @@
       // Phase 2 反馈监控：信号池进度条（独立端点，不阻塞主指标渲染）
       loadSignalPool().catch((e) => {
         console.error('signal pool error:', e);
+      }),
+      // 调度执行强化（spec 7.2）：今日统计 + 连续失败告警
+      loadCronStats().catch((e) => {
+        console.error('cron stats error:', e);
+      }),
+      loadFailureAlerts().catch((e) => {
+        console.error('failure alerts error:', e);
       }),
     ];
 

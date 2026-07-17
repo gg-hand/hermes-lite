@@ -313,6 +313,43 @@
       </div>
     </section>
 
+    <!-- ========== 调度执行强化（7.2）：今日统计 + 连续失败告警 ========== -->
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Cron Stats</div>
+        <h2 class="section-title">今日执行统计</h2>
+      </div>
+      <div class="cron-stats-grid" id="cronStatsGrid">
+        <div class="cron-stat-card cron-stat-success">
+          <div class="cron-stat-value" id="cronTodaySuccess">—</div>
+          <div class="cron-stat-label">成功</div>
+        </div>
+        <div class="cron-stat-card cron-stat-fail">
+          <div class="cron-stat-value" id="cronTodayFailure">—</div>
+          <div class="cron-stat-label">失败</div>
+        </div>
+        <div class="cron-stat-card cron-stat-duration">
+          <div class="cron-stat-value" id="cronTotalDuration">—</div>
+          <div class="cron-stat-label">总耗时</div>
+        </div>
+        <div class="cron-stat-card cron-stat-total">
+          <div class="cron-stat-value" id="cronTodayTotal">—</div>
+          <div class="cron-stat-label">总次数</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="monitor-section">
+      <div class="section-header">
+        <div class="section-label">Failure Alerts</div>
+        <h2 class="section-title">连续失败告警</h2>
+        <span class="section-status" id="failureAlertsStatus">—</span>
+      </div>
+      <div class="cron-alert-cards" id="cronAlertCards">
+        <div class="empty-state"><div class="empty-state-text">加载中...</div></div>
+      </div>
+    </section>
+
     <!-- ========== 终止原因分布 ========== -->
     <section class="monitor-section">
       <div class="section-header">

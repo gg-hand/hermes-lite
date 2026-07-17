@@ -1078,6 +1078,81 @@
   opacity: 0.5;
 }
 
+/* ========== 调度执行强化（7.2）：今日统计 + 连续失败告警 ========== */
+
+.cron-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+}
+@media (max-width: 768px) {
+  .cron-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.cron-stat-card {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-align: center;
+}
+.cron-stat-value {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+.cron-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.cron-stat-success .cron-stat-value { color: var(--success); }
+.cron-stat-fail .cron-stat-value { color: var(--danger, #ff5050); }
+.cron-stat-duration .cron-stat-value { color: var(--accent); }
+.cron-stat-total .cron-stat-value { color: var(--text-primary); }
+
+.cron-alert-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cron-alert-card {
+  background: rgba(255, 80, 80, 0.12);
+  border-left: 4px solid var(--danger, #ff5050);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+}
+.cron-alert-card .alert-icon { font-size: 16px; }
+.cron-alert-card .alert-name {
+  font-weight: var(--weight-semibold);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cron-alert-card .alert-count {
+  font-family: var(--font-mono);
+  color: var(--danger, #ff5050);
+  font-weight: var(--weight-semibold);
+}
+.cron-alert-card .alert-time {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+[data-theme="dark"] .cron-alert-card {
+  background: rgba(200, 60, 60, 0.18);
+}
+
 .signal-pct {
   text-align: right;
   font-family: var(--font-mono);
