@@ -169,6 +169,34 @@ cron:
   # max_concurrency: 并发触发的最大 schedule 数（Phase 3 Task 15 限流用）
   # 超过阈值的触发排队等待，避免 100 schedule 同触发雪崩
   max_concurrency: 10
+  # 调度执行强化（方案 A+）：4 个 hook 层（validate/catchup/retry/notify）
+  # 每层独立开关，配置变更需重启（cron.hooks.* 不参与热重载）
+  hooks:
+    validate:
+      enabled: true
+    catchup:
+      enabled: true
+      default_policy: skip        # skip | execute_once
+    retry:
+      enabled: true
+      max_retries: 3
+      interval_seconds: 300
+      transient_only: true        # true=permanent 错误不重试
+    notify:
+      enabled: true
+      consecutive_failures_threshold: 3   # 连续失败 N 次后自动 disable
+      channels:
+        email:
+          enabled: true
+          smtp_host: ${SMTP_HOST}
+          smtp_port: ${SMTP_PORT}
+          sender_email: ${SMTP_USER}
+          sender_password: ${SMTP_PASSWORD}
+          receiver_email: ${NOTIFY_EMAIL}
+          use_tls: true
+        webhook:
+          enabled: false
+          url: ${WEBHOOK_URL}
 
 # Workflow 编排配置（可选，未配置时使用默认值）
 # 访问 http://127.0.0.1:8000/workflow 可视化编排

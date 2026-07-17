@@ -20,17 +20,39 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
-# ── 邮件配置 ──────────────────────────────────
-SMTP_HOST = "smtp.qq.com"
-SMTP_PORT = 465
-SENDER_EMAIL = "1479408306@qq.com"
-SENDER_PASSWORD = "kgdbpnyletsvfebc"
-RECEIVER_EMAIL = "1479408306@qq.com"
-# ──────────────────────────────────────────────
-
 RSS_URL = "https://www.joyehuang.me/rss.xml"
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_FILE = os.path.join(TOOL_DIR, "snapshot.json")
+
+
+def get_smtp_config() -> dict:
+    """从环境变量读取 SMTP 配置（6.2）。
+
+    缺失时使用默认值（项目记忆约束：API 密钥不硬编码）。
+    环境变量：
+        SMTP_HOST: SMTP 服务器地址，默认 smtp.qq.com
+        SMTP_PORT: SMTP 端口，默认 465
+        SMTP_USER: 发件人邮箱，默认空字符串
+        SMTP_PASSWORD: 发件人授权码，默认空字符串
+        NOTIFY_EMAIL: 收件人邮箱，缺省回退到 SMTP_USER
+    """
+    return {
+        "smtp_host": os.environ.get("SMTP_HOST", "smtp.qq.com"),
+        "smtp_port": int(os.environ.get("SMTP_PORT", "465")),
+        "sender_email": os.environ.get("SMTP_USER", ""),
+        "sender_password": os.environ.get("SMTP_PASSWORD", ""),
+        "receiver_email": os.environ.get("NOTIFY_EMAIL", os.environ.get("SMTP_USER", "")),
+        "use_tls": True,
+    }
+
+
+# 模块加载时一次性读取配置（保持向后兼容 SMTP_HOST 等模块级常量）
+SMTP_CONFIG = get_smtp_config()
+SMTP_HOST = SMTP_CONFIG["smtp_host"]
+SMTP_PORT = SMTP_CONFIG["smtp_port"]
+SENDER_EMAIL = SMTP_CONFIG["sender_email"]
+SENDER_PASSWORD = SMTP_CONFIG["sender_password"]
+RECEIVER_EMAIL = SMTP_CONFIG["receiver_email"]
 
 
 def fetch_rss() -> list[dict]:

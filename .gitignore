@@ -3,7 +3,7 @@
 # 本地覆盖配置放 config.yaml.bak（自动忽略）
 config.yaml.bak
 .env
-.env.example
+# .env.example 仅含占位符模板，需提交以便用户参考
 
 # ── 运行时数据（数据库、日志、向量库、会话历史） ──
 data/
