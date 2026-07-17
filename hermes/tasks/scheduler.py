@@ -419,6 +419,19 @@ class CronScheduler:
             orchestrator: 触发时调用的编排器，需提供 ``chat(session_id,
                 user_input)`` 同步方法。
         """
+        # Task 12: 启动时扫描过期调度项，按 catch_up_policy 处理补偿
+        try:
+            catchup_hook = getattr(self.hooks, "hooks", {}).get("catchup")
+            if catchup_hook is not None:
+                compensated = await catchup_hook.scan_and_compensate(self)
+                if compensated:
+                    logger.info(
+                        "启动补偿完成，已执行 %d 个过期调度: %s",
+                        len(compensated), compensated,
+                    )
+        except Exception:
+            logger.warning("启动补偿扫描异常，已跳过", exc_info=True)
+
         while not self._stop_event.is_set():
             now = datetime.now()
             current_minute_key = now.strftime("%Y-%m-%d %H:%M")
