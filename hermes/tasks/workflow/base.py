@@ -124,6 +124,13 @@ class WorkflowContext:
     error_channel: List[str] = field(default_factory=list)
     step_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
+    # === Q2 新增：hook 间传递的状态字段（5 个，全部带默认值，向后兼容）===
+    schedule: Optional[Any] = None          # 调度项引用（hooks 需要）
+    retry_count: int = 0                     # 当前重试次数
+    retry_max: int = 0                       # 最大重试次数（HookRegistry.get_retry_max() 写入）
+    last_error: Optional[Exception] = None   # 最近一次异常
+    validation_errors: list = field(default_factory=list)  # 校验错误列表
+
     def get_env_value(self, key: str, default: str = "") -> str:
         """获取环境变量值（兼容 ``get_env=None`` 场景）。"""
         if self.get_env is not None:
