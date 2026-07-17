@@ -253,6 +253,18 @@ class CronScheduler:
     调度器以避免竞态。
     """
 
+    #: 3.5 决策：从 orchestrator 集中注入到 WorkflowContext 的组件清单。
+    #: 新增组件时只需在此处加一行，_build_workflow_context 的两个工厂路径
+    #: （默认工厂 + 自定义工厂）都通过 _collect_components 自动覆盖，
+    #: 消除手动 setattr 遗漏（治本脆弱点 2）。
+    _INJECT_COMPONENTS = (
+        "tool_registry",
+        "cron_tool_registry",
+        "policy_engine",
+        "audit_logger",
+        "skill_loader",
+    )
+
     def __init__(
         self,
         schedules_file: str = "data/schedules.yaml",
@@ -1067,6 +1079,24 @@ class CronScheduler:
         )
         result.step_traces.append(trace)
 
+    def _collect_components(self, orchestrator) -> Dict[str, Any]:
+        """3.5: 从 orchestrator 集中收集所有组件，消除手动 setattr 遗漏。
+
+        新增组件时只需在 :attr:`_INJECT_COMPONENTS` 加一行，``_build_workflow_context``
+        的两个工厂路径（默认工厂 + 自定义工厂）都通过此方法自动覆盖。
+
+        参数:
+            orchestrator: 编排器实例。
+
+        返回:
+            ``{attr_name: value}`` dict，``_INJECT_COMPONENTS`` 中每个属性对应一项，
+            orchestrator 缺少该属性时值为 ``None``（不抛 ``AttributeError``）。
+        """
+        return {
+            attr: getattr(orchestrator, attr, None)
+            for attr in self._INJECT_COMPONENTS
+        }
+
     def _build_workflow_context(
         self,
         orchestrator: Any,
@@ -1082,10 +1112,10 @@ class CronScheduler:
         从 ``orchestrator`` 读取 ``llm_client`` / ``chroma_store`` /
         ``session_logger`` 等依赖。
 
-        Task 10.1：在现有 setattr 之后新增 ``run_id`` / ``skill_loader`` /
-        ``tool_registry`` / ``orchestrator`` / ``policy_engine`` /
-        ``audit_logger`` / ``session_id`` 注入，供 StepExecutor 的
-        PolicyEngine.check 与 audit log_tool_call 透传。
+        3.5 改造：两个工厂路径都通过 :meth:`_collect_components` 集中注入
+        ``_INJECT_COMPONENTS`` 列出的组件，消除散落 setattr 的遗漏风险。
+        保留 ``run_id`` / ``orchestrator`` / ``session_logger`` / ``react_loop``
+        / ``session_id`` 的单独 setattr（来源不同，不在 ``_INJECT_COMPONENTS`` 中）。
 
         参数:
             orchestrator: 编排器实例。
@@ -1101,31 +1131,15 @@ class CronScheduler:
         if self.workflow_context_factory is not None:
             try:
                 ctx = self.workflow_context_factory(schedule, last_run_dt)
-                # Task 10.1：factory 路径也注入 run_id 等字段（若 factory 未自填）
-                if ctx is not None and run_id:
-                    setattr(ctx, "run_id", run_id)
                 if ctx is not None:
-                    setattr(
-                        ctx,
-                        "skill_loader",
-                        getattr(orchestrator, "skill_loader", None),
-                    )
-                    setattr(
-                        ctx,
-                        "tool_registry",
-                        getattr(orchestrator, "tool_registry", None),
-                    )
+                    # 3.5: 集中注入 _INJECT_COMPONENTS 列出的组件
+                    components = self._collect_components(orchestrator)
+                    for attr, value in components.items():
+                        setattr(ctx, attr, value)
+                    # 保留单独 setattr（来源不同）
+                    if run_id:
+                        setattr(ctx, "run_id", run_id)
                     setattr(ctx, "orchestrator", orchestrator)
-                    setattr(
-                        ctx,
-                        "policy_engine",
-                        getattr(orchestrator, "policy_engine", None),
-                    )
-                    setattr(
-                        ctx,
-                        "audit_logger",
-                        getattr(orchestrator, "audit_logger", None),
-                    )
                     if session_id:
                         setattr(ctx, "session_id", session_id)
                 return ctx
@@ -1157,14 +1171,13 @@ class CronScheduler:
         # 通过 setattr 注入（dataclass 不强约束这些字段）
         setattr(ctx, "session_logger", session_logger)
         setattr(ctx, "react_loop", react_loop)
-        # Task 10.1：注入 run_id / skill_loader / tool_registry / orchestrator /
-        # policy_engine / audit_logger / session_id，供 StepExecutor 透传
+        # 3.5: 集中注入 _INJECT_COMPONENTS 列出的组件（替代散落 setattr）
+        components = self._collect_components(orchestrator)
+        for attr, value in components.items():
+            setattr(ctx, attr, value)
+        # 保留单独 setattr（来源不同）
         setattr(ctx, "run_id", run_id)
-        setattr(ctx, "skill_loader", getattr(orchestrator, "skill_loader", None))
-        setattr(ctx, "tool_registry", getattr(orchestrator, "tool_registry", None))
         setattr(ctx, "orchestrator", orchestrator)
-        setattr(ctx, "policy_engine", getattr(orchestrator, "policy_engine", None))
-        setattr(ctx, "audit_logger", getattr(orchestrator, "audit_logger", None))
         if session_id:
             setattr(ctx, "session_id", session_id)
         return ctx

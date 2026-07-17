@@ -1,4 +1,4 @@
-﻿"""CronExpr 与 CronScheduler 单元测试（Phase 6 Task 9）。
+"""CronExpr 与 CronScheduler 单元测试（Phase 6 Task 9）。
 
 验证：
 - ``src/tasks/cron_expr.py`` 的 CronExpr 类：通配符/具体值/步长/范围/列表/
@@ -715,6 +715,55 @@ class TestTriggerClearsHistory(unittest.TestCase):
         self.assertTrue(all(s == f"cron:{sched_id}" for s in history_buf.cleared_sessions))
         # chat 也被调用 3 次
         self.assertEqual(len(orch.calls), 3)
+
+
+# ===========================================================================
+# 3.5 _collect_components 集中注入
+# ===========================================================================
+
+
+class TestCollectComponents(unittest.TestCase):
+    """3.5: _collect_components 集中注入，消除手动 setattr 遗漏。"""
+
+    def test_collect_components_returns_all_injected_attrs(self):
+        """_collect_components 返回 _INJECT_COMPONENTS 列出的所有属性。"""
+        from unittest.mock import MagicMock
+
+        scheduler = CronScheduler.__new__(CronScheduler)
+        mock_orch = MagicMock()
+        mock_orch.tool_registry = "tr"
+        mock_orch.cron_tool_registry = "ctr"
+        mock_orch.policy_engine = "pe"
+        mock_orch.audit_logger = "al"
+        mock_orch.skill_loader = "sl"
+
+        components = scheduler._collect_components(mock_orch)
+        self.assertEqual(components["tool_registry"], "tr")
+        self.assertEqual(components["cron_tool_registry"], "ctr")
+        self.assertEqual(components["policy_engine"], "pe")
+        self.assertEqual(components["audit_logger"], "al")
+        self.assertEqual(components["skill_loader"], "sl")
+
+    def test_collect_components_handles_missing_attrs(self):
+        """orchestrator 缺少属性时返回 None，不抛 AttributeError。"""
+        from unittest.mock import MagicMock
+
+        scheduler = CronScheduler.__new__(CronScheduler)
+        mock_orch = MagicMock(spec=[])  # 无任何属性
+
+        components = scheduler._collect_components(mock_orch)
+        self.assertIsNone(components["tool_registry"])
+        self.assertIsNone(components["cron_tool_registry"])
+
+    def test_INJECT_COMPONENTS_constant_exists(self):
+        """_INJECT_COMPONENTS 类常量存在且包含 5 个组件。"""
+        self.assertTrue(hasattr(CronScheduler, "_INJECT_COMPONENTS"))
+        components = CronScheduler._INJECT_COMPONENTS
+        self.assertIn("tool_registry", components)
+        self.assertIn("cron_tool_registry", components)
+        self.assertIn("policy_engine", components)
+        self.assertIn("audit_logger", components)
+        self.assertIn("skill_loader", components)
 
 
 if __name__ == "__main__":
