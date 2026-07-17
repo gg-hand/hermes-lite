@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class ErrorStage(Enum):
@@ -49,6 +49,10 @@ _CATEGORY_ZH = {
     # protocol
     "orphan_tool_result": "孤立工具结果",
     "llm_failure": "LLM 调用失败",
+    # hook 层（9.2）
+    "hook_abort": "校验终止",
+    "validation_error": "校验失败",
+    "workflow_execution_error": "工作流执行失败",
     # 旧值兼容（ErrorClassifier 历史 classification）
     "unknown": "未知",
     "success": "成功",
@@ -246,6 +250,70 @@ class LLMFailureError(ToolError):
 
     stage: ErrorStage = ErrorStage.PROTOCOL
     category: str = "llm_failure"
+
+
+# =============================================================================
+# hook 层（3 个，9.2）— 校验终止 / spec 校验失败 / workflow 执行失败
+# =============================================================================
+
+
+@dataclass(kw_only=True)
+class HookAbortError(ToolError):
+    """校验层主动终止执行（9.2）。
+
+    ValidateHook 等校验层 hook 在检测到致命问题时抛出，携带 ``errors`` 列表
+    供上层日志与通知模板读取。
+    """
+
+    errors: list = field(default_factory=list)
+    tool_name: str = "hook"
+    category: str = "hook_abort"
+    stage: ErrorStage = ErrorStage.PRE_EXECUTION
+    suggestion: str = "检查校验错误列表"
+
+
+@dataclass(kw_only=True)
+class ValidationError(ToolError):
+    """workflow spec 校验失败（9.2）。
+
+    ``validate_workflow_spec`` 在 spec 结构非法时抛出，``reason`` 由
+    ``errors`` 列表 join 生成（无需显式传入）。
+    """
+
+    errors: list = field(default_factory=list)
+    tool_name: str = "validate_hook"
+    category: str = "validation_error"
+    stage: ErrorStage = ErrorStage.PRE_EXECUTION
+    suggestion: str = "修正 workflow spec 配置"
+    reason: str = ""  # __post_init__ 从 errors 计算
+
+    def __post_init__(self) -> None:
+        if not self.reason and self.errors:
+            self.reason = "; ".join(self.errors)
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class WorkflowExecutionError(ToolError):
+    """workflow 执行失败（Q3 决策 D，9.2）。
+
+    WorkflowEngine.execute 末尾 ``if not result.success`` 时抛出，
+    携带完整 WorkflowResult（含 step_traces），供 RetryHook 读取失败 step 的
+    error_class 判断 permanent/transient。
+    """
+
+    result: Any = None
+    tool_name: str = "workflow_engine"
+    category: str = "workflow_execution_error"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "检查 step_traces 中的失败 step"
+    reason: str = ""  # __post_init__ 从 result.errors 计算
+
+    def __post_init__(self) -> None:
+        if not self.reason and self.result is not None:
+            errors = getattr(self.result, "errors", None) or []
+            self.reason = "; ".join(errors) if errors else "workflow 执行失败"
+        super().__post_init__()
 
 
 # =============================================================================
