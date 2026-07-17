@@ -463,6 +463,49 @@ def validate_workflow_dict(
     return validator.validate(spec, tool_registry=tool_registry)
 
 
+def validate_workflow_spec(
+    spec: WorkflowSpec,
+    cron_tool_registry: Any = None,
+    tool_registry: Any = None,
+) -> List[str]:
+    """执行前校验 workflow spec（4.1）。
+
+    校验项：
+    - workflow.name 非空
+    - step.type 属于 ALLOWED_STEP_TYPES（5 种）
+    - tool 类型 step 的 config.tool 在 cron_tool_registry 或 tool_registry 中注册
+
+    返回:
+        错误信息列表（空列表表示通过）。
+    """
+    errors: List[str] = []
+    if not spec.name:
+        errors.append("workflow.name 为空")
+
+    allowed_step_types = ("deterministic", "llm", "tool", "react", "subworkflow")
+    for step in spec.steps:
+        if step.type not in allowed_step_types:
+            errors.append(
+                f"step '{step.id}' 的 type '{step.type}' 不合法，允许: {allowed_step_types}"
+            )
+            continue
+        if step.type == "tool":
+            tool_name = step.config.get("tool", "") if step.config else ""
+            if not tool_name:
+                errors.append(f"step '{step.id}' 未配置 config.tool")
+                continue
+            found = False
+            if cron_tool_registry and cron_tool_registry.has_tool(tool_name):
+                found = True
+            elif tool_registry and tool_registry.has_tool(tool_name):
+                found = True
+            if not found:
+                errors.append(
+                    f"step '{step.id}' 引用的工具 '{tool_name}' 未在任何 registry 注册"
+                )
+    return errors
+
+
 __all__ = [
     "HARD_DISABLED_TOOLS",
     "WRITE_OPERATION_TOOLS",
@@ -470,4 +513,5 @@ __all__ = [
     "ValidationResult",
     "WorkflowValidator",
     "validate_workflow_dict",
+    "validate_workflow_spec",
 ]
