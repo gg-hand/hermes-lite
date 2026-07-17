@@ -1,4 +1,4 @@
-﻿"""RunSummary + RunsJsonlStore 单元测试（Phase 8 Task 2.8 + 2.9 + 2.13）。
+"""RunSummary + RunsJsonlStore 单元测试（Phase 8 Task 2.8 + 2.9 + 2.13）。
 
 覆盖：
 - ``RunSummary`` dataclass 结构、``to_dict`` / ``from_dict`` 序列化往返
@@ -529,6 +529,77 @@ class TestRunSummaryCacheConstraints(unittest.TestCase):
         self.assertEqual(restored.outputs, original.outputs)
         self.assertEqual(restored.errors, original.errors)
         self.assertEqual(restored.llm_summary, original.llm_summary)
+
+
+class TestRunSummaryNewFields(unittest.TestCase):
+    """Q11/Q8: RunSummary 新增 retry_count / notified / notification_channels。"""
+
+    def test_retry_count_defaults_zero(self):
+        from hermes.tasks.run_summary import RunSummary
+        rs = RunSummary(schedule_id="s1", run_id="r1")
+        self.assertEqual(rs.retry_count, 0)
+
+    def test_notified_defaults_false(self):
+        from hermes.tasks.run_summary import RunSummary
+        rs = RunSummary(schedule_id="s1", run_id="r1")
+        self.assertFalse(rs.notified)
+
+    def test_notification_channels_defaults_empty(self):
+        from hermes.tasks.run_summary import RunSummary
+        rs = RunSummary(schedule_id="s1", run_id="r1")
+        self.assertEqual(rs.notification_channels, [])
+
+    def test_new_fields_roundtrip(self):
+        from hermes.tasks.run_summary import RunSummary
+        rs = RunSummary(
+            schedule_id="s1", run_id="r1",
+            retry_count=3, notified=True, notification_channels=["email", "webhook"],
+        )
+        d = rs.to_dict()
+        self.assertEqual(d["retry_count"], 3)
+        self.assertTrue(d["notified"])
+        self.assertEqual(d["notification_channels"], ["email", "webhook"])
+        restored = RunSummary.from_dict(d)
+        self.assertEqual(restored.retry_count, 3)
+        self.assertTrue(restored.notified)
+        self.assertEqual(restored.notification_channels, ["email", "webhook"])
+
+    def test_from_dict_missing_new_fields_uses_defaults(self):
+        """旧记录无新字段时使用默认值（向后兼容）。"""
+        from hermes.tasks.run_summary import RunSummary
+        d = {"schedule_id": "s1", "run_id": "r1"}
+        rs = RunSummary.from_dict(d)
+        self.assertEqual(rs.retry_count, 0)
+        self.assertFalse(rs.notified)
+        self.assertEqual(rs.notification_channels, [])
+
+
+class TestRunsJsonlStoreReadByRunId(unittest.TestCase):
+    """Q13: RunsJsonlStore.read_by_run_id 查询单次执行记录。"""
+
+    def test_read_by_run_id_returns_dict_when_found(self):
+        from hermes.tasks.run_summary import RunSummary, RunsJsonlStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunsJsonlStore(base_dir=tmp)
+            rs = RunSummary(
+                schedule_id="s1", run_id="abc123def456",
+                started_at="2026-07-17T09:00:00",
+                finished_at="2026-07-17T09:01:00",
+            )
+            store.append("s1", rs)
+            result = store.read_by_run_id("s1", "abc123def456")
+            self.assertIsNotNone(result)
+            self.assertEqual(result["run_id"], "abc123def456")
+            self.assertEqual(result["schedule_id"], "s1")
+
+    def test_read_by_run_id_returns_none_when_not_found(self):
+        from hermes.tasks.run_summary import RunsJsonlStore
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunsJsonlStore(base_dir=tmp)
+            result = store.read_by_run_id("s1", "nonexistent")
+            self.assertIsNone(result)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-﻿"""Task 3.4: step_trace.py 数据模型测试。
+"""Task 3.4: step_trace.py 数据模型测试。
 
 覆盖：
 - 序列化 to_dict / from_dict roundtrip
@@ -127,6 +127,30 @@ class TestStepTraceLifecycle(unittest.TestCase):
         self.assertTrue(t.is_terminal())
         t.status = "failed"
         self.assertTrue(t.is_terminal())
+
+
+class TestStepTraceRetryReason(unittest.TestCase):
+    """Q6: StepTrace 新增 retry_reason 字段。"""
+
+    def test_retry_reason_defaults_empty(self):
+        from hermes.tasks.workflow.step_trace import StepTrace
+        trace = StepTrace(step_id="s1")
+        self.assertEqual(trace.retry_reason, "")
+
+    def test_retry_reason_roundtrip(self):
+        from hermes.tasks.workflow.step_trace import StepTrace
+        trace = StepTrace(step_id="s1", retry_reason="已达最大重试次数 3")
+        d = trace.to_dict()
+        self.assertEqual(d["retry_reason"], "已达最大重试次数 3")
+        restored = StepTrace.from_dict(d)
+        self.assertEqual(restored.retry_reason, "已达最大重试次数 3")
+
+    def test_from_dict_missing_retry_reason_defaults_empty(self):
+        """旧记录无 retry_reason 字段时默认空串（向后兼容）。"""
+        from hermes.tasks.workflow.step_trace import StepTrace
+        d = {"step_id": "s1"}  # 无 retry_reason
+        trace = StepTrace.from_dict(d)
+        self.assertEqual(trace.retry_reason, "")
 
 
 if __name__ == "__main__":

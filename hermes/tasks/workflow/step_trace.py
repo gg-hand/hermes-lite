@@ -71,6 +71,8 @@ class StepTrace:
     outputs: Dict[str, Any] = field(default_factory=dict)
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     files: List[Dict[str, Any]] = field(default_factory=list)
+    # === Q6 新增 ===
+    retry_reason: str = ""  # 重试原因（空串=未重试）
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "StepTrace":
@@ -94,6 +96,7 @@ class StepTrace:
             outputs=dict(data.get("outputs") or {}),
             tool_calls=list(data.get("tool_calls") or []),
             files=list(data.get("files") or []),
+            retry_reason=str(data.get("retry_reason", "")),  # Q6 新增
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -112,6 +115,7 @@ class StepTrace:
             "outputs": dict(self.outputs),
             "tool_calls": list(self.tool_calls),
             "files": list(self.files),
+            "retry_reason": self.retry_reason,  # Q6 新增
         }
 
     def mark_started(self, started_at: Optional[datetime] = None) -> None:

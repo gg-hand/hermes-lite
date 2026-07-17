@@ -67,5 +67,45 @@ class TestAppendRunSummaryFailureAlert(unittest.TestCase):
             mock_logger.error.assert_called()
 
 
+class TestAppendRunSummaryRetryCount(unittest.TestCase):
+    """Q11: _append_run_summary 接受 retry_count 并写入 RunSummary。"""
+
+    def _make_schedule(self):
+        mock_schedule = MagicMock()
+        mock_schedule.id = "test_sched"
+        mock_schedule.name = "test_sched"
+        mock_schedule.generate_llm_summary = False
+        return mock_schedule
+
+    def test_retry_count_passed_to_run_summary(self):
+        """retry_count 参数透传到 RunSummary.retry_count。"""
+        scheduler = CronScheduler.__new__(CronScheduler)
+        scheduler.runs_store = MagicMock()
+        schedule = self._make_schedule()
+
+        scheduler._append_run_summary(
+            schedule, "", "", 0.0, True, "", "", [], [], [],
+            retry_count=2,
+        )
+
+        # 验证 runs_store.append 收到的 RunSummary.retry_count == 2
+        scheduler.runs_store.append.assert_called_once()
+        summary = scheduler.runs_store.append.call_args[0][1]
+        self.assertEqual(summary.retry_count, 2)
+
+    def test_retry_count_defaults_zero_when_omitted(self):
+        """不传 retry_count 时默认 0（向后兼容）。"""
+        scheduler = CronScheduler.__new__(CronScheduler)
+        scheduler.runs_store = MagicMock()
+        schedule = self._make_schedule()
+
+        scheduler._append_run_summary(
+            schedule, "", "", 0.0, True, "", "", [], [], [],
+        )
+
+        summary = scheduler.runs_store.append.call_args[0][1]
+        self.assertEqual(summary.retry_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

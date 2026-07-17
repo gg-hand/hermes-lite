@@ -1396,6 +1396,7 @@ class CronScheduler:
         step_traces: Optional[List[Dict[str, Any]]] = None,
         workflow_name: Optional[str] = None,
         run_id: Optional[str] = None,
+        retry_count: int = 0,
     ) -> None:
         """生成 RunSummary 并 append 到 runs.jsonl（SubTask 2.9）。
 
@@ -1407,6 +1408,9 @@ class CronScheduler:
         Task 10.4：新增 ``step_traces`` / ``workflow_name`` / ``run_id`` 参数，
         从 :class:`WorkflowResult` 透传到 :class:`RunSummary`，确保
         ``runs.jsonl`` 每条 run 含完整 step 执行轨迹。
+
+        Task 13 (Q11)：新增 ``retry_count`` 参数，从 ctx.retry_count 透传到
+        RunSummary.retry_count，供监控面板展示重试次数。
 
         参数:
             schedule: 调度项。
@@ -1425,6 +1429,7 @@ class CronScheduler:
                 ``schedule.name``。
             run_id: 本次执行批次 ID（Task 10）。``None`` 时由 RunSummary
                 默认工厂自动生成（保持向后兼容）。
+            retry_count: 重试次数（Task 13 Q11）。``0`` 表示未重试。
         """
         # 治本脆弱点 6：持久化失败时记 error 告警，不静默 return
         if RunSummary is None:
@@ -1452,6 +1457,7 @@ class CronScheduler:
             errors=errors,
             step_traces=list(step_traces or []),
             workflow_name=workflow_name or schedule.name,
+            retry_count=retry_count,  # Q11 Task 13
         )
         if run_id:
             summary_kwargs["run_id"] = run_id

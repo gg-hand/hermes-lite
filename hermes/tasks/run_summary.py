@@ -78,6 +78,10 @@ class RunSummary:
     llm_summary: str = ""
     step_traces: List[Dict[str, Any]] = field(default_factory=list)
     workflow_name: Optional[str] = None
+    # === Q11/Q8 新增 ===
+    retry_count: int = 0
+    notified: bool = False
+    notification_channels: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """转为 dict（用于 JSON 序列化）。"""
@@ -106,6 +110,10 @@ class RunSummary:
             # Task 8.3: 新字段容错（向后兼容旧记录）
             step_traces=data.get("step_traces", []) or [],
             workflow_name=data.get("workflow_name", None),
+            # Q11/Q8 新字段容错（向后兼容旧记录）
+            retry_count=int(data.get("retry_count", 0)),
+            notified=bool(data.get("notified", False)),
+            notification_channels=list(data.get("notification_channels") or []),
         )
 
     def truncate_assistant_response(self) -> None:
@@ -268,6 +276,26 @@ class RunsJsonlStore:
         """
         recent = self.read_recent(schedule_id, n=1)
         return recent[0] if recent else None
+
+    def read_by_run_id(
+        self, schedule_id: str, run_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Q13: 按 run_id 查询单次执行记录，返回 dict（便于 API 序列化）。
+
+        从最近 50 条记录中查找（Q13 决策），未找到返回 None。
+
+        参数:
+            schedule_id: 调度项 ID。
+            run_id: 待查询的执行 ID。
+
+        返回:
+            匹配记录的 dict（RunSummary.to_dict()），未找到返回 None。
+        """
+        recent = self.read_recent(schedule_id, n=50)
+        for record in recent:
+            if record.run_id == run_id:
+                return record.to_dict()
+        return None
 
     def read_recent_all(
         self, schedules: List[Dict[str, Any]], n: int = 20
