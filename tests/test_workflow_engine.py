@@ -1,4 +1,4 @@
-﻿"""WorkflowEngine 单元测试（Task 5.5）。
+"""WorkflowEngine 单元测试（Task 5.5）。
 
 覆盖 16+ 用例：
 1. 线性执行 / 多步串联
@@ -260,14 +260,19 @@ class TestWorkflowEngineConditionSkip(unittest.TestCase):
 
 
 class TestWorkflowEngineRetry(unittest.TestCase):
-    """3. retry 成功 / 4. retry 耗尽 fallback / 17. NotImplementedError PERMANENT 不 retry。"""
+    """Q1 决策：step 级 RetryBudget 已移除，重试由 RetryHook 接管整次重跑。
 
-    def test_retry_succeeds_on_second_attempt(self):
-        """首次失败（transient），retry 后第二次成功。"""
+    旧 action="retry" 在 engine 内等效于 "abort"。
+    """
+
+    def test_retry_action_now_equivalent_to_abort(self):
+        """旧 spec 的 action="retry" 等效于 abort：失败即终止，不重试。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         failing_then_success = _FailingExecutor(
             error_class="transient",
             error_message="network error",
-            success_at=2,  # 第 2 次成功
+            success_at=2,  # 第 2 次会成功，但 Q1 后 engine 不重试
         )
         engine = WorkflowEngine(custom_executors={"llm": failing_then_success})
         spec = _make_simple_spec([
@@ -281,17 +286,16 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
-            result = engine.execute(spec, ctx)
+        with self.assertRaises(WorkflowExecutionError):
+            engine.execute(spec, ctx)
 
-        self.assertTrue(result.success)
-        self.assertEqual(failing_then_success.call_count, 2)
-        traces = getattr(result, "step_traces", None) or getattr(result, "step_traces", [])
-        self.assertEqual(traces[0].attempts, 2)
-        self.assertEqual(traces[0].status, "success")
+        # Q1 决策：仅调用 1 次（无 step 级重试）
+        self.assertEqual(failing_then_success.call_count, 1)
 
-    def test_retry_exhausted_fallback(self):
-        """retry 耗尽后执行 fallback。"""
+    def test_fallback_action_still_works(self):
+        """fallback 策略仍生效：失败后执行 fallback step。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         always_fail = _FailingExecutor(
             error_class="transient",
             error_message="persistent failure",
@@ -305,8 +309,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
             StepSpec(
                 id="s1", type="llm", config={"prompt": "x"},
                 on_failure=OnFailure(
-                    action="retry",
-                    retry=RetryPolicy(max_attempts=2, backoff_strategy="fixed", base_delay_ms=1),
+                    action="fallback",
                     fallback_type="tool",
                     fallback_config={"tool": "stub", "input": {}},
                 ),
@@ -314,17 +317,18 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
-            result = engine.execute(spec, ctx)
-
-        # retry 2 次失败 → fallback
-        self.assertEqual(always_fail.call_count, 2)
+        # fallback 成功，workflow 成功，不抛
+        result = engine.execute(spec, ctx)
+        self.assertEqual(always_fail.call_count, 1)
         self.assertEqual(fallback_executor.call_count, 1)
-        traces = getattr(result, "step_trace", None) or getattr(result, "step_traces", [])
+        self.assertTrue(result.success)
+        traces = getattr(result, "step_traces", [])
         self.assertEqual(traces[0].status, "fallback")
 
     def test_notimplementederror_not_retried(self):
         """NotImplementedError（subworkflow P2 stub）不重试，直接 abort。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         # 直接用真实的 SubworkflowExecutor
         engine = WorkflowEngine()  # 默认 executors
         spec = _make_simple_spec([
@@ -339,8 +343,10 @@ class TestWorkflowEngineRetry(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
-            result = engine.execute(spec, ctx)
+        # Q1 决策：失败时 raise WorkflowExecutionError
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
 
         # s1 失败（NotImplementedError → notimplemented），不重试
         # abort 终止 workflow，s2 未执行
@@ -356,6 +362,8 @@ class TestWorkflowEngineAbort(unittest.TestCase):
 
     def test_abort_terminates_workflow(self):
         """on_failure.action=abort 时失败即终止后续 step。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         always_fail = _FailingExecutor(error_class="permanent", error_message="fatal")
         executor_calls: List[str] = []
 
@@ -377,7 +385,10 @@ class TestWorkflowEngineAbort(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        result = engine.execute(spec, ctx)
+        # Q1 决策：失败时 raise WorkflowExecutionError
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
 
         self.assertFalse(result.success)
         # s2 未执行（abort 终止）
@@ -388,7 +399,12 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
     """6. 错误分类映射。"""
 
     def test_permanent_error_does_not_retry(self):
-        """PERMANENT 错误不触发 retry（即使 action=retry）。"""
+        """PERMANENT 错误不触发 retry（即使旧 spec 配 action=retry）。
+
+        Q1 决策：step 级 RetryBudget 已移除，action=retry 等效于 abort。
+        """
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         permanent_fail = _FailingExecutor(
             error_class="permanent",
             error_message="not found",
@@ -405,15 +421,17 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
-            result = engine.execute(spec, ctx)
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
 
-        # 仅调用 1 次（不重试）
+        # 仅调用 1 次（Q1 移除 step 级重试）
         self.assertEqual(permanent_fail.call_count, 1)
-        self.assertFalse(result.success)
+        self.assertFalse(cm.exception.result.success)
 
-    def test_transient_error_triggers_retry(self):
-        """TRANSIENT 错误触发 retry。"""
+    def test_transient_error_does_not_retry(self):
+        """Q1 决策：TRANSIENT 错误也不在 step 级重试（整次重跑由 RetryHook 接管）。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         transient_fail = _FailingExecutor(
             error_class="transient",
             error_message="network error",
@@ -430,11 +448,11 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
+        with self.assertRaises(WorkflowExecutionError):
             engine.execute(spec, ctx)
 
-        # 重试 3 次（max_attempts）
-        self.assertEqual(transient_fail.call_count, 3)
+        # Q1 决策：仅调用 1 次（step 级不重试）
+        self.assertEqual(transient_fail.call_count, 1)
 
 
 class TestWorkflowEngineTopoSort(unittest.TestCase):
@@ -473,7 +491,9 @@ class TestWorkflowEngineTopoSort(unittest.TestCase):
         self.assertGreater(execution_order.index("s4"), execution_order.index("s3"))
 
     def test_cycle_detection_raises(self):
-        """depends_on 含环时抛 WorkflowCycleError。"""
+        """depends_on 含环时 raise WorkflowExecutionError（含环信息）。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         engine = WorkflowEngine()
         spec = _make_simple_spec([
             StepSpec(id="s1", type="llm", config={"prompt": "x"},
@@ -483,13 +503,17 @@ class TestWorkflowEngineTopoSort(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        # execute 内部捕获 WorkflowCycleError 并写入 errors
-        result = engine.execute(spec, ctx)
+        # Q1 决策：失败时 raise WorkflowExecutionError
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
         self.assertFalse(result.success)
         self.assertTrue(any("环" in e for e in result.errors))
 
     def test_depends_on_nonexistent_step_raises(self):
-        """depends_on 引用不存在的 step 时报错。"""
+        """depends_on 引用不存在的 step 时 raise WorkflowExecutionError。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
         engine = WorkflowEngine()
         spec = _make_simple_spec([
             StepSpec(id="s1", type="llm", config={"prompt": "x"},
@@ -497,7 +521,9 @@ class TestWorkflowEngineTopoSort(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        result = engine.execute(spec, ctx)
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
         self.assertFalse(result.success)
         self.assertTrue(any("nonexistent" in e for e in result.errors))
 
@@ -522,8 +548,7 @@ class TestWorkflowEngineLLMFallbackChain(unittest.TestCase):
             StepSpec(
                 id="s1", type="llm", config={"prompt": "x"},
                 on_failure=OnFailure(
-                    action="retry",
-                    retry=RetryPolicy(max_attempts=2, base_delay_ms=1),
+                    action="fallback",  # Q1：直接 fallback（不再 retry）
                     fallback_type="tool",
                     fallback_config={"tool": "stub", "input": {}},
                 ),
@@ -531,11 +556,11 @@ class TestWorkflowEngineLLMFallbackChain(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        with patch("hermes.tasks.workflow.retry.time.sleep"):
-            result = engine.execute(spec, ctx)
+        # Q1 决策：fallback 成功 → workflow 成功，不抛
+        result = engine.execute(spec, ctx)
 
-        # primary 重试 2 次失败 → fallback 调用 1 次
-        self.assertEqual(primary.call_count, 2)
+        # primary 调用 1 次（无 step 级 retry） → fallback 调用 1 次
+        self.assertEqual(primary.call_count, 1)
         self.assertEqual(fallback.call_count, 1)
         traces = getattr(result, "step_traces", [])
         self.assertEqual(traces[0].status, "fallback")
@@ -765,8 +790,11 @@ class TestWorkflowEngineEmptyWorkflowSpec(unittest.TestCase):
         spec = WorkflowSpec(name="empty")
         ctx = _make_context()
 
-        result = engine.execute(spec, ctx)
-
+        # Q1 决策：失败时 raise WorkflowExecutionError
+        from hermes.agent.tool_error import WorkflowExecutionError
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
         self.assertFalse(result.success)
         self.assertTrue(any("无 template 也无 steps" in e for e in result.errors))
 
@@ -781,12 +809,77 @@ class TestWorkflowEngineUnknownStepType(unittest.TestCase):
         ])
         ctx = _make_context()
 
-        result = engine.execute(spec, ctx)
-
+        # Q1 决策：失败时 raise WorkflowExecutionError
+        from hermes.agent.tool_error import WorkflowExecutionError
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        result = cm.exception.result
         self.assertFalse(result.success)
         traces = getattr(result, "step_traces", [])
         self.assertEqual(traces[0].status, "failed")
         self.assertEqual(traces[0].error_class, "permanent")
+
+
+class TestWorkflowEngineNoRetryBudget(unittest.TestCase):
+    """Q1 决策 C：移除 WorkflowEngine 内的 RetryBudget。
+
+    失败 workflow 抛 WorkflowExecutionError（由 RetryHook 接管整次重跑）。
+    """
+
+    def test_failed_workflow_raises_workflow_execution_error(self):
+        """workflow 失败时抛 WorkflowExecutionError，携带完整 result。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
+        always_fail = _FailingExecutor(
+            error_class="transient",
+            error_message="stub failure",
+        )
+        engine = WorkflowEngine(custom_executors={"llm": always_fail})
+        spec = _make_simple_spec([
+            StepSpec(
+                id="s1", type="llm", config={"prompt": "x"},
+                on_failure=OnFailure(action="abort"),
+            ),
+        ])
+        ctx = _make_context()
+
+        with self.assertRaises(WorkflowExecutionError) as cm:
+            engine.execute(spec, ctx)
+        # 携带完整 result
+        self.assertIsNotNone(cm.exception.result)
+        self.assertFalse(cm.exception.result.success)
+        # 仅调用 1 次（无 step 级 retry）
+        self.assertEqual(always_fail.call_count, 1)
+
+    def test_successful_workflow_does_not_raise(self):
+        """成功 workflow 不抛异常，正常返回 result。"""
+        from hermes.agent.tool_error import WorkflowExecutionError
+
+        stub = _StubExecutor(outputs_list=[{"response": "ok"}])
+        engine = WorkflowEngine(custom_executors={"llm": stub})
+        spec = _make_simple_spec([
+            StepSpec(id="s1", type="llm", config={"prompt": "x"}),
+        ])
+        ctx = _make_context()
+
+        # 不抛异常
+        result = engine.execute(spec, ctx)
+        self.assertTrue(result.success)
+
+
+class TestOnFailureActionsNoRetry(unittest.TestCase):
+    """Q3: ALLOWED_ON_FAILURE_ACTIONS 移除 retry。"""
+
+    def test_retry_not_in_allowed_actions(self):
+        from hermes.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
+        self.assertNotIn("retry", ALLOWED_ON_FAILURE_ACTIONS)
+
+    def test_allowed_actions_are_three(self):
+        from hermes.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
+        self.assertEqual(
+            ALLOWED_ON_FAILURE_ACTIONS,
+            frozenset({"fallback", "skip", "abort"}),
+        )
 
 
 if __name__ == "__main__":

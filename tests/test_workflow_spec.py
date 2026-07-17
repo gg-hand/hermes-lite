@@ -1,4 +1,4 @@
-﻿"""Task 3.3: spec.py 数据模型测试。
+"""Task 3.3: spec.py 数据模型测试。
 
 覆盖：
 - from_dict 解析多步 / 简易模式
@@ -209,9 +209,11 @@ class TestWorkflowSpec(unittest.TestCase):
 
 
 class TestAllowedConstants(unittest.TestCase):
-    def test_allowed_actions_contains_retry_fallback_skip_abort(self):
-        for action in ("retry", "fallback", "skip", "abort"):
+    def test_allowed_actions_contains_fallback_skip_abort(self):
+        # Q3 决策：移除 "retry"，重试由 RetryHook 接管整次 workflow 重跑
+        for action in ("fallback", "skip", "abort"):
             self.assertIn(action, ALLOWED_ON_FAILURE_ACTIONS)
+        self.assertNotIn("retry", ALLOWED_ON_FAILURE_ACTIONS)
 
     def test_allowed_step_types_contains_five_types(self):
         for st in ("deterministic", "llm", "tool", "react", "subworkflow"):

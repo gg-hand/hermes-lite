@@ -26,8 +26,9 @@ from typing import Any, Dict, List, Optional
 
 
 #: on_failure.action 允许值
+# Q3 决策：移除 "retry"，step 级重试由 RetryHook 接管整次 workflow 重跑
 ALLOWED_ON_FAILURE_ACTIONS = frozenset(
-    {"retry", "fallback", "skip", "abort"}
+    {"fallback", "skip", "abort"}
 )
 
 

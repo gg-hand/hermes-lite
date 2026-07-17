@@ -1,4 +1,4 @@
-﻿"""CronScheduler archive_callback cron 分支迁移测试
+"""CronScheduler archive_callback cron 分支迁移测试
 （ops-reliability-uplift Task 6.6）。
 
 验证：
@@ -170,14 +170,6 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
         )
         runs_store.read_last.return_value = last_run
 
-        scheduler = CronScheduler.__new__(CronScheduler)
-        scheduler.runs_store = runs_store
-        scheduler._cron_exprs = {}
-        scheduler._persist = MagicMock()
-        scheduler._parse_last_run_time = MagicMock(return_value=None)
-        scheduler._append_run_summary = MagicMock()
-        scheduler._clear_cron_history = MagicMock()
-
         # 构造 orchestrator：history_buffer.archive_callback 可被覆盖
         chroma_store = MagicMock()
         orig_cb = MagicMock(name="orig_archive_cb")
@@ -187,9 +179,26 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
         orchestrator = MagicMock()
         orchestrator.chroma_store = chroma_store
         orchestrator.history_buffer = history_buffer
-        # orchestrator.chat 抛异常，验证 finally 仍恢复
         orchestrator.chat = AsyncMock(side_effect=RuntimeError("mock chat failure"))
         orchestrator.session_logger = None  # 跳过 title 设置
+
+        scheduler = CronScheduler.__new__(CronScheduler)
+        scheduler.runs_store = runs_store
+        scheduler._cron_exprs = {}
+        scheduler._persist = MagicMock()
+        scheduler._parse_last_run_time = MagicMock(return_value=None)
+        scheduler._append_run_summary = MagicMock()
+        scheduler._clear_cron_history = MagicMock()
+        # Q1+3.6：_run_schedule 需要的额外属性
+        scheduler.hooks = MagicMock()
+        scheduler.hooks.before_execute = AsyncMock(return_value=MagicMock(validation_errors=[]))
+        scheduler.hooks.after_execute = AsyncMock()
+        scheduler.hooks.get_retry_max = MagicMock(return_value=3)
+        scheduler._failure_counts = {}
+        scheduler._orchestrator = orchestrator
+        scheduler._schedules = []
+        scheduler.workflow_context_factory = None
+        scheduler._build_cron_archive_callback = MagicMock(return_value=None)
 
         # 构造 schedule（无 workflow 走 legacy 路径）
         schedule = Schedule(
@@ -199,8 +208,9 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
             task="测试任务",
         )
 
-        # 执行 _trigger（chat 会抛异常，但 _trigger 内部 try/except 捕获）
-        await scheduler._trigger(orchestrator, schedule)
+        # 执行 _run_schedule（chat 会抛异常，但内部 try/except 捕获）
+        from datetime import datetime
+        await scheduler._run_schedule(orchestrator, schedule, datetime.now())
 
         # 验证 archive_callback 被恢复为原值
         self.assertIs(
@@ -217,14 +227,6 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
             llm_summary="上次摘要 Y",
         )
         runs_store.read_last.return_value = last_run
-
-        scheduler = CronScheduler.__new__(CronScheduler)
-        scheduler.runs_store = runs_store
-        scheduler._cron_exprs = {}
-        scheduler._persist = MagicMock()
-        scheduler._parse_last_run_time = MagicMock(return_value=None)
-        scheduler._append_run_summary = MagicMock()
-        scheduler._clear_cron_history = MagicMock()
 
         chroma_store = MagicMock()
         orig_cb = MagicMock(name="orig_archive_cb")
@@ -244,6 +246,26 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
         orchestrator.chat = AsyncMock(side_effect=mock_chat)
         orchestrator.session_logger = None
 
+        scheduler = CronScheduler.__new__(CronScheduler)
+        scheduler.runs_store = runs_store
+        scheduler._cron_exprs = {}
+        scheduler._persist = MagicMock()
+        scheduler._parse_last_run_time = MagicMock(return_value=None)
+        scheduler._append_run_summary = MagicMock()
+        scheduler._clear_cron_history = MagicMock()
+        # Q1+3.6：_run_schedule 需要的额外属性
+        scheduler.hooks = MagicMock()
+        scheduler.hooks.before_execute = AsyncMock(return_value=MagicMock(validation_errors=[]))
+        scheduler.hooks.after_execute = AsyncMock()
+        scheduler.hooks.get_retry_max = MagicMock(return_value=3)
+        scheduler._failure_counts = {}
+        scheduler._orchestrator = orchestrator
+        scheduler._schedules = []
+        scheduler.workflow_context_factory = None
+        # 注意：返回非 None 闭包以触发 archive_callback 覆盖逻辑
+        _fake_cron_cb = MagicMock(name="cron_archive_cb")
+        scheduler._build_cron_archive_callback = MagicMock(return_value=_fake_cron_cb)
+
         schedule = Schedule(
             id="sched_Y",
             name="测试调度 Y",
@@ -251,7 +273,8 @@ class TestTriggerArchiveCallbackOverrideAndRestore(unittest.IsolatedAsyncioTestC
             task="测试任务 Y",
         )
 
-        await scheduler._trigger(orchestrator, schedule)
+        from datetime import datetime
+        await scheduler._run_schedule(orchestrator, schedule, datetime.now())
 
         # chat 执行期间 archive_callback 应被替换为新闭包（非 orig_cb）
         self.assertEqual(len(captured_cb_during_chat), 1)

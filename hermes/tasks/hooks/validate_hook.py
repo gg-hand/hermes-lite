@@ -24,9 +24,19 @@ class ValidateHook(ScheduleHookBase):
             return ctx  # legacy 路径不校验
 
         from hermes.tasks.workflow.validator import validate_workflow_spec
+        from hermes.tasks.workflow.spec import WorkflowSpec
+
+        # schedule.workflow 可能是 dict（YAML 加载）或 WorkflowSpec 实例
+        wf = schedule.workflow
+        if isinstance(wf, dict):
+            try:
+                wf = WorkflowSpec.from_dict(wf)
+            except ValueError as e:
+                ctx.validation_errors = [f"workflow 配置解析失败: {e}"]
+                return ctx
 
         errors = validate_workflow_spec(
-            spec=schedule.workflow,
+            spec=wf,
             cron_tool_registry=getattr(ctx, "cron_tool_registry", None),
             tool_registry=getattr(ctx, "tool_registry", None),
         )

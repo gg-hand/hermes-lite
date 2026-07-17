@@ -471,7 +471,7 @@ def validate_workflow_spec(
     """执行前校验 workflow spec（4.1）。
 
     校验项：
-    - workflow.name 非空
+    - workflow.name 非空（仅多步模式校验；简易模式 name 可选）
     - step.type 属于 ALLOWED_STEP_TYPES（5 种）
     - tool 类型 step 的 config.tool 在 cron_tool_registry 或 tool_registry 中注册
 
@@ -479,7 +479,8 @@ def validate_workflow_spec(
         错误信息列表（空列表表示通过）。
     """
     errors: List[str] = []
-    if not spec.name:
+    # 简易模式（仅 template 无 steps）跳过 name 校验，由模板路径自行报错
+    if spec.steps and not spec.name:
         errors.append("workflow.name 为空")
 
     allowed_step_types = ("deterministic", "llm", "tool", "react", "subworkflow")

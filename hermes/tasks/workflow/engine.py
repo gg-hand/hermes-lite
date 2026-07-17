@@ -31,7 +31,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import WorkflowContext, WorkflowResult
-from .retry import NON_RETRYABLE_ERRORS, RetryBudget
+from .retry import NON_RETRYABLE_ERRORS  # noqa: F401  # Q1: RetryBudget 已移除，NON_RETRYABLE_ERRORS 仍保留供 _execute_with_policy 判定
 from .spec import OnFailure, StepSpec, WorkflowSpec
 from .step_executor import (
     LlmCallExecutor,
@@ -129,14 +129,18 @@ class WorkflowEngine:
         # 多步模式
         if not spec.steps:
             result.add_error("workflow 既无 template 也无 steps")
-            return result
+            # Q1 决策：失败时 raise WorkflowExecutionError
+            from hermes.agent.tool_error import WorkflowExecutionError
+            raise WorkflowExecutionError(result=result)
 
         # 1. 拓扑排序（含环检测）
         try:
             sorted_steps = self._topo_sort(spec.steps)
         except WorkflowCycleError as e:
             result.add_error(f"workflow depends_on 存在环: {e}")
-            return result
+            # Q1 决策：失败时 raise WorkflowExecutionError
+            from hermes.agent.tool_error import WorkflowExecutionError
+            raise WorkflowExecutionError(result=result)
 
         # 2. 逐 step 执行
         step_traces: List[StepTrace] = []
@@ -248,6 +252,11 @@ class WorkflowEngine:
                     result.assistant_response = resp
                     break
 
+        # Q1 决策：失败时 raise WorkflowExecutionError 携带完整 result，
+        # 由 RetryHook 接管整次 workflow 重跑。
+        if not result.success:
+            from hermes.agent.tool_error import WorkflowExecutionError
+            raise WorkflowExecutionError(result=result)
         return result
 
     # ------------------------------------------------------------------
@@ -295,6 +304,10 @@ class WorkflowEngine:
         if error_channel:
             result.errors.extend(error_channel)
 
+        # Q1 决策：简易模式失败时同样 raise WorkflowExecutionError
+        if not result.success:
+            from hermes.agent.tool_error import WorkflowExecutionError
+            raise WorkflowExecutionError(result=result)
         return result
 
     # ------------------------------------------------------------------
@@ -463,7 +476,11 @@ class WorkflowEngine:
         context: WorkflowContext,
         workflow_spec: WorkflowSpec,
     ) -> StepTrace:
-        """执行单个 step，按 on_failure.action 决策 retry / fallback / skip / abort。
+        """执行单个 step，按 on_failure.action 决策 fallback / skip / abort。
+
+        Q1 决策：移除 step 级 RetryBudget，重试由 RetryHook 接管整次
+        workflow 重跑。``action="retry"`` 已不在 ALLOWED_ON_FAILURE_ACTIONS
+        中，但为向后兼容旧 spec，遇到 "retry" 时按 "abort" 处理。
 
         NotImplementedError 视为 PERMANENT：不重试，直接走 abort 路径
         （无论 action 配置为何）。
@@ -487,10 +504,10 @@ class WorkflowEngine:
         action = on_failure.action
 
         # 先执行一次（probe），检测 NotImplementedError 决定是否走 abort 路径
-        # 注：retry / fallback / skip / abort 共享首次执行结果
+        # 注：fallback / skip / abort 共享首次执行结果
         first_trace = executor.execute(step, context, None)
 
-        # NotImplementedError → PERMANENT，不重试直接走 abort
+        # NotImplementedError → PERMANENT，直接走 abort
         if first_trace.error_class == "notimplemented":
             logger.info(
                 "step '%s' 抛 NotImplementedError（PERMANENT），直接 abort",
@@ -511,14 +528,9 @@ class WorkflowEngine:
             # 失败即跳过
             first_trace.status = "skipped"
             return first_trace
-        if action == "abort":
-            # 失败即终止（Engine 检测到 failed 即 abort）
-            return first_trace
-
-        # action=retry：基于首次结果继续重试
-        return self._execute_with_retry_after_probe(
-            step, context, executor, on_failure, first_trace
-        )
+        # action == "abort" 或向后兼容的 "retry"（Q1 移除 step 级重试，
+        # 旧 spec 的 action="retry" 等效于 abort，由 RetryHook 接管整次重跑）
+        return first_trace
 
     def _execute_with_fallback_after_probe(
         self,
@@ -530,109 +542,6 @@ class WorkflowEngine:
     ) -> StepTrace:
         """fallback 策略：失败后执行 fallback step（不重试）。"""
         return self._execute_fallback_step(step, context, on_failure, failed_trace)
-
-    def _execute_with_retry_after_probe(
-        self,
-        step: StepSpec,
-        context: WorkflowContext,
-        executor: StepExecutor,
-        on_failure: OnFailure,
-        first_trace: StepTrace,
-    ) -> StepTrace:
-        """retry 策略：首次已失败，按 RetryPolicy 决定是否重试。
-
-        基于首次执行结果继续 retry 循环（避免重复 probe 调用）。
-        """
-        budget = RetryBudget(policy=on_failure.retry)
-        budget.increment()  # 首次执行计入 attempt
-
-        last_trace = first_trace
-
-        # 首次失败：检查是否应重试
-        if not budget.should_retry(first_trace.error_class):
-            # 不重试：检查兜底
-            return self._apply_fallback_after_retry_exhausted(
-                step, context, executor, on_failure, last_trace
-            )
-
-        while budget.has_budget():
-            backoff_ms = budget.compute_backoff_ms()
-            logger.info(
-                "step '%s' 第 %d 次失败（%s），%dms 后重试",
-                step.id, budget.attempt, last_trace.error_class, backoff_ms,
-            )
-            budget.sleep_backoff()
-            budget.increment()
-            retry_trace = StepTrace(
-                step_id=step.id,
-                step_name=step.name or step.id,
-                step_type=step.type,
-                attempts=budget.attempt,
-            )
-            retry_trace = executor.execute(step, context, retry_trace)
-            # 合并 attempts
-            last_trace = StepTrace(
-                step_id=step.id,
-                step_name=step.name or step.id,
-                step_type=step.type,
-                started_at=first_trace.started_at,
-                finished_at=retry_trace.finished_at,
-                duration_ms=first_trace.duration_ms + retry_trace.duration_ms,
-                attempts=budget.attempt,
-                status=retry_trace.status,
-                error_class=retry_trace.error_class,
-                error_message=retry_trace.error_message,
-                outputs=retry_trace.outputs,
-                tool_calls=retry_trace.tool_calls,
-                files=retry_trace.files,
-            )
-
-            if retry_trace.status == "success":
-                return last_trace
-
-            # PERMANENT / NotImplementedError：不重试
-            if (
-                retry_trace.error_class in NON_RETRYABLE_ERRORS
-                or retry_trace.error_class == "notimplemented"
-            ):
-                break
-
-            if not budget.should_retry(retry_trace.error_class):
-                break
-
-        return self._apply_fallback_after_retry_exhausted(
-            step, context, executor, on_failure, last_trace
-        )
-
-    def _apply_fallback_after_retry_exhausted(
-        self,
-        step: StepSpec,
-        context: WorkflowContext,
-        executor: StepExecutor,
-        on_failure: OnFailure,
-        last_trace: Optional[StepTrace],
-    ) -> StepTrace:
-        """重试耗尽后的兜底处理（fallback / skip / abort）。"""
-        # 仅当显式配置 fallback_config 时才执行 fallback step。
-        # 默认 OnFailure.fallback_type="llm" + 空 fallback_config 不触发 fallback，
-        # 避免静默执行未配置的 LLM 调用。
-        if on_failure.fallback_config:
-            return self._execute_fallback_step(step, context, on_failure, last_trace)
-
-        # 默认行为：标记失败
-        if last_trace is None:
-            last_trace = StepTrace(
-                step_id=step.id,
-                step_name=step.name or step.id,
-                step_type=step.type,
-                status="failed",
-                error_class="transient",
-                error_message="retry 耗尽且无 fallback 配置",
-            )
-        else:
-            # 保持失败状态
-            last_trace.status = "failed"
-        return last_trace
 
     def _execute_fallback_step(
         self,
