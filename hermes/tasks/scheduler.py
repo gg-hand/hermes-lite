@@ -1256,7 +1256,16 @@ class CronScheduler:
             run_id: 本次执行批次 ID（Task 10）。``None`` 时由 RunSummary
                 默认工厂自动生成（保持向后兼容）。
         """
-        if RunSummary is None or self.runs_store is None:
+        # 治本脆弱点 6：持久化失败时记 error 告警，不静默 return
+        if RunSummary is None:
+            logger.error(
+                "RunSummary 未导入，无法持久化执行记录 调度=%s", schedule.id
+            )
+            return
+        if self.runs_store is None:
+            logger.error(
+                "runs_store 未初始化，调度 %s 的执行记录将丢失", schedule.id
+            )
             return
 
         # 构造 RunSummary，run_id 显式传入时覆盖默认工厂（避免双重生成）
@@ -1297,9 +1306,10 @@ class CronScheduler:
 
         try:
             self.runs_store.append(schedule.id, summary)
-        except Exception:
-            logger.warning(
-                "append RunSummary 到 runs.jsonl 失败", exc_info=True
+        except Exception as e:
+            logger.error(
+                "持久化 RunSummary 失败 调度=%s: %s", schedule.id, e,
+                exc_info=True,
             )
 
     async def trigger_now(
