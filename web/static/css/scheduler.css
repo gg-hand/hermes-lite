@@ -393,6 +393,109 @@
 .list-card.kind-schedule { border-left: 3px solid var(--accent); }
 .list-card.kind-cron_tool_active { border-left: 3px solid var(--success); }
 
+/* ========== 调度执行强化（7.1）：状态徽章 + 操作按钮 + 配置编辑器 ========== */
+
+/* 状态徽章（毛玻璃 + 圆角，遵循 UI 偏好） */
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+.status-badge[data-status="success"] {
+  background: rgba(100, 200, 100, 0.25);
+  color: var(--success);
+  border-color: rgba(100, 200, 100, 0.4);
+}
+.status-badge[data-status="failed"] {
+  background: rgba(255, 100, 100, 0.25);
+  color: var(--danger, #ff5050);
+  border-color: rgba(255, 100, 100, 0.4);
+}
+.status-badge[data-status="disabled"] {
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--text-muted);
+  border-color: rgba(128, 128, 128, 0.3);
+}
+/* 深色主题徽章微调 */
+[data-theme="dark"] .status-badge {
+  background: rgba(60, 60, 80, 0.5);
+  border-color: rgba(120, 120, 140, 0.3);
+}
+[data-theme="dark"] .status-badge[data-status="success"] {
+  background: rgba(80, 180, 80, 0.2);
+  color: #66dd66;
+}
+[data-theme="dark"] .status-badge[data-status="failed"] {
+  background: rgba(220, 80, 80, 0.25);
+  color: #ff8080;
+}
+
+/* 调度卡片操作按钮区（立即执行 / 配置） */
+.list-card-actions-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  align-items: center;
+}
+.list-card-actions-row .btn {
+  font-size: var(--text-xs);
+  padding: 3px 10px;
+  border-radius: 12px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.list-card-actions-row .btn-rerun {
+  background: rgba(var(--accent-rgb, 124, 77, 255), 0.15);
+  border: 1px solid rgba(var(--accent-rgb, 124, 77, 255), 0.3);
+  color: var(--accent);
+}
+.list-card-actions-row .btn-rerun:hover {
+  background: rgba(var(--accent-rgb, 124, 77, 255), 0.25);
+}
+.list-card-actions-row .btn-config {
+  background: rgba(128, 128, 128, 0.15);
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  color: var(--text-secondary);
+}
+
+/* 配置编辑器模态框 */
+.config-editor-modal {
+  max-width: 480px;
+}
+.config-editor-modal .modal-body {
+  padding: var(--space-4);
+}
+.config-editor-modal .form-group {
+  margin-bottom: var(--space-3);
+}
+.config-editor-modal .form-group label {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.config-editor-modal .form-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.config-editor-modal .hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 /* 抽屉内复用：隔离记忆 / 审计项 */
 .schedule-memory-item {
   padding: var(--space-2) var(--space-3);

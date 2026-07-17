@@ -171,14 +171,37 @@ function renderListCard(kind, item) {
 function renderScheduleCard(s) {
   const lastRun = s.last_run ? `上次 ${escapeHtml(formatTime(s.last_run))}` : '上次 未运行';
   const nextRun = s.next_run ? ` · 下次 ${escapeHtml(formatTime(s.next_run))}` : '';
-  return `<div class="list-card kind-schedule" data-kind="schedule" data-id="${escapeHtml(s.id)}" onclick="openDrawer({kind:'schedule', id:'${escapeHtml(s.id)}'})">
+  // 7.1: 状态徽章 — 已禁用优先，其次按最近执行结果判断成功/失败
+  let badgeHtml = '';
+  if (!s.enabled) {
+    badgeHtml = '<span class="status-badge" data-status="disabled">⚫ 已禁用</span>';
+  } else {
+    // 从 _runsCache 查找该调度最近一次执行
+    const recentRun = (_runsCache || []).find(r => r.schedule_id === s.id);
+    if (recentRun) {
+      if (recentRun.success === false) {
+        badgeHtml = '<span class="status-badge" data-status="failed">🔴 失败</span>';
+      } else {
+        badgeHtml = '<span class="status-badge" data-status="success">🟢 正常</span>';
+      }
+    } else {
+      badgeHtml = '<span class="status-badge" data-status="success">🟢 正常</span>';
+    }
+  }
+  const sid = escapeHtml(s.id);
+  return `<div class="list-card kind-schedule" data-kind="schedule" data-id="${sid}" onclick="openDrawer({kind:'schedule', id:'${sid}'})">
     <div class="list-card-header">
       <span class="list-card-status-dot ${s.enabled ? 'is-enabled' : 'is-disabled'}" title="${s.enabled ? '已启用' : '已禁用'}"></span>
       <span class="list-card-title">${escapeHtml(s.name || s.id)}</span>
+      ${badgeHtml}
     </div>
     <div class="list-card-meta">
       <span class="mono">${escapeHtml(s.cron || '')}</span>
       <span class="text-muted">${lastRun}${nextRun}</span>
+    </div>
+    <div class="list-card-actions-row" onclick="event.stopPropagation()">
+      <button class="btn btn-rerun" type="button" onclick="triggerRerun('${sid}')" title="立即触发一次执行">立即执行</button>
+      <button class="btn btn-config" type="button" onclick="openConfigEditor('${sid}')" title="编辑配置">配置</button>
     </div>
   </div>`;
 }
@@ -1324,6 +1347,90 @@ function setupEmptyStateActions() {
   if (schedulesAction) schedulesAction.addEventListener('click', openScheduleModal);
 }
 
+// ========== 调度执行强化（7.1）：立即执行 / 配置编辑器 ==========
+
+// 立即触发调度执行（调用 POST /cron_tools/schedules/{id}/run）
+async function triggerRerun(scheduleId) {
+  if (!scheduleId) return;
+  if (!confirm(`确认立即触发调度 ${scheduleId} 执行？`)) return;
+  try {
+    const resp = await api(`/cron_tools/schedules/${encodeURIComponent(scheduleId)}/run`, { method: 'POST' });
+    if (resp && resp.status === 'triggered') {
+      showToast('已触发执行');
+      // 3s 后刷新执行历史
+      setTimeout(() => fetchScheduleRuns(), 3000);
+    } else {
+      showToast('触发失败：' + (resp && resp.error ? resp.error : '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('触发失败：' + e.message, 'error');
+  }
+}
+
+// 当前正在编辑的调度 ID（配置编辑器用）
+let _configEditingScheduleId = null;
+
+// 打开配置编辑器
+function openConfigEditor(scheduleId) {
+  if (!scheduleId) return;
+  _configEditingScheduleId = scheduleId;
+  // 从缓存中读取当前调度项
+  const s = (_schedulesCache || []).find(x => x.id === scheduleId);
+  const enabledSel = document.getElementById('cfgEnabled');
+  const catchUpSel = document.getElementById('cfgCatchUpPolicy');
+  const onFailureSel = document.getElementById('cfgOnFailureAction');
+  if (s) {
+    if (enabledSel) enabledSel.value = s.enabled ? 'true' : 'false';
+    // catch_up_policy / on_failure 暂未持久化到 Schedule，默认 skip
+    if (catchUpSel) catchUpSel.value = s.catch_up_policy || 'skip';
+    if (onFailureSel) onFailureSel.value = (s.workflow && s.workflow.on_failure && s.workflow.on_failure.action) || 'skip';
+  }
+  const modal = document.getElementById('configEditorModal');
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add('is-open');
+  }
+}
+
+// 关闭配置编辑器
+function closeConfigEditor() {
+  const modal = document.getElementById('configEditorModal');
+  if (modal) {
+    modal.hidden = true;
+    modal.classList.remove('is-open');
+  }
+  _configEditingScheduleId = null;
+}
+
+// 保存配置（调用 PUT /schedules/{id}）
+async function saveScheduleConfig() {
+  if (!_configEditingScheduleId) return;
+  const scheduleId = _configEditingScheduleId;
+  const enabledSel = document.getElementById('cfgEnabled');
+  const catchUpSel = document.getElementById('cfgCatchUpPolicy');
+  const onFailureSel = document.getElementById('cfgOnFailureAction');
+  const payload = {};
+  if (enabledSel) payload.enabled = enabledSel.value === 'true';
+  // catch_up_policy / on_failure.action 暂通过 workflow 字段传递（后端需扩展支持）
+  // 当前仅保存 enabled，其他字段保留为前端状态，待后端 schema 扩展后启用
+  try {
+    const resp = await api(`/schedules/${encodeURIComponent(scheduleId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (resp && resp.status === 'ok') {
+      showToast(resp.needs_restart ? '已保存（需重启生效）' : '已保存');
+      closeConfigEditor();
+      fetchSchedules();  // 刷新列表
+    } else {
+      showToast('保存失败：' + (resp && resp.detail ? resp.detail : '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  }
+}
+
 // ========== init：页面入口 ==========
 function init() {
   // 1. 初始化数据
@@ -1400,6 +1507,16 @@ function init() {
   if (drawerOverlay) {
     drawerOverlay.addEventListener('click', (e) => {
       if (e.target === drawerOverlay) closeDrawer();
+    });
+  }
+
+  // 3.7. 配置编辑器绑定（7.1）
+  const cfgSaveBtn = document.getElementById('cfgSaveBtn');
+  if (cfgSaveBtn) cfgSaveBtn.addEventListener('click', saveScheduleConfig);
+  const cfgModal = document.getElementById('configEditorModal');
+  if (cfgModal) {
+    cfgModal.addEventListener('click', (e) => {
+      if (e.target === cfgModal) closeConfigEditor();
     });
   }
   // Drawer 次级 Tab 切换
