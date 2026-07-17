@@ -1783,6 +1783,35 @@ class CronScheduler:
                         ),
                     )
                 )
+                # Task 9 Q14: 启动加载时校验 workflow，errors 非空记 WARNING 不阻断
+                wf_raw = item.get("workflow")
+                if wf_raw:
+                    try:
+                        from hermes.tasks.workflow import WorkflowSpec
+                        from hermes.tasks.workflow.validator import (
+                            validate_workflow_spec,
+                        )
+                        wf_spec = WorkflowSpec.from_dict(wf_raw)
+                        wf_errors = validate_workflow_spec(
+                            spec=wf_spec,
+                            cron_tool_registry=getattr(
+                                self, "cron_tool_registry", None
+                            ),
+                            tool_registry=getattr(self, "tool_registry", None),
+                        )
+                        if wf_errors:
+                            logger.warning(
+                                "调度 %s 的 workflow 校验失败: %s",
+                                schedule_id,
+                                wf_errors,
+                            )
+                    except Exception:
+                        # 校验本身异常不阻断加载（向后兼容）
+                        logger.warning(
+                            "调度 %s 的 workflow 校验异常，已跳过",
+                            schedule_id,
+                            exc_info=True,
+                        )
             except Exception:
                 logger.exception("加载调度项失败，已跳过: %s", item)
                 continue

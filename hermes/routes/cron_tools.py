@@ -269,7 +269,7 @@ def delete_cron_tool(name: str, orchestrator=Depends(get_orchestrator)):
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"删除目录失败: {exc}"
-        ) as exc
+        ) from exc
     logger.info("cron_tool %s 已删除并从 registry 注销", name)
     return {
         "status": "deleted",

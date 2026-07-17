@@ -103,7 +103,19 @@ def create_schedule(req: ScheduleCreateRequest,
     if req.workflow:
         try:
             from hermes.tasks.workflow import WorkflowSpec  # type: ignore
-            WorkflowSpec.from_dict(req.workflow)
+            from hermes.tasks.workflow.validator import validate_workflow_spec  # type: ignore
+            spec = WorkflowSpec.from_dict(req.workflow)
+            # Task 9 Q14：创建时校验工具存在性 + step_type 合法性
+            errors = validate_workflow_spec(
+                spec=spec,
+                cron_tool_registry=getattr(cron_scheduler, "cron_tool_registry", None),
+                tool_registry=getattr(cron_scheduler, "tool_registry", None),
+            )
+            if errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"workflow 校验失败: {errors}",
+                )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"workflow 配置非法: {e}")
         except ImportError:
