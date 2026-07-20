@@ -2266,6 +2266,17 @@ cryptography>=42.0         # Director 签名/验签 + HMAC 链
 | `jsonschema` | 协议文件 schema 校验 | ✅ | `schema_validation=true` 时启用 |
 | `cryptography` | Director 签名/验签、audit HMAC 链 | ✅ | L3 auth_method=signed 时必需 |
 
+**v1.0.3 修订状态**（P1-3 依赖重复声明）：
+
+| 依赖 | 版本 | 状态 |
+|------|------|------|
+| watchdog | >=4.0 | 新增 |
+| aiofiles | >=24.0 | 新增 |
+| portalocker | >=2.7 | 新增 |
+| cryptography | >=42.0 | 新增 |
+| pyyaml | >=6.0 | 已存在（requirements.txt:8），无需动作 |
+| jsonschema | >=4.20 | 修改现有行 requirements.txt:13（>=4.0.0 → >=4.20） |
+
 **禁止依赖**：
 
 - ❌ `redis` / `celery`：不引入外部 broker，保持 File-First
@@ -2304,6 +2315,9 @@ multiagent:
     heartbeat_interval_seconds: 10
     watchdog_backend: "watchdog"          # watchdog | polling
     capabilities: ["file_read", "file_write", "web_search", "execute_command"]
+    dangerous_tools: ["execute_command", "write_file", "call_tool"]  # v1.0.3 新增：与单 agent 安全权限共用，project_memory 第 4 行权威来源
+  cas:
+    merge_on_exhausted: true  # v1.0.3 新增：CAS 重试耗尽后字段级合并降级，false 时严格阻断
   director:
     enforce_rules: true
     conflict_strategy: "llm_arbitration"
@@ -2312,6 +2326,8 @@ multiagent:
     fallback_strategy: "priority"         # v1.0.1 新增：LLM 不可用时降级策略
     grace_period_seconds: 2               # v1.0.1 新增：锁 TTL 时钟漂移缓冲
     recovery_lock_timeout: 30             # v1.0.1 新增：恢复期 fence 超时
+  watchdog:
+    reset_to_watchdog: false  # v1.0.3 新增：用户手动重置永久 polling 标记（重启生效）
   a2a_gateway:
     enabled: false
     listen_port: 8001
@@ -2340,6 +2356,10 @@ Please set HERMES_BB_DIR to the blackboard directory path, e.g.:
 Or disable multiagent: multiagent.enabled=false
 ```
 
+**config_helpers 校验**（v1.0.3 新增，P2-11）：
+
+修改 `hermes/config_helpers.py:118`，将 `'multiagent'` 加入 `_validate_config_schema` 段类型校验元组；新增 `multiagent.enabled` / `role` / `a2a_gateway.enabled` 等关键字段类型与枚举值校验。
+
 ### 10.3 配置热更新边界（v1.0.1 修订：对齐 _RESTART_REQUIRED_KEYS 约定）
 
 | 配置项 | 热更新 | 说明 |
@@ -2360,21 +2380,21 @@ Or disable multiagent: multiagent.enabled=false
 | `multiagent.schema_validation` | ✅ | 即时生效 |
 | `multiagent.audit.*` | ✅ | 即时生效 |
 | `multiagent.blackboard_dir` | ❌ | **需重启**（避免运行时竞态，对齐 _RESTART_REQUIRED_KEYS 约定） |
-| `multiagent.a2a_gateway.listen_port` | ❌ | **需重启**（端口绑定是启动时操作） |
-| `multiagent.a2a_gateway.auth_schemes` | ❌ | **需重启**（认证中间件需重建） |
+| `multiagent.a2a_gateway.listen_port` | ✅ | **热重载**（v1.0.3 修订：gateway 重建即可，无需重启进程） |
+| `multiagent.a2a_gateway.auth_schemes` | ✅ | **热重载**（v1.0.3 修订：gateway 重建即可，无需重启进程） |
 
-**`_RESTART_REQUIRED_KEYS` 扩展**（v1.0.1 新增）：
+**`_RESTART_REQUIRED_KEYS` 扩展**（v1.0.3 修订：仅新增 1 项）：
 
-在 `hermes/config_helpers.py` 的 `_RESTART_REQUIRED_KEYS` set 中新增：
+在 `hermes/config_helpers.py` 的 `_RESTART_REQUIRED_KEYS` set 中仅新增 `multiagent.blackboard_dir`（a2a_gateway.listen_port / auth_schemes 改热重载，gateway 重建即可）：
 
 ```python
 _RESTART_REQUIRED_KEYS = {
     # ... 现有 7 项 ...
-    "multiagent.blackboard_dir",
-    "multiagent.a2a_gateway.listen_port",
-    "multiagent.a2a_gateway.auth_schemes",
+    "multiagent.blackboard_dir",   # 第 8 项（bb_root 运行时不可迁移）
 }
 ```
+
+**注**（v1.0.3 P0-12）：`_RESTART_REQUIRED_KEYS` 由 7 项变 8 项，文档明确说明"`multiagent.blackboard_dir` 是第 8 项，原因是 `bb_root` 运行时不可迁移；如需严格保持 7 项，可改为环境变量 `HERMES_BB_DIR` 注入"。
 
 ### 10.4 容器注册映射（v1.0.1 修订：对齐 CONFIG_TO_COMPONENTS 段映射约定）
 
@@ -2394,7 +2414,7 @@ CONFIG_TO_COMPONENTS = {
         "worker_adapter",       # Worker 模式适配（role=worker/both 时）
         "watchdog_watcher",     # 文件监听
         "lock_manager",         # CAS + fencing_token 锁管理
-        "audit_logger",         # 审计日志（注意与现有 hermes/agent/audit.py 命名隔离）
+        "multiagent_audit_logger",  # 审计日志（v1.0.3 修订：与注册键一致，注意与现有 hermes/agent/audit.py 命名隔离）
         "schema_validator",     # JSON Schema 校验
         "recovery_manager",     # 崩溃恢复
         "a2a_gateway",          # A2A 适配（multiagent.a2a_gateway.enabled=true 时）
@@ -2421,6 +2441,18 @@ container.register("multiagent_audit_logger", MultiAgentAuditLogger)
 
 `multiagent.enabled` 变更时，重建 Orchestrator 以重新注入 system prompt（包含 active_agents / director.md 规则段）。Orchestrator 内部组件对容器透明，仅 Orchestrator 本身注册到容器。
 
+**容器注册位置 + hot_reloadable 标志**（v1.0.3 新增，P2-12 + O10 默认值）：
+
+```
+注册位置：hermes/lifespan.py（仅 multiagent.enabled=true 时注册）
+注册顺序：blackboard → schema_validator → file_lock → multiagent_audit_logger → agent_registry → director_engine / worker_adapter → watchdog_watcher → recovery_manager → a2a_gateway
+hot_reloadable 标志：
+  - blackboard: False（bb_root 不可迁移）
+  - a2a_gateway: False（端口绑定）
+  - 其余: True
+注册后调用 container.validate() 触发 DFS 环检测
+```
+
 ### 10.5 REST 端点
 
 新增 `routes/blackboard.py`：
@@ -2437,6 +2469,14 @@ POST /blackboard/locks/{name}/release   # 远程释放锁
 ```
 
 HTTP 端点主要用于远程 agent 通过 A2A Gateway 接入；本地 agent 优先走文件协议。
+
+**认证机制**（v1.0.3 新增，P1-6 实施）：
+
+```
+/blackboard/* 端点默认通过 security.api_key 认证（复用现有 HERMES_API_KEY，不新增环境变量）
+multiagent.a2a_gateway.enabled=true 时，gateway 层叠加 auth_schemes（oauth2/mtls）做二次认证
+路由注册位置：hermes/app.py 现有 12 个 router 之后新增 app.include_router(blackboard_router)
+```
 
 ### 10.6 与现有 ReactLoop 集成（v1.0.1 修订：细化集成点）
 
