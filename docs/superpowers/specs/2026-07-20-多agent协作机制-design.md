@@ -1406,6 +1406,8 @@ class BlackboardWatcher:
 
 **修订方案：CAS 写入 + Fencing Token 单调递增 + Grace Period 缓冲**
 
+LockManager 是 Worker 进程内单例（DI 容器单例注册），跨 ReactLoop 共享。
+
 ```python
 class LockManager:
     """锁管理：CAS 写入 status.json.locks + fencing_token 单调递增 + grace period。"""
@@ -1420,7 +1422,14 @@ class LockManager:
         current = await read_json(bb_root / "status.json")
         locks = current.get("locks", {})
         existing = locks.get(lock_name)
-        
+
+        # fence 期检查（仅 messages 锁受 fence 限制）
+        if lock_name == "messages" and current.get("director_status") == "recovering":
+            raise LockAcquisitionError(
+                reason="fence_period_messages_blocked",
+                suggestion="等待 Director 恢复完成（director_status=active）",
+            )
+
         # 2. 检查现有锁是否有效
         if existing and not self._is_expired(existing):
             raise LockAcquisitionError(
@@ -1506,11 +1515,74 @@ class LockManager:
         await cas_write_status(bb_root, current["version"], new_status, ...)
         return True
 
+    # === v1.0.3 补完：辅助方法 ===
+
+    async def _next_fencing_token(self) -> int:
+        """从 status.json.last_fencing_token 递增。每次读 status.json，不维护内存计数器。
+        CAS 写入时同写 last_fencing_token 与 locks[name].fencing_token，保证原子性。"""
+        current = await read_json(bb_root / "status.json")
+        new_token = current["last_fencing_token"] + 1
+        return new_token  # CAS 失败后重读重算，旧 token 被丢弃（跳号无害）
+
+    async def _mark_grace_period(self, lock_name: str, existing: dict, ttl_seconds: int = 5):
+        """CAS 写入 locks[name].grace_until = now + 5s + force_releasing=true。
+        不清除 holder/fencing_token，原持锁者 grace 期间仍可写入。"""
+        current = await read_json(bb_root / "status.json")
+        new_locks = dict(current["locks"])
+        new_locks[lock_name] = {
+            **existing,
+            "grace_until": now_iso(ttl_seconds),
+            "force_releasing": True,
+        }
+        new_status = dict(current)
+        new_status["locks"] = new_locks
+        await cas_write_status(bb_root, current["version"], new_status, writer_signature=self._sig)
+
+    async def _delayed_clear(self, lock_name: str, delay: int = 5):
+        """5 秒后 CAS 写入 locks[name]=null。CAS 前校验 grace_until 已过。"""
+        await asyncio.sleep(delay)
+        current = await read_json(bb_root / "status.json")
+        entry = current["locks"].get(lock_name)
+        if not entry or not entry.get("force_releasing"):
+            return  # 已被其他路径清除
+        if parse_iso(entry["grace_until"]) > now():
+            return  # grace 期未过（时钟回退等异常）
+        new_locks = dict(current["locks"])
+        new_locks.pop(lock_name, None)
+        new_status = dict(current)
+        new_status["locks"] = new_locks
+        await cas_write_status(bb_root, current["version"], new_status, writer_signature=self._sig)
+
+    async def _is_agent_alive(self, holder: str) -> bool:
+        """本地 agent 用 os.kill(pid, 0)；远程 agent 用 heartbeat age。"""
+        agent_card = await self._read_agent_card(holder)
+        if agent_card.get("host"):  # 远程
+            return await self._is_heartbeat_stale(holder) is False
+        pid = agent_card.get("pid")
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    async def _is_heartbeat_stale(self, holder: str) -> bool:
+        """heartbeat age > heartbeat.timeout_seconds 视为 stale。"""
+        agent_card = await self._read_agent_card(holder)
+        age = now() - parse_iso(agent_card["last_heartbeat"])
+        return age > timedelta(seconds=agent_card["heartbeat"]["timeout_seconds"])
+
     def _is_expired(self, lock_entry: dict) -> bool:
         """判断锁是否过期。考虑时钟漂移：超过 expires_at + grace_period 才算过期。"""
         grace = self._grace_period_seconds  # 默认 2 秒，吸收时钟漂移
         return parse_iso(lock_entry["expires_at"]) + timedelta(seconds=grace) < now()
 ```
+
+**renew vs force release CAS 失败后的重读策略**（v1.0.3 补完，避免续期与强制释放竞态）：
+
+- force release CAS 失败后：重读 status.json，若 `locks[name].expires_at` 已更新且未过期 → 放弃 force release，audit `action=lock_force_release, details.reason="holder_renewed"`（原持锁者在 Director 决策期间已续期）。
+- renew CAS 失败后：重读 status.json，若 `locks[name].grace_until` 已设置 → 抛 `FencingTokenMismatchError`（视为锁已被 force release 回收，原 renew 调用方必须重新 acquire）。
 
 **Fencing Token 强制使用流程**：
 
@@ -1560,22 +1632,43 @@ class LockManager:
         # 立即释放（不走 grace_period）
         new_status = dict(current)
         new_status["locks"].pop(lock_name, None)
+        # v1.0.3: best-effort + recovery 文件兜底
+        # v1.1: 完整 WAL 模式（见 §17.1 P1 项 5）
         await cas_write_status(bb_root, current["version"], new_status, writer_signature=self._sig)
-        
-        # audit 记录应急释放详情
-        await append_audit(bb_root, {
-            "actor": operator,
-            "action": f"lock_force_release_{reason}",  # lock_force_release_timeout / _holder_dead / _interrupted
-            "target": f"locks/{lock_name}",
-            "op_id": uuid4_str(),
-            "epoch": current["epoch"],
-            "details": {
-                "original_holder": original_holder,
-                "original_fencing_token": original_token,
-                "reason": reason,
-            },
-            "signature": self._sign(...),
-        })
+
+        # audit 记录应急释放详情（best-effort：失败时写 recovery 文件兜底）
+        try:
+            await append_audit(bb_root, {
+                "actor": operator,
+                "action": "lock_force_release",  # 13 粗粒度枚举之一
+                "target": f"locks/{lock_name}",
+                "op_id": uuid4_str(),
+                "epoch": current["epoch"],
+                "details": {
+                    "original_holder": original_holder,
+                    "original_fencing_token": original_token,
+                    "reason": reason,  # timeout / holder_dead / interrupted
+                },
+                "signature": self._sign(...),
+            })
+        except Exception as e:
+            # audit 写入失败，写 recovery 文件（不依赖 audit.lock）
+            recovery_path = bb_root / "audit" / "audit.jsonl.recovery"
+            async with aiofiles.open(recovery_path, "a") as f:
+                await f.write(json.dumps({
+                    "actor": operator,
+                    "action": "lock_force_release",
+                    "target": f"locks/{lock_name}",
+                    "op_id": uuid4_str(),
+                    "epoch": current["epoch"],
+                    "details": {
+                        "original_holder": original_holder,
+                        "original_fencing_token": original_token,
+                        "reason": reason,
+                    },
+                    "recovery_reason": str(e),
+                }) + "\n")
+                await f.flush()
         
         # 通知等待该锁的 agent（通过 watchdog 触发）
         await self._notify_lock_released(lock_name)
@@ -1602,21 +1695,22 @@ class LockManager:
                 continue
             
             # 检查 3: 持锁者中断（agent_card.last_heartbeat 超时但 status 未更新）
-            agent_card = await self._read_agent_card(holder)
-            if agent_card and self._is_heartbeat_stale(agent_card):
+            if await self._is_heartbeat_stale(holder):
                 await self.emergency_release(name, reason="interrupted")
                 continue
 ```
 
 **应急释放触发条件**：
 
-| 触发场景 | 检测方式 | 释放理由 | audit action |
+| 触发场景 | 检测方式 | details.reason | audit action |
 |---------|---------|---------|-------------|
-| 锁 TTL + grace_period 过期 | 周期扫描 status.json.locks | timeout | `lock_force_release_timeout` |
-| 持锁者 PID 不存在 | `os.kill(pid, 0)` / agent_card.last_heartbeat 超时 | holder_dead | `lock_force_release_holder_dead` |
-| 持锁者 ReactLoop 异常退出 | watchdog 检测 agent_card 离线 | interrupted | `lock_force_release_interrupted` |
-| 持锁者主动 leave 但未释放锁 | agent_registry.leave() 调用 | interrupted | `lock_force_release_interrupted` |
-| Director 恢复期 fence 超时 | fence 计时器 | timeout | `lock_force_release_timeout` |
+| 锁 TTL + grace_period 过期 | 周期扫描 status.json.locks | timeout | `lock_force_release` |
+| 持锁者 PID 不存在 | `os.kill(pid, 0)` / agent_card.last_heartbeat 超时 | holder_dead | `lock_force_release` |
+| 持锁者 ReactLoop 异常退出 | watchdog 检测 agent_card 离线 | interrupted | `lock_force_release` |
+| 持锁者主动 leave 但未释放锁 | agent_registry.leave() 调用 | interrupted | `lock_force_release` |
+| Director 恢复期 fence 超时 | fence 计时器 | timeout | `lock_force_release` |
+
+> audit action 统一为 13 粗粒度枚举之一 `lock_force_release`，细分原因通过 `details.reason` 字段区分（v1.0.3 对齐）。
 
 **应急释放的安全保证**：
 
