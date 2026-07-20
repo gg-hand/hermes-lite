@@ -4,7 +4,7 @@ date: 2026-07-20
 status: draft
 authors: [hermes]
 tags: [multiagent, protocol, director, blackboard, a2a]
-revision: "1.0.2"
+revision: "1.0.3"
 revision_notes: |
   v1.0.1 (2026-07-20): 经 5 个子智能体交叉审查（并发/安全/可靠性/协议/实施）
   修订 21 项 P0 阻断问题与 19 项 P1 关键问题。
@@ -55,6 +55,13 @@ revision_notes: |
   - Schema 校验分层：必选字段严格，可选/未知字段软约束
   - 磁盘满分阈值响应：100MB 警告 / 10MB 严重 / 1MB 极端
   - 时钟漂移分阈值响应：> 5 秒软约束（放大 grace_period），> 60 秒严格阻断（暂停锁强制释放）
+
+  v1.0.3 (2026-07-21): 多 Agent 协作机制修订（grill-me 6 项决策 + 交叉验证 49 项），详见 §17 修订日志
+  - grill-me 第三轮 6 项决策（Q1 字段写权限矩阵 / Q2 拆文件 / Q3 异常类 / Q4 三子表 / Q5 时钟漂移 / Q6 字段属性表）
+  - 子智能体交叉验证 49 项（P0×15 / P1×22 / P2×12）
+  - Step 1-9 执行摘要（协议层 / 字段属性表 / 锁机制 / 可靠性 / 错误处理 / ReactLoop / 配置容器 / audit 统一 / 修订日志）
+  - §4.4 心跳三阶段阈值表统一（active / degraded / offline，对齐 §8.2）
+  - §17.1 P1 项扩展（项 5/6/9 计划列扩展 + 新增 P2-4 / P2-5 / P1-18 三项）
 ---
 
 # 多 Agent 协作机制设计
@@ -1266,11 +1273,11 @@ async def check_director_liveness(director_md, director_card_path=None):
 
 **离线判定三阶段**：
 
-| 阶段 | 触发条件 | 状态转换 | 行为 |
-|------|---------|---------|------|
-| **健康** | age ≤ interval | online | 正常协作 |
-| **降级** | interval < age ≤ 2×interval | degraded | Director 减少任务分配，告警 |
-| **离线** | age > 3×interval | offline | 触发恢复流程 |
+| 阶段 | 触发条件 | 状态转换 |
+|------|---------|---------|
+| 健康 | age < 2×interval | active |
+| 降级 | 2×interval ≤ age < timeout | degraded |
+| 离线 | age ≥ timeout | offline（autonomous） |
 
 **恢复流程**：
 
@@ -3423,6 +3430,34 @@ pytest tests/multiagent/test_e2e_self_talk.py -v
 
 ## 17. 遗留问题与 v1.1 计划（v1.0.1 新增）
 
+### v1.0.3 修订日志（2026-07-21）
+
+**grill-me 第三轮 6 项决策**：
+- Q1: §3.3.3 新增字段写权限矩阵
+- Q2: §3.2/3.3.5/6.2 新增 messages.pending.md / messages.replay_candidates.md
+- Q3: §11.2 拆三子表，§11.1 补 6 异常类
+- Q4: §11.3 总表删除，§11.2 三子表加阻断层列
+- Q5: §7.1/8.2 删除"改用单调时钟"
+- Q6: §3.3.3 新增字段属性表
+
+**子智能体交叉验证 49 项**：
+- P0 阻断 15 项（详见 spec 第 3.2 节）
+- P1 关键 22 项（详见 spec 第 3.3 节）
+- P2 改进 12 项（详见 spec 第 3.4 节）
+
+**Step 1-9 执行摘要**：
+- Step 1: 协议层基础（§3.0 / §3.3.2 / §3.3.3 / §3.3.4 / §3.3.5 / §3.3.7 / §3.5 / §3.6 / §3.7）
+- Step 2: 字段属性表（§3.3.3，Q1+Q6 合并落地）
+- Step 3: 锁机制补完（§7.1 / §7.2）
+- Step 4: 可靠性补完（§8.2 / §8.3）
+- Step 5: 错误处理重构（§11.1 / §11.2 / §11.3）
+- Step 6: ReactLoop 集成补完（§10.6）
+- Step 7: 配置与容器（§10.0 / §10.2 / §10.3 / §10.4 / §10.5）
+- Step 8: audit action 统一（全文替换 40+ 细粒度值）
+- Step 9: §17 修订日志 + §4.4 心跳阈值统一
+
+详见：2026-07-21-多agent协作机制-v1.0.3修订-spec.md
+
 经 5 个子智能体交叉审查发现的 82 个问题中，P0 (21 项) 与 P1 (19 项) 已在 v1.0.1 修复。剩余 P1/P2 问题推迟到 v1.1 处理。
 
 ### 17.1 推迟到 v1.1 的 P1 改进项
@@ -3433,15 +3468,18 @@ pytest tests/multiagent/test_e2e_self_talk.py -v
 | 2 | 信任分历史保留条数未定义 | §3.3.4 | v1.1 定义 trust_history 长度上限（如 100 条） |
 | 3 | extensions 字段未细化 x_ 前缀冲突解决 | §3.3.4 | v1.1 定义 x_ 命名空间注册机制 |
 | 4 | role=custom 时的必选字段定义模糊 | §3.3.4 | v1.1 细化 custom role 声明机制 |
-| 5 | WAL 截断策略未细化 | §8.1 | v1.1 定义 WAL checkpoint + truncation 触发条件 |
-| 6 | 快照恢复流程未细化 | §8.1 | v1.1 补充 snapshot 恢复的具体步骤 |
+| 5 | WAL 截断策略未细化 | §8.1 | v1.1 含 WAL schema（op_id/ts/target_file/payload_hash/prev_wal_seq）+ rebuild_from_wal + WAL/audit 写入顺序 + WAL 损坏降级 |
+| 6 | 快照恢复流程未细化 | §8.1 | v1.1 含快照+增量 audit 重放 + status.json.recovered 原子 rename + 快照/audit 协同顺序 |
 | 7 | Director 私钥轮换流程未定义 | §3.3.2 | v1.1 补充 key rotation 协议 |
 | 8 | 跨平台 lockfile 命名规则未细化（撇号路径场景） | §3.5 | v1.1 补充 sha1(path) 命名约定 |
-| 9 | 监控告警具体阈值与路由未细化 | §8.5 | v1.1 补充告警规则与通知通道 |
+| 9 | 监控告警具体阈值与路由未细化 | §8.5 | v1.1 含告警规则 / 通知通道 / 自动响应动作映射表 |
 | 10 | Prometheus 指标导出格式未细化 | §8.5 | v1.1 补充 metrics endpoint |
 | 11 | A2A Gateway 错误码映射未完整 | §9 | v1.1 补充错误码双向映射表 |
 | 12 | 外部 agent 参考实现 CI 流水线未细化 | §3.6 | v1.1 补充 GitHub Actions matrix |
 | 13 | 性能基准未定义 | §13 | v1.1 补充 benchmark 目标（如 1000 msg/min） |
+| 14 | freeform 模式 wait_queue FIFO 公平性（P2-4） | §7.1 | v1.1 验证 wait_queue FIFO 公平性，防饿死 |
+| 15 | 自治模式 CAS 冲突率基准测试（P2-5） | §8.3 | v1.1 补充 CAS 冲突率基准测试与降级阈值 |
+| 16 | Director 锁抢占协议的跨平台实现差异（P1-18） | §7.1 | v1.1 补充 Windows LockFileEx vs Linux fcntl 实现差异 |
 
 ### 17.2 推迟到 v1.1 的 P2 改进项
 
