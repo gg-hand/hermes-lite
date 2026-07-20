@@ -3437,7 +3437,7 @@ pytest tests/multiagent/test_e2e_self_talk.py -v
 - Q2: §3.2/3.3.5/6.2 新增 messages.pending.md / messages.replay_candidates.md
 - Q3: §11.2 拆三子表，§11.1 补 6 异常类
 - Q4: §11.3 总表删除，§11.2 三子表加阻断层列
-- Q5: §7.1/8.2 删除"改用单调时钟"
+- Q5: §7.1/8.2 删除单调时钟改写措辞（改为放大 grace_period + 暂停锁强制释放）
 - Q6: §3.3.3 新增字段属性表
 
 **子智能体交叉验证 49 项**：
