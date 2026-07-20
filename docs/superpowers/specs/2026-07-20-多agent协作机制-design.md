@@ -54,7 +54,7 @@ revision_notes: |
   - CapabilityNotInCard 首次软约束：执行 + pending 标记，危险工具仍严格阻断
   - Schema 校验分层：必选字段严格，可选/未知字段软约束
   - 磁盘满分阈值响应：100MB 警告 / 10MB 严重 / 1MB 极端
-  - 时钟漂移分阈值响应：> 5 秒软约束（改用单调时钟），> 60 秒严格阻断
+  - 时钟漂移分阈值响应：> 5 秒软约束（放大 grace_period），> 60 秒严格阻断（暂停锁强制释放）
 ---
 
 # 多 Agent 协作机制设计
@@ -1825,11 +1825,11 @@ class DirectorHealthMonitor:
 | **磁盘满 - 严重级** | 写入前检查 | 剩余空间 < 10MB | 拒绝非核心写入 + 进入只读监听 | 告警 toast "磁盘严重不足" |
 | **磁盘满 - 极端级** | 写入前检查 | 剩余空间 < 1MB | 拒绝所有写入 + 只读监听 | 告警 toast "磁盘空间耗尽" |
 | **文件系统只读** | atomic_write 捕获 `OSError(errno=EROFS)` | 写入失败 errno=30 | 降级为只读监听 + audit `read_only_fs` | 告警 toast "文件系统只读" |
-| **时钟漂移 - 警告级** | 启动时记录 NTP offset | 偏差 > 5 秒 | 告警 + 锁 TTL 改用单调时钟 | 告警 toast "时钟漂移检测" |
-| **时钟漂移 - 严重级** | 监控单调时钟偏移 | 偏差 > 60 秒 | 拒绝 CAS 写入（防 epoch 判定错误） | 告警 toast "时钟严重漂移" |
+| **时钟漂移 - 警告级** | 启动时记录 NTP offset | 偏差 > 5 秒 | 告警 + 放大 grace_period 至 drift_offset + 2s | 告警 toast "时钟漂移检测" |
+| **时钟漂移 - 严重级** | 监控单调时钟偏移 | 偏差 > 60 秒 | 暂停锁强制释放（防误释放他人锁） | 告警 toast "时钟严重漂移" |
 | **watchdog 自检失败** | 启动时 + 每 60 秒自检 | 5 秒内未收到事件 | 降级为 1 秒轮询 + 5 分钟自愈重试（最长 30 分钟） | 告警 toast "文件监听降级为轮询" |
 | **Director 活死** | Director 启动互斥锁 + `last_director_tick` | 锁被持有 + tick 新鲜 | 拒绝启动第二个 Director + 退出 | 告警 toast "Director 已在运行" |
-| **LLM 不可用** | LLM 客户端超时/连接失败 | 连续 3 次失败 | 仲裁改用 `conflict_resolution.fallback_strategy` | 告警 toast "LLM 不可用，降级仲裁策略" |
+| **LLM 不可用** | LLM 客户端超时/连接失败 | 连续 3 次失败 | 仲裁改用 `conflict_resolution.fallback_strategy=priority`，排序键：`last_heartbeat_age` asc → `agent_id` asc（详见 §3.3.2） | 告警 toast "LLM 不可用，降级仲裁策略" |
 
 **watchdog 自检流程**（防 watchdog 静默失聪，v1.0.2 修订：增加最长重试时间限制）：
 
@@ -1898,6 +1898,16 @@ async def _watchdog_self_heal(self, watcher: BlackboardWatcher, max_duration_min
         event_type="watchdog_self_heal_timeout",
         message=f"watchdog 自愈超时（{max_duration_minutes}分钟），永久降级为轮询",
     )
+    # 永久标记持久化：避免重启后又走 30 分钟自愈（v1.0.3 补完，P1-15）
+    watchdog_state_path = self._data_dir / "watchdog_state.json"
+    async with aiofiles.open(watchdog_state_path, "w") as f:
+        await f.write(json.dumps({
+            "mode": "polling_permanent",
+            "set_at": iso_now(),
+            "reason": "self_heal_timeout",
+        }))
+    # 启动时读取：若 mode=polling_permanent 跳过自检直接轮询
+    # 用户重置：multiagent.watchdog.reset_to_watchdog=true（重启生效）
 ```
 
 **用户提示统一机制**（v1.0.2 新增）：
@@ -1928,6 +1938,14 @@ async def _emit_alert_toast(self, level: str, event_type: str, message: str, sug
 
 ```
 进程启动
+   │
+   ▼
+0. 检查 snapshots/ 是否存在可用的 snapshot-{ts}.tar.gz
+   │
+   ├─ 存在：解压到临时目录，记录 snapshot_ts
+   ├─ 从 audit.jsonl 中过滤 ts > snapshot_ts 的记录重放
+   ├─ 快照恢复写 status.json.recovered 后原子 rename 为 status.json
+   └─ 不存在：跳过本步，直接走第 1 步
    │
    ▼
 1. 读 audit.jsonl 重建内存状态
@@ -2088,8 +2106,8 @@ async def autonomous_mode(self):
 |------|---------|---------|
 | audit 写入主体 | Director + Worker | 仅 Worker（每个 Worker 独立写入自己产生的 audit） |
 | Director 真伪判定 | 检查 director_signature + epoch 一致 | 任何带 epoch 的 Director 消息一律拒绝（自治期不接受 Director 写入） |
-| 锁管理 | Director 强制释放权 + Worker CAS 获取 | 仅 Worker CAS 获取，无强制释放；持锁崩溃靠 TTL + grace_period 自然过期 |
-| 轮次推进 | Director 写 status.json.current_turn | 时间片轮转：每个 Worker 按 `agent_id` 字典序轮转，每片 30 秒 |
+| 锁管理 | Director 强制释放权 + Worker CAS 获取 | 仅 Worker CAS 获取，无强制释放；持锁崩溃靠 TTL + grace_period 自然过期。已知 trade-off：自治期锁恢复时间 = TTL + grace_period（默认 32 秒），慢于正常模式的即时 emergency_release。建议自治期将 TTL 缩短为 10 秒（heartbeat.timeout_seconds / 3），通过更频繁续期补偿。 |
+| 轮次推进 | 自治期 Worker 可 CAS 写 status.json.current_turn（仅此一字段；自治退出后由 Director 接管，见 §3.3.3 字段属性表例外） | 时间片轮转：每个 Worker 按 `agent_id` 字典序轮转，每片 30 秒 |
 | 冲突仲裁 | LLM 仲裁器（Director 调用） | 简单 FIFO：最早 `messages.md.seq` 优先 |
 | 任务分配 | Director 创建 tasks/{id}.md | 暂停新任务分配，仅完成已有 working 任务 |
 | 退出条件 | / | 检测到 Director `last_director_tick` 新鲜（< heartbeat.interval_seconds）且 director_signature 验证通过 → 退出自治 |
@@ -2114,6 +2132,18 @@ async def check_director_recovery(self):
     
     # Director 已恢复，退出自治
     await self._exit_autonomous_mode(director_md["current_epoch"])
+    # 二次确认 Director 仍可用（v1.0.3 补完，P1-14）
+    recheck_md = await read_director_md()
+    if now() - parse_iso(recheck_md["last_director_tick"]) > timedelta(
+        seconds=recheck_md["heartbeat"]["interval_seconds"]
+    ):
+        # Director 在退出自治期间再次崩溃，回滚自治
+        await self._enter_autonomous_mode(reason="director_re_crashed_during_exit")
+        await append_audit(self._bb_root, {
+            "action": "recovery_start",
+            "details": {"reason": "autonomous_exit_rollback", "director_re_crashed": True},
+        })
+        return
     await append_audit(bb_root, {
         "actor": self._agent_id, "action": "autonomous_exit",
         "target": "director.md", "op_id": uuid4_str(),
@@ -2789,7 +2819,7 @@ class PathTraversalError(MultiAgentError):
 | DiskFullWarning (< 100MB) | 软约束 | 暂停 snapshots + 允许核心写入 | 否 | - | `action=disk_full_warning` | 告警 toast "磁盘空间不足" |
 | DiskFullCritical (< 10MB) | 严格阻断 | 拒绝非核心写入 + 只读监听 | 否 | - | `action=disk_full_critical` | 告警 toast "磁盘严重不足" |
 | ReadOnlyFileSystem | 严格阻断 | 降级为只读监听 | 否 | - | `action=read_only_fs` | 告警 toast "文件系统只读" |
-| ClockDriftWarning (> 5 秒) | 软约束 | 改用单调时钟 | 否 | - | `action=clock_drift_detected` | 告警 toast "时钟漂移检测" |
+| ClockDriftWarning (> 5 秒) | 软约束 | 放大 grace_period 至 drift_offset + 2s | 否 | - | `action=clock_drift_detected` | 告警 toast "时钟漂移检测" |
 | ClockDriftCritical (> 60 秒) | 严格阻断 | 拒绝 CAS 写入 | 否 | - | `action=clock_drift_critical` | 告警 toast "时钟严重漂移" |
 | WatchdogSelfTestFailed | 软约束 | 降级为轮询 + 5 分钟自愈 | 否 | - | `action=watchdog_self_test_failed` | 告警 toast "文件监听降级" |
 | RecoveryFenceTimeout | 应急释放 | 自动解除 fence | 否 | - | `action=recovery_fence_timeout` | 告警 toast "恢复超时，解除 fence" |
@@ -2850,7 +2880,7 @@ class PathTraversalError(MultiAgentError):
 | 27 | **磁盘空间 10-100MB** | 软约束 | 暂停 snapshots + 允许核心写入（messages/audit） | 告警 toast "磁盘空间不足" |
 | 28 | **磁盘空间 < 10MB** | 严格阻断 | 拒绝非核心写入 + 进入只读监听 | 告警 toast "磁盘严重不足" |
 | 29 | **只读文件系统** | 严格阻断 | 降级为只读监听 + audit `read_only_fs` | 告警 toast "文件系统只读" |
-| 30 | **时钟漂移 > 5 秒** | 软约束 | 告警 + 自动改用单调时钟计算 TTL | 告警 toast "时钟漂移检测" |
+| 30 | **时钟漂移 > 5 秒** | 软约束 | 告警 + 放大 grace_period 至 drift_offset + 2s | 告警 toast "时钟漂移检测" |
 | 31 | **时钟漂移 > 60 秒** | 严格阻断 | 拒绝 CAS 写入（防 epoch 判定错误） | 告警 toast "时钟严重漂移" |
 | 32 | **恢复期 fence 范围内（messages 锁）** | 严格阻断 | 暂停 messages 锁获取 | 告警 toast（>10 秒时）"Director 恢复中" |
 | 33 | **恢复期 fence 范围外（tasks 锁/读操作）** | 不阻断 | 允许继续执行 | 无 |
