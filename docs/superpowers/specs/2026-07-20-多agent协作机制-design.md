@@ -986,8 +986,8 @@ def validate_path_safety(rel_path: str, bb_root: Path) -> str:
     if os.path.isabs(rel_path):
         normalized = os.path.relpath(rel_path, str(bb_root))
         audit_log(
-            action="path_normalized",
-            details={"original": rel_path, "normalized": normalized},
+            action="write",
+            details={"reason": "path_normalized", "original": rel_path, "normalized": normalized},
         )
         rel_path = normalized
     
@@ -1216,11 +1216,11 @@ for agent_id in status["active_agents"]:
     
     if age > offline_threshold:
         update_agent_status(agent_id, "offline")
-        audit(action="agent_offline", actor=agent_id, reason="heartbeat_timeout")
+        audit(action="heartbeat", actor=agent_id, reason="agent_offline")
         # 触发恢复流程
     elif age > degraded_threshold:
         update_agent_status(agent_id, "degraded")
-        audit(action="agent_degraded", actor=agent_id)
+        audit(action="heartbeat", actor=agent_id, reason="agent_degraded")
 ```
 
 **Director 自身心跳（防 Director 单点故障）**（v1.0.1 修订，对齐 §3.3.2 `director_implementation`）：
@@ -1318,7 +1318,7 @@ def leave(bb_dir, agent_id, reason="user_shutdown"):
     update_agent_card(agent_id, status="offline", leave_reason=reason, left_at=now())
     
     # 4. 追加 audit
-    append_audit(action="agent_leave", actor=agent_id, reason=reason)
+    append_audit(action="leave", actor=agent_id, reason=reason)
     
     # 5. 通知 Director 检查是否需要任务重分配
     append_message(type="system", content=f"agent {agent_id} left: {reason}")
@@ -1591,7 +1591,7 @@ Worker 持锁后执行的所有写操作（如 `append_message`、`update_task`�
 1. 携带 `fencing_token` 字段到 messages.md / tasks/{id}.md frontmatter
 2. 写 audit 时在 `details.fencing_token` 字段记录
 3. Director 或其他 Worker 验证时检查 fencing_token 与 status.json.locks 中的一致
-4. 若 token 不匹配（旧持锁者已完成但锁已被强制释放），拒绝该写入并 audit `action=arbitrate, reason=ghost_write_attempt`
+4. 若 token 不匹配（旧持锁者已完成但锁已被强制释放），拒绝该写入并 audit `action=arbitrate, details.reason="ghost_write_attempt"`
 
 **Grace Period 强制释放策略**（防 TTL 过期幽灵写入）：
 
@@ -1991,7 +1991,7 @@ async def _emit_alert_toast(self, level: str, event_type: str, message: str, sug
    │
    └─ 如果超过 fence_timeout 仍未完成（v1.0.2 新增）：
       ├─ 自动解除 fence（应急释放，对齐 §11.3 应急释放层）
-      ├─ audit `action=recovery_fence_timeout`
+      ├─ audit `action=recovery_start, details.reason="fence_timeout"`
       ├─ 触发用户可见 toast "恢复超时，解除 fence"
       ├─ 强制将 status.json.director_status="active"（降级模式）
       └─ 后续问题靠 §7.1 应急释放机制处理
