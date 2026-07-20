@@ -2484,40 +2484,119 @@ You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
 """
 ```
 
-**集成点 2：工具调用前 capabilities 校验**
+**集成点 2：capabilities 校验下沉 ToolExecutor**
+
+> v1.0.3 修订（P1-23 + O7 默认值）：原 ReactLoop._execute_tool 的 capabilities 校验下沉到 ToolExecutor.evaluate_policy，ReactLoop._execute_tool 不再校验 capabilities。
 
 ```python
-# hermes/agent/react_loop.py 工具执行前
-async def _execute_tool(self, tool_name, args, ctx):
-    if self._multiagent_enabled and self._worker_capabilities:
-        if tool_name not in self._worker_capabilities:
-            raise CapabilityNotInCardError(
-                tool_name=tool_name,
-                reason=f"tool not declared in agent_card.capabilities",
-                suggestion=f"add '{tool_name}' to multiagent.worker.capabilities",
+# hermes/agent/tool_executor.py 新增
+def evaluate_policy(self, tool_name, tool_input, session_id, ...):
+    # 新增：multiagent capabilities 校验（在 policy_engine 之前）
+    if self._multiagent_state and tool_name not in self._multiagent_state.worker_capabilities:
+        raise CapabilityNotInCardError(
+            tool_name=tool_name,
+            agent_id=self._multiagent_state.agent_id,
+            declared_capabilities=self._multiagent_state.worker_capabilities,
+        )
+    # 现有：policy_engine 校验
+    ...
+
+# ToolExecutor.__init__ 新增可选参数
+def __init__(self, ..., multiagent_state: MultiAgentState | None = None):
+    self._multiagent_state = multiagent_state
+```
+
+**集成点 3/4：SessionManager 注册钩子（会话启动注册 / 会话结束注销）**
+
+> v1.0.3 修订（P1-24 + O8 默认值）：原 ReactLoop._on_session_start / _on_session_end 改为 SessionManager._multiagent_hooks 机制，由 SessionManager 在 create_session / destroy_session 时遍历调用钩子。
+
+```python
+# hermes/agent/session_manager.py 新增
+class SessionManager:
+    def __init__(self, ...):
+        self._multiagent_hooks: list[tuple[Callable, Callable]] = []
+
+    def add_multiagent_hook(self, on_start: Callable, on_end: Callable):
+        self._multiagent_hooks.append((on_start, on_end))
+
+    async def create_session(self, ...):
+        session = ...
+        for on_start, _ in self._multiagent_hooks:
+            await on_start(session)
+        return session
+
+    async def destroy_session(self, session_id, ...):
+        for _, on_end in self._multiagent_hooks:
+            await on_end(session_id)
+        ...
+
+# multiagent 模块在容器注册时调用
+session_manager.add_multiagent_hook(
+    on_start=lambda ctx: agent_registry.register(...),
+    on_end=lambda sid: agent_registry.unregister(...),
+)
+```
+
+**集成点 5：发言前轮次校验**
+
+> v1.0.3 新增（P0-14 + O4 默认值）：ReactLoop._before_speak 方法。freeform 模式不阻断；非 freeform 模式非本机轮次写 pending 队列并抛 NotMyTurnError。
+
+```python
+# hermes/agent/react_loop.py 新增方法
+async def _before_speak(self, agent_id: str, message: dict):
+    """发言前轮次校验。freeform 模式不阻断；非 freeform 模式非本机轮次写 pending 队列。"""
+    if not self._multiagent_enabled:
+        return
+    turn_policy = await self._read_turn_policy()
+    if turn_policy["mode"] == "freeform":
+        return
+    current = await self._read_current_turn()
+    if current["agent_id"] != agent_id:
+        # 写 messages.pending.md（Q2 决策）
+        await self._append_pending_message(message)
+        raise NotMyTurnError(
+            expected_agent=current["agent_id"],
+            actual_agent=agent_id,
+            turn_started_at=current["started_at"],
+        )
+```
+
+**集成点 6：Director 心跳监测后台任务**
+
+> v1.0.3 新增（P0-15 + O4 默认值）：ReactLoop._start_director_heartbeat_monitor 方法。会话启动时启动后台任务，周期检查 director.md.last_director_tick，超时进入自治模式并抛 DirectorUnavailableError（PROTOCOL 阶段错误，不走 tool_result 链路）。
+
+```python
+# hermes/agent/react_loop.py 会话启动时启动后台任务
+async def _start_director_heartbeat_monitor(self, session_ctx):
+    """周期检查 director.md.last_director_tick，超时触发 DirectorUnavailableError。"""
+    while True:
+        await asyncio.sleep(self._heartbeat_interval)
+        director_md = await read_director_md(self._bb_root)
+        age = now() - parse_iso(director_md["last_director_tick"])
+        if age > timedelta(seconds=director_md["heartbeat"]["timeout_seconds"]):
+            await self._enter_autonomous_mode(reason="director_heartbeat_timeout")
+            raise DirectorUnavailableError(
+                last_tick=director_md["last_director_tick"],
+                age_seconds=age.total_seconds(),
             )
-    return await self._tool_registry.execute_tool(tool_name, args, ctx)
 ```
 
-**集成点 3：会话启动注册**
+**集成点 7：LLM 上下文消息隔离**
+
+> v1.0.3 新增（P1-25 + O4 默认值）：ReactLoop._build_chat_messages 方法 + __init__ 注入 InjectionIsolator。multiagent 启用时用 InjectionIsolator 包裹原始消息构造隔离上下文。
 
 ```python
-# hermes/agent/react_loop.py 会话开始时
-async def _on_session_start(self, session_ctx):
-    if self._multiagent_enabled and self._role in ("worker", "both"):
-        await self._agent_registry.register(self._worker_agent_id, self._build_agent_card())
-        await self._watchdog.start_watching(self._bb_root, callback=self._on_blackboard_event)
-        await self._worker_adapter.start_heartbeat()
-```
+# hermes/agent/react_loop.py 新增方法
+async def _build_chat_messages(self, ctx) -> list[dict]:
+    raw = await self._read_new_messages_since_last_seq(ctx)
+    if self._multiagent_enabled:
+        wrapped = self._injection_isolator.build_llm_context(raw)
+        return [{"role": "user", "content": wrapped}]
+    return raw
 
-**集成点 4：会话结束注销**
-
-```python
-async def _on_session_end(self, session_ctx):
-    if self._multiagent_enabled and self._role in ("worker", "both"):
-        await self._worker_adapter.stop_heartbeat()
-        await self._watchdog.stop_watching()
-        await self._agent_registry.leave(self._worker_agent_id, reason="session_end")
+# ReactLoop.__init__ 注入
+def __init__(self, ..., injection_isolator: InjectionIsolator | None = None):
+    self._injection_isolator = injection_isolator or InjectionIsolator(bb_root)
 ```
 
 ## 11. 错误处理
