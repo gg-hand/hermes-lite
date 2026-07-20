@@ -2552,13 +2552,32 @@ _CATEGORY_ZH = {
     "out_of_protocol_write": "绕过协议写入",
     "path_traversal_detected": "路径穿越检测",
     "autonomous_mode_entered": "进入自治模式",
+    # v1.0.3 新增（spec §4.20）
+    "director_signature_failed": "Director 签名验证失败",
+    "schema_validation_error": "Schema 校验失败",
+    "disk_full": "磁盘空间不足",
+    "read_only_fs": "文件系统只读",
+    "clock_drift": "时钟漂移",
+    "recovery_fence_timeout": "恢复期 fence 超时",
+    "lock_force_release": "强制释放锁",
+    "a2a_gateway": "A2A 网关错误",
 }
+```
+
+**ErrorStage 枚举扩展声明**（v1.0.3 新增，spec §4.20）：
+
+```
+- 现有 tool_error.py 的 ErrorStage 仅含 PRE_EXECUTION / EXECUTION
+- multiagent 模块扩展 ErrorStage 枚举新增 PROTOCOL 值
+- ReactLoop 的 tool_result 链路仅识别 PRE_EXECUTION / EXECUTION
+- PROTOCOL 阶段错误由心跳监测后台任务触发（集成点 6），不走 tool_result 链路
 ```
 
 **新增异常类**（v1.0.1 修订，对齐 dataclass 风格）：
 
 ```python
 from dataclasses import dataclass, field
+from typing import Literal
 from hermes.agent.tool_error import ToolError, ErrorStage
 
 
@@ -2581,13 +2600,15 @@ class MultiAgentError(ToolError):
 
 
 @dataclass(kw_only=True)
-class ProtocolValidationError(MultiAgentError):
+class SchemaValidationError(MultiAgentError):  # 合并原 ProtocolValidationError（v1.0.3 改名）
     """协议文件校验失败（schema 不符/含绝对路径/symlink 逃逸等）。"""
     
-    validation_errors: list = field(default_factory=list)  # 校验错误详情列表
+    field_path: str = ""                                  # 校验失败的字段路径（v1.0.3 新增）
+    error_type: Literal["missing_required", "unknown_field", "type_mismatch", "enum_out_of_range"] = "missing_required"  # v1.0.3 新增
+    validation_errors: list = field(default_factory=list)  # 校验错误详情列表（兼容旧字段）
     target_file: str = ""                                  # 被校验的文件相对路径
     tool_name: str = "schema_validator"
-    category: str = "protocol_validation_error"
+    category: str = "schema_validation_error"
     stage: ErrorStage = ErrorStage.PRE_EXECUTION
     suggestion: str = "修正协议文件以符合 schema"
     reason: str = ""  # __post_init__ 从 validation_errors 计算
@@ -2596,6 +2617,9 @@ class ProtocolValidationError(MultiAgentError):
         if not self.reason and self.validation_errors:
             self.reason = "; ".join(self.validation_errors)
         super().__post_init__()
+
+# backward compat alias（ProtocolValidationError 改名为 SchemaValidationError，保留旧名一段时间）
+ProtocolValidationError = SchemaValidationError
 
 
 @dataclass(kw_only=True)
@@ -2784,110 +2808,257 @@ class PathTraversalError(MultiAgentError):
         if not self.reason:
             self.reason = f"path '{self.attempted_path}' escapes bb_root '{self.bb_root}'"
         super().__post_init__()
+
+
+# =============================================================================
+# v1.0.3 新增异常类（spec §4.20：Q3 决策 + P1-22 + P1-6 A2A 占位）
+# =============================================================================
+
+@dataclass(kw_only=True)
+class DirectorSignatureError(MultiAgentError):
+    """Director 签名验证失败（衔接 VerifyResult.degraded / distrust）。"""
+    
+    level: Literal["degraded", "distrust"]
+    failure_count: int
+    threshold: int = 3
+    tool_name: str = "director_engine"
+    category: str = "director_signature_failed"
+    stage: ErrorStage = ErrorStage.PROTOCOL
+    suggestion: str = "连续失败达阈值时进入自治模式"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"director signature verification failed (level={self.level}, failure_count={self.failure_count}/{self.threshold})"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class DiskFullError(MultiAgentError):
+    """磁盘空间不足。"""
+    
+    free_bytes: int
+    threshold_bytes: int
+    tool_name: str = "blackboard"
+    category: str = "disk_full"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "暂停 snapshots，仅允许核心写入（messages/audit）"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"disk full: free={self.free_bytes} bytes, threshold={self.threshold_bytes} bytes"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class ReadOnlyFileSystemError(MultiAgentError):
+    """文件系统只读。"""
+    
+    path: str
+    tool_name: str = "blackboard"
+    category: str = "read_only_fs"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "降级为只读监听"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"file system is read-only: path='{self.path}'"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class ClockDriftError(MultiAgentError):
+    """时钟漂移超阈值。"""
+    
+    drift_seconds: float
+    threshold_seconds: int
+    tool_name: str = "time_sync_monitor"
+    category: str = "clock_drift"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "暂停锁强制释放，放大 grace_period"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"clock drift={self.drift_seconds}s, threshold={self.threshold_seconds}s"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class RecoveryFenceTimeoutError(MultiAgentError):
+    """恢复期 fence 超时。"""
+    
+    fence_started_at: str
+    timeout_seconds: int
+    tool_name: str = "director_engine"
+    category: str = "recovery_fence_timeout"
+    stage: ErrorStage = ErrorStage.PROTOCOL
+    suggestion: str = "强制退出 fence + audit 记录"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"recovery fence timeout: started_at={self.fence_started_at}, timeout={self.timeout_seconds}s"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class LockForceReleaseError(MultiAgentError):
+    """锁被强制释放（timeout / holder_dead / interrupted）。"""
+    
+    lock_name: str
+    # reason 字段覆盖父类 reason: str，改用 Literal 限定释放原因
+    reason: Literal["timeout", "holder_dead", "interrupted"]
+    tool_name: str = "lock_manager"
+    category: str = "lock_force_release"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "audit 记录 + 通知原持锁者"
+    # 注：reason 为 Literal 类型，不走 __post_init__ 字符串拼接
+
+
+# =============================================================================
+# A2A 网关占位类（v1.0.3 新增，spec §4.20 占位，v1.1 补充双向映射）
+# =============================================================================
+
+@dataclass(kw_only=True)
+class A2AGatewayError(MultiAgentError):
+    """A2A 网关错误（占位，v1.1 补充双向映射）。"""
+    
+    http_status: int
+    a2a_error_code: str
+    tool_name: str = "a2a_gateway"
+    category: str = "a2a_gateway"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "v1.1 补充 A2A 错误到 multiagent 异常的双向映射"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"a2a gateway error: http_status={self.http_status}, code={self.a2a_error_code}"
+        super().__post_init__()
+
+
+@dataclass(kw_only=True)
+class A2ATaskStateTransitionError(MultiAgentError):
+    """A2A 任务状态转换非法（占位，v1.1 补充双向映射）。"""
+    
+    task_id: str
+    from_state: str
+    to_state: str
+    tool_name: str = "a2a_gateway"
+    category: str = "a2a_gateway"
+    stage: ErrorStage = ErrorStage.EXECUTION
+    suggestion: str = "检查 A2A 任务状态机转换规则"
+    reason: str = ""  # __post_init__ 计算
+    
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = f"a2a task '{self.task_id}' invalid transition: {self.from_state} -> {self.to_state}"
+        super().__post_init__()
 ```
 
-### 11.2 错误处理策略（v1.0.2 修订：对齐 §11.3 分层阻断）
+### 11.2 错误处理策略（v1.0.3 修订：拆三子表 + 阻断层列，spec §4.21）
 
-| 错误类型 | 阻断层 | 处理 | 是否重试 | 重试上限 | audit 记录 | 用户提示 |
-|---------|--------|------|---------|---------|-----------|---------|
-| ProtocolValidationError (必选字段) | 严格阻断 | 拒绝写入 + 告警 | 否 | - | `action=arbitrate, reason=required_field_missing` | 告警 toast |
-| ProtocolValidationError (可选字段) | 软约束 | 自动转字符串 + 写入 | 否 | - | `action=field_type_coerced` | 无 |
-| ProtocolValidationError (未知字段) | 软约束 | 保留字段 + 写入 | 否 | - | `action=unknown_field_preserved` | 无 |
+错误处理策略按"异常类 / 字段标记 / 系统响应动作"三类分别归入 §11.2.1 / §11.2.2 / §11.2.3 子表，阻断层定义见 §11.2.4，重试预算见 §11.2.5。每条 audit 记录使用 13 粗粒度枚举之一（write/heartbeat/turn_advance/turn_timeout/lock_acquire/lock_release/lock_force_release/register/leave/arbitrate/snapshot/recovery_start/recovery_end）+ `details.reason` 细分。
+
+#### 11.2.1 异常类处理表（含阻断层列）
+
+| 异常类 | 阻断层 | 处理 | 重试 | 重试上限 | audit action | 用户提示 |
+|--------|--------|------|------|---------|--------------|---------|
+| SchemaValidationError (必选字段) | 严格阻断 | 拒绝执行 | 否 | - | `action=write, details.reason="schema_validation_failed"` | 错误提示 |
+| SchemaValidationError (可选字段) | 软约束 | 字段忽略 + 告警 | 否 | - | `action=write, details.reason="unknown_field_ignored"` | 告警 toast |
+| SchemaValidationError (枚举值越界) | 软约束 | 降级到 nearest valid value | 否 | - | `action=write, details.reason="enum_value_coerced"` | 告警 toast |
 | NotMyTurnError (freeform 模式) | 不阻断 | 无轮次检查 | - | - | - | 无 |
-| NotMyTurnError (非 freeform 模式) | 软约束 | 写入 pending 队列 | 否 | - | `action=out_of_turn_attempt` | 无 |
-| LockAcquisitionError | 软约束 | 异步队列化 + 60 秒超时 | 是 | 2 次 | `action=lock_acquire_failed` | 超时告警 toast |
-| AgentOfflineError | 严格阻断 | 标记任务 failed | 否 | - | `action=agent_offline` | 无 |
-| DirectorUnavailableError | 严格阻断 | 进入自治模式 | 否（持续检测） | - | `action=recovery_start, reason=director_unavailable` | 告警 toast "Director 断线" |
-| SchemaVersionMismatchError (major) | 严格阻断 | 拒绝接入 | 否 | - | `action=register, status=rejected, reason=protocol_major_mismatch` | 无 |
-| SchemaVersionMismatchError (minor) | 软约束 | 允许接入 + 标记 | 否 | - | `action=register, status=active, note=version_minor_mismatch` | 无 |
-| FencingTokenMismatchError (首次) | 软约束 | Director LLM 仲裁判断价值 | 否 | - | `action=arbitrate, reason=ghost_write_attempt, level=soft` | 无 |
-| FencingTokenMismatchError (连续 3 次同 agent) | 严格阻断 | 减信任分 + 告警 | 否 | - | `action=arbitrate, reason=ghost_write_pattern` | 告警 toast |
-| CASVersionMismatchError (重试 2 次后) | 软约束 | 字段级合并 | 是 | 2 次 | `action=cas_merge_attempt` | 无 |
-| CASVersionMismatchError (合并冲突) | 严格阻断 | 抛告警 + audit | 否 | - | `action=cas_merge_conflict` | 告警 toast |
-| CapabilityNotInCardError (非危险工具首次) | 软约束 | 执行 + pending 标记 | 否 | - | `action=capability_undeclared_first` | 无 |
-| CapabilityNotInCardError (危险工具) | 严格阻断 | 拒绝执行 | 否 | - | `action=arbitrate, reason=capability_violation_dangerous` | 告警 toast |
-| CapabilityNotInCardError (连续 3 次同工具) | 严格阻断 | 减信任分 | 否 | - | `action=capability_violation_pattern` | 无 |
-| GhostWriteAttemptError (首次) | 软约束 | Director LLM 仲裁判断价值 | 否 | - | `action=arbitrate, reason=ghost_write_attempt, level=soft` | 无 |
-| GhostWriteAttemptError (连续 3 次同 agent) | 严格阻断 | 减信任分 + 告警 | 否 | - | `action=ghost_write_pattern` | 告警 toast |
-| PathTraversalError (`..` / symlink) | 严格阻断 | 拒绝写入 + 告警 | 否 | - | `action=arbitrate, reason=path_traversal` | 告警 toast |
-| PathNormalized (绝对路径) | 软约束 | 自动转相对路径 + 写入 | 否 | - | `action=path_normalized` | 无 |
-| SchemaValidationError (枚举值越界) | 软约束 | 降级到 nearest valid value | 否 | - | `action=enum_value_coerced` | 无 |
-| DirectorSignatureError (单次) | 软约束 | 继续执行 + 标记 degraded | 否 | - | `action=signature_failed` | 告警 toast "Director 签名验证失败" |
-| DirectorSignatureError (连续 3 次) | 严格阻断 | 进入自治模式 | 否 | - | `action=director_distrust, reason=signature_failed_3_times` | 告警 toast "Director 不可信" |
-| InjectionSuspected | 软约束 | 标记 + 接收方强提示 | 否 | - | `action=injection_suspected` | 无 |
-| MessageTruncated | 软约束 | 截断 + 写入 | 否 | - | `action=message_truncated` | 无 |
-| DiskFullWarning (< 100MB) | 软约束 | 暂停 snapshots + 允许核心写入 | 否 | - | `action=disk_full_warning` | 告警 toast "磁盘空间不足" |
-| DiskFullCritical (< 10MB) | 严格阻断 | 拒绝非核心写入 + 只读监听 | 否 | - | `action=disk_full_critical` | 告警 toast "磁盘严重不足" |
-| ReadOnlyFileSystem | 严格阻断 | 降级为只读监听 | 否 | - | `action=read_only_fs` | 告警 toast "文件系统只读" |
-| ClockDriftWarning (> 5 秒) | 软约束 | 放大 grace_period 至 drift_offset + 2s | 否 | - | `action=clock_drift_detected` | 告警 toast "时钟漂移检测" |
-| ClockDriftCritical (> 60 秒) | 严格阻断 | 拒绝 CAS 写入 | 否 | - | `action=clock_drift_critical` | 告警 toast "时钟严重漂移" |
-| WatchdogSelfTestFailed | 软约束 | 降级为轮询 + 5 分钟自愈 | 否 | - | `action=watchdog_self_test_failed` | 告警 toast "文件监听降级" |
-| RecoveryFenceTimeout | 应急释放 | 自动解除 fence | 否 | - | `action=recovery_fence_timeout` | 告警 toast "恢复超时，解除 fence" |
-| LockForceReleaseTimeout | 应急释放 | 强制释放锁 | 否 | - | `action=lock_force_release_timeout` | 无 |
-| LockForceReleaseHolderDead | 应急释放 | 强制释放锁 | 否 | - | `action=lock_force_release_holder_dead` | 无 |
-| LockForceReleaseInterrupted | 应急释放 | 强制释放锁 | 否 | - | `action=lock_force_release_interrupted` | 无 |
+| NotMyTurnError (非 freeform 模式) | 软约束 | 写 messages.pending.md + 轮到时 flush | 否 | - | `action=write, details.reason="out_of_turn_attempt"` | 告警 toast |
+| LockAcquisitionError | 软约束 | 异步队列化 + 60s 超时 + LLM 决策 | 是 | 2 次 | `action=lock_acquire, details.reason="acquire_failed"` | 告警 toast |
+| AgentOfflineError | 严格阻断 | 拒绝执行 + 通知 Director | 否 | - | `action=heartbeat, details.reason="agent_offline"` | 错误提示 |
+| DirectorUnavailableError | 软约束 | 触发自治模式切换 | 否 | - | `action=recovery_start, details.reason="director_unavailable"` | 告警 toast |
+| SchemaVersionMismatchError (major) | 严格阻断 | 拒绝接入 | 否 | - | `action=register, details.reason="version_major_mismatch"` | 错误提示 |
+| SchemaVersionMismatchError (minor) | 软约束 | 允许接入 + 标记 | 否 | - | `action=register, details.reason="version_minor_mismatch"` | 告警 toast |
+| FencingTokenMismatchError (首次) | 软约束 | Director LLM 仲裁，有价值入 messages.replay_candidates.md | 否 | - | `action=arbitrate, details.reason="fencing_token_mismatch"` | 告警 toast |
+| FencingTokenMismatchError (连续 3 次) | 严格阻断 | 拒绝写入 + 标记 distrust | 否 | - | `action=arbitrate, details.reason="fencing_token_mismatch_repeated"` | 错误提示 |
+| CASVersionMismatchError (重试中) | 严格阻断 | CAS 重试 | 是 | 2 次 | `action=write, details.reason="cas_retry"` | 无 |
+| CASVersionMismatchError (重试耗尽降级) | 软约束 | 字段级合并（受 multiagent.cas.merge_on_exhausted 配置控制） | 否 | - | `action=write, details.reason="cas_merge_fallback"` | 告警 toast |
+| CapabilityNotInCardError (非危险首次) | 软约束 | 执行 + 标记 pending + Director 补 card | 否 | - | `action=register, details.reason="capability_pending"` | 告警 toast |
+| CapabilityNotInCardError (危险工具) | 严格阻断 | 拒绝执行（execute_command/write_file/call_tool） | 否 | - | `action=write, details.reason="dangerous_capability_blocked"` | 错误提示 |
+| CapabilityNotInCardError (连续 3 次) | 严格阻断 | 拒绝执行 + 标记 distrust | 否 | - | `action=arbitrate, details.reason="capability_violation_repeated"` | 错误提示 |
+| GhostWriteAttemptError (首次) | 软约束 | Director LLM 仲裁，有价值入 messages.replay_candidates.md | 否 | - | `action=arbitrate, details.reason="ghost_write_attempt"` | 告警 toast |
+| GhostWriteAttemptError (连续 3 次) | 严格阻断 | 拒绝 + 标记 distrust | 否 | - | `action=arbitrate, details.reason="ghost_write_repeated"` | 错误提示 |
+| PathTraversalError (`..` / symlink) | 严格阻断 | 拒绝执行 | 否 | - | `action=write, details.reason="path_traversal_blocked"` | 错误提示 |
+| DirectorSignatureError (单次) | 软约束 | 继续执行 + 标记 degraded | 否 | - | `action=write, details.reason="signature_failed"` | 告警 toast |
+| DirectorSignatureError (连续 3 次) | 严格阻断 | 进入自治模式 | 否 | - | `action=recovery_start, details.reason="signature_distrust"` | 错误提示 |
+| DiskFullError | 软约束 | 暂停 snapshots + 允许核心写入 | 否 | - | `action=snapshot, details.reason="disk_full"` | 告警 toast |
+| ReadOnlyFileSystemError | 严格阻断 | 拒绝写入 + 进入只读模式 | 否 | - | `action=write, details.reason="read_only_fs"` | 错误提示 |
+| ClockDriftError (>60s) | 软约束 | 暂停锁强制释放 | 否 | - | `action=lock_force_release, details.reason="clock_drift_critical"` | 告警 toast |
+| RecoveryFenceTimeoutError | 软约束 | 强制退出 fence + 标记 audit | 否 | - | `action=recovery_start, details.reason="fence_timeout"` | 告警 toast |
+| LockForceReleaseError | 软约束 | audit 记录 + 通知原持锁者 | 否 | - | `action=lock_force_release, details.reason=<reason 字段>` | 告警 toast |
+| A2AGatewayError | 软约束 | v1.1 补充双向映射 | 否 | - | `action=write, details.reason="a2a_gateway_error"` | 告警 toast |
+| A2ATaskStateTransitionError | 严格阻断 | 拒绝转换 | 否 | - | `action=write, details.reason="a2a_invalid_transition"` | 错误提示 |
 
-**重试预算**（对齐项目硬约束"工具调用失败重试预算为2次"）：
+#### 11.2.2 字段标记处理表
 
-- LockAcquisitionError / CASVersionMismatchError 的可重试错误，最多重试 2 次（第 3 次相同失败立即终止）
-- 不同参数调用重置计数（如 CAS 重读后用新 version 重试不算相同失败）
-- 重试上限达到后转为告警 + audit `action=retry_budget_exhausted`
+| 标记类型 | 阻断层 | 处理 | audit action | 用户提示 |
+|---------|--------|------|--------------|---------|
+| InjectionSuspected | 软约束 | build_llm_context 用 `<untrusted_user_message>` 包裹 | `action=write, details.reason="injection_suspected"` | 告警 toast |
+| MessageTruncated | 软约束 | 截断到 4096 + 标记 truncated=true | `action=write, details.reason="message_truncated"` | 告警 toast |
+| PathNormalized | 不阻断 | 自动转相对路径 + 标记 | `action=write, details.reason="path_normalized"` | 无 |
+
+#### 11.2.3 系统响应动作表（含触发组件 + 触发任务）
+
+| 动作类型 | 阻断层 | 处理 | 触发组件 | 触发任务 | audit action |
+|---------|--------|------|---------|---------|--------------|
+| DiskFullWarning (<100MB) | 软约束 | 暂停 snapshots + 允许核心写入 | Blackboard | `atomic_write` 前 `_check_disk_usage` | `action=snapshot, details.reason="disk_full_warning"` |
+| ClockDriftWarning (>5s) | 软约束 | 放大 grace_period 到 drift_offset+2s | TimeSyncMonitor | `_check_clock_drift`（每 60s） | `action=heartbeat, details.reason="clock_drift_warning"` |
+| WatchdogSelfTestFailed | 软约束 | 降级为轮询 + 5 分钟自愈 | Watchdog | `_self_test`（启动时 + 每 5 分钟） | `action=heartbeat, details.reason="watchdog_self_test_failed"` |
+
+#### 11.2.4 阻断层定义小表
+
+| 阻断层 | 语义 | 进入路径 |
+|--------|------|---------|
+| 严格阻断 | 拒绝操作 + 错误提示 + audit | 异常类直接抛出 |
+| 软约束 | 降级处理 + 告警 + audit，不阻断主流程 | 异常类抛出后由 ReactLoop catch 降级 |
+| 不阻断 | 无任何处理（用于显式声明跳过检查） | 不抛异常 |
+| 应急释放 | 强制清除 + audit（仅锁场景） | LockManager.emergency_release 内部 |
+
+#### 11.2.5 重试预算与"相同失败"判定
+
+重试预算（对齐项目硬约束"工具调用失败重试预算为 2 次"）：最多 2 次，第 3 次相同失败立即终止。
+
+"相同失败"判定规则：
+
+| 错误类型 | 相同失败判定 | 不同参数判定 |
+|---------|------------|------------|
+| LockAcquisitionError | 同一 lock_name + 同一 current_holder | holder 变化或 lock_name 变化 |
+| CASVersionMismatchError | 同一 expected_version 连续失败 | 重读后用新 expected_version |
+| 其他可重试错误 | 同一 error_class + 同一 message | 任意字段变化 |
+
+重试上限达到后转为告警 + audit `action=write, details.reason="retry_budget_exhausted"`。
 
 **与现有 ReactLoop 集成**：
 
-- `pre_execution` 阶段错误（ProtocolValidationError / NotMyTurnError / SchemaVersionMismatchError / CapabilityNotInCardError / PathTraversalError）：handler 未执行，走 system 注入
-- `execution` 阶段错误（LockAcquisitionError / AgentOfflineError / FencingTokenMismatchError / GhostWriteAttemptError / CASVersionMismatchError）：handler 已执行，结构化收据进 tool_result
-- `protocol` 阶段错误（DirectorUnavailableError）：协议层错误，不进 tool_result 链路，触发自治模式切换
+- `pre_execution` 阶段错误（SchemaValidationError / NotMyTurnError / SchemaVersionMismatchError / CapabilityNotInCardError / PathTraversalError）：handler 未执行，走 system 注入
+- `execution` 阶段错误（LockAcquisitionError / AgentOfflineError / FencingTokenMismatchError / GhostWriteAttemptError / CASVersionMismatchError / DiskFullError / ReadOnlyFileSystemError / ClockDriftError / LockForceReleaseError / A2AGatewayError / A2ATaskStateTransitionError）：handler 已执行，结构化收据进 tool_result
+- `protocol` 阶段错误（DirectorUnavailableError / DirectorSignatureError / RecoveryFenceTimeoutError）：协议层错误，不进 tool_result 链路，触发自治模式切换
 
-### 11.3 分层阻断策略（v1.0.2 新增）
+### 11.3 分层阻断策略原则（v1.0.3 降级为原则章，spec §4.22）
 
-基于"保障稳定性和流畅度，不用过度严格阻断"原则，将错误处理分为三层：
+分层阻断是 v1.0.2 引入的统一阻断策略，v1.0.3 进一步明确为四层：
 
-- **严格阻断层（Hard Block）**：真实安全风险或协议破坏，立即拒绝写入
-- **软约束层（Soft Constraint）**：异常但不危险，audit 标记 + 自动降级处理，不拒绝写入
-- **应急释放层（Emergency Release）**：异常状态下强制释放资源，保障协作不卡死
+1. **严格阻断**：拒绝操作，向用户抛错误提示，audit 记录。用于违反协议必则、安全边界、严重错误场景
+2. **软约束**：降级处理（如字段合并、队列化、LLM 仲裁），告警 toast，audit 记录，不阻断主流程。用于可恢复的次要错误
+3. **不阻断**：显式声明跳过检查（如 freeform 模式下的轮次检查）
+4. **应急释放**：仅锁场景，强制清除锁 + audit 记录 + 通知原持锁者
 
-**分层阻断总表**（v1.0.2 统一 15 项修订）：
+设计原则：
 
-| # | 场景 | 阻断层 | 处理 | 用户提示 |
-|---|------|--------|------|---------|
-| 1 | **`..` 路径穿越** | 严格阻断 | 拒绝写入 + audit `path_traversal` | 告警 toast |
-| 2 | **symlink 逃逸** | 严格阻断 | 拒绝写入 + audit `symlink_escape` | 告警 toast |
-| 3 | **绝对路径** | 软约束 | 自动转为相对路径 + audit `path_normalized` | 无 |
-| 4 | **Director 签名失败（单次）** | 软约束 | 继续执行 + audit `signature_failed` + 标记 `director_status="degraded"` | 告警 toast |
-| 5 | **Director 签名失败（连续 3 次）** | 严格阻断 | 进入自治模式（视为 Director 不可信） | 告警 toast "Director 不可信，进入自治" |
-| 6 | **协议 major 版本不匹配** | 严格阻断 | 拒绝接入 + `reject_reason="protocol_major_mismatch"` | 无 |
-| 7 | **协议 minor/patch 版本不匹配** | 软约束 | 允许接入 + audit `version_minor_mismatch` + LLM 提示"可能不支持新字段" | 无 |
-| 8 | **agent_card 未声明 supported_protocol_versions** | 软约束 | 默认兼容 v1.x + audit `version_undeclared_assume_compatible` | 无 |
-| 9 | **非本机轮次发言（freeform 模式）** | 不阻断 | freeform 模式无轮次检查 | 无 |
-| 10 | **非本机轮次发言（非 freeform 模式）** | 软约束 | 消息写入 `messages.md.pending` 队列 + 轮到时自动 flush | 无 |
-| 11 | **锁获取失败** | 软约束 | 异步队列化 + 60 秒超时 + LLM 决策 | 超时告警 toast |
-| 12 | **Fencing token 不匹配（首次）** | 软约束 | Director LLM 仲裁判断价值，有价值入 `messages.md.replay_candidates` | 无 |
-| 13 | **Fencing token 不匹配（连续 3 次同 agent）** | 严格阻断 | 减信任分 + audit `ghost_write_pattern` | 告警 toast |
-| 14 | **CAS 版本冲突（重试 2 次后）** | 软约束 | 字段级合并：独占字段用最新值，追加字段 merge | 无 |
-| 15 | **CAS 合并冲突（同字段不同值）** | 严格阻断 | audit `cas_merge_conflict` + 抛告警 | 告警 toast |
-| 16 | **未声明工具首次调用（非危险）** | 软约束 | 执行 + audit `capability_undeclared_first` + pending 标记 | 无 |
-| 17 | **未声明工具调用（危险工具）** | 严格阻断 | 拒绝执行（execute_command/file_delete/mcp_call 等） | 告警 toast |
-| 18 | **必选字段缺失或类型错误** | 严格阻断 | 拒绝写入 + audit `required_field_missing` | 告警 toast |
-| 19 | **可选字段类型错误** | 软约束 | 自动转字符串 + audit `field_type_coerced` | 无 |
-| 20 | **未知字段** | 软约束 | 保留字段 + audit `unknown_field_preserved`（前向兼容） | 无 |
-| 21 | **枚举值越界** | 软约束 | 降级到 nearest valid value + audit `enum_value_coerced` | 无 |
-| 22 | **Director 心跳降级（2×interval ≤ age < timeout）** | 软约束 | audit `director_degraded` + 继续按 Director 规则协作 | 无 |
-| 23 | **Director 心跳超时（age ≥ timeout）** | 严格阻断 | 进入自治模式 + 写 `type=system` 消息通知 | 告警 toast "Director 断线，进入自治" |
-| 24 | **watchdog 自检失败** | 软约束 | 降级为 1 秒轮询 + 5 分钟自愈重试（最长 30 分钟） | 告警 toast "文件监听降级" |
-| 25 | **LLM 注入特征检测** | 软约束 | 标记 `injection_suspected=true` + 接收方强提示 | 无 |
-| 26 | **消息超 4KB** | 软约束 | 截断 + audit `message_truncated` | 无 |
-| 27 | **磁盘空间 10-100MB** | 软约束 | 暂停 snapshots + 允许核心写入（messages/audit） | 告警 toast "磁盘空间不足" |
-| 28 | **磁盘空间 < 10MB** | 严格阻断 | 拒绝非核心写入 + 进入只读监听 | 告警 toast "磁盘严重不足" |
-| 29 | **只读文件系统** | 严格阻断 | 降级为只读监听 + audit `read_only_fs` | 告警 toast "文件系统只读" |
-| 30 | **时钟漂移 > 5 秒** | 软约束 | 告警 + 放大 grace_period 至 drift_offset + 2s | 告警 toast "时钟漂移检测" |
-| 31 | **时钟漂移 > 60 秒** | 严格阻断 | 拒绝 CAS 写入（防 epoch 判定错误） | 告警 toast "时钟严重漂移" |
-| 32 | **恢复期 fence 范围内（messages 锁）** | 严格阻断 | 暂停 messages 锁获取 | 告警 toast（>10 秒时）"Director 恢复中" |
-| 33 | **恢复期 fence 范围外（tasks 锁/读操作）** | 不阻断 | 允许继续执行 | 无 |
-| 34 | **恢复期 fence 超时（30 秒）** | 应急释放 | 自动解除 fence + audit `recovery_fence_timeout` | 告警 toast "恢复超时，解除 fence" |
-| 35 | **锁超时未释放** | 应急释放 | 强制释放 + audit `lock_force_release_emergency` | 无 |
-| 36 | **锁持有者进程死亡** | 应急释放 | 强制释放 + audit `lock_force_release_holder_dead` | 无 |
-| 37 | **锁持有者中断未清理** | 应急释放 | 强制释放 + audit `lock_force_release_interrupted` | 无 |
+- 稳定优先：严格阻断用于防止数据损坏、安全越权
+- 流畅度优先：软约束用于可恢复错误，避免单点故障阻塞全链路
+- 易维护：每条错误处理策略有明确阻断层 + audit + 用户提示
+- 易扩展：新增错误类型时按"异常类 / 字段标记 / 系统响应动作"三类分别归入 §11.2.x 子表
+
+具体错误处理策略见 §11.2.1 / §11.2.2 / §11.2.3 三个子表，阻断层定义见 §11.2.4，重试预算见 §11.2.5。
 
 **用户提示统一规范**（v1.0.2 新增）：
 
