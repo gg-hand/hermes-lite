@@ -54,6 +54,12 @@ class AutonomousModeController:
     - 简单 FIFO 仲裁（最早 messages.md.seq 优先）
     - 拒绝任何 Director 写入（epoch 匹配也拒绝）
     - 周期检测 Director 恢复
+    - 二次确认退出（confirming_exit 状态机）
+
+    属性：
+    - enabled: 简单属性（与 _active 同步），测试可直接设置
+    - confirming_exit: 二次确认状态（True 表示已检测到 Director 恢复一次）
+    - _turn_index: 时间片轮转索引（advance_turn 推进）
     """
 
     TIME_SLICE_SECONDS = 30
@@ -64,10 +70,17 @@ class AutonomousModeController:
         self._active = False
         self._autonomous_epoch = 0
         self._autonomous_started_at: datetime | None = None
+        # 简单属性供测试直接设置（与 _active 同步）
+        self.enabled = False
+        self.confirming_exit = False
+        self._turn_index = 0
 
     async def enter(self, reason: str, epoch: int) -> None:
         """进入自治模式。"""
         self._active = True
+        self.enabled = True
+        self.confirming_exit = False
+        self._turn_index = 0
         self._autonomous_epoch = epoch
         self._autonomous_started_at = datetime.now(timezone.utc)
 
@@ -136,6 +149,9 @@ class AutonomousModeController:
         )
 
         self._active = False
+        self.enabled = False
+        self.confirming_exit = False
+        self._turn_index = 0
         self._autonomous_epoch = 0
         self._autonomous_started_at = None
         logger.info(
@@ -144,6 +160,34 @@ class AutonomousModeController:
             new_epoch,
             duration,
         )
+
+    async def advance_turn(self, bb_root: Path) -> None:
+        """推进轮次到下一个 agent（_turn_index 递增）。"""
+        from hermes.multiagent.agent_registry import AgentRegistry
+        from hermes.multiagent.schema_validator import SchemaValidator
+
+        registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
+        agents = await registry.list_active_agents()
+        if agents:
+            self._turn_index = (self._turn_index + 1) % len(agents)
+
+    async def flush_all_pending(self, bb_root: Path) -> int:
+        """自治模式下 flush 所有 pending 消息（FIFO 顺序，按 agent_id 遍历）。
+
+        Returns:
+            flush 的记录总数
+        """
+        from hermes.multiagent.agent_registry import AgentRegistry
+        from hermes.multiagent.schema_validator import SchemaValidator
+        from hermes.multiagent.turn_manager import TurnManager
+
+        tm = TurnManager(bb_root, agent_id=self._agent_id, epoch=self._autonomous_epoch)
+        registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
+        agents = await registry.list_active_agents()
+        total = 0
+        for a in agents:
+            total += await tm.flush_pending_messages(a["agent_id"])
+        return total
 
     @property
     def is_active(self) -> bool:
@@ -340,15 +384,23 @@ class WorkerAdapter:
             logger.info("Worker %s Director 监测循环被取消", self._agent_id)
             raise
 
-    async def _check_director_health(self) -> None:
-        """检查 Director 心跳健康状态。"""
+    async def _check_director_health(self) -> str:
+        """检查 Director 心跳健康状态。
+
+        Returns:
+            健康级别："healthy" / "degraded" / "offline"
+
+        副作用：
+        - 当返回 "offline" 且未在自治模式时，进入自治模式
+        - 当返回 "healthy" 且在自治模式时，触发 _check_director_recovery
+        """
         director_md = await read_director_md(self._bb_root)
         if not director_md:
-            return
+            return "offline"
 
         last_tick = director_md.get("last_director_tick", "")
         if not last_tick:
-            return
+            return "offline"
 
         tick_time = _parse_iso(last_tick)
         age = datetime.now(timezone.utc) - tick_time
@@ -358,25 +410,89 @@ class WorkerAdapter:
             "degraded_threshold_seconds", interval * 2
         )
 
-        if age > timedelta(seconds=timeout) and not self._autonomous_mode:
-            # 进入自治模式
-            epoch = director_md.get("current_epoch", 0)
-            await self._autonomous.enter(
-                reason="director_heartbeat_timeout",
-                epoch=epoch,
-            )
-            # 同步简单属性
-            self._autonomous_mode = True
-            self._autonomous_epoch = epoch
-        elif (
-            age < timedelta(seconds=degraded_threshold)
-            and self._autonomous_mode
-        ):
-            # 检查是否可以退出自治
-            await self._check_director_recovery()
+        if age > timedelta(seconds=timeout):
+            # offline
+            if not self._autonomous_mode and not self._autonomous.is_active:
+                # 进入自治模式
+                epoch = director_md.get("current_epoch", 0)
+                await self._autonomous.enter(
+                    reason="director_heartbeat_timeout",
+                    epoch=epoch,
+                )
+                # 同步简单属性
+                self._autonomous_mode = True
+                self._autonomous_epoch = epoch
+            return "offline"
+        elif age >= timedelta(seconds=degraded_threshold):
+            # degraded
+            return "degraded"
+        else:
+            # healthy
+            if self._autonomous_mode or self._autonomous.is_active:
+                # 检查是否可以退出自治（仅对旧式 _autonomous_mode 触发即时退出流程）
+                if self._autonomous_mode and not self._autonomous.enabled:
+                    await self._check_director_recovery()
+            return "healthy"
 
     async def _check_director_recovery(self) -> None:
-        """检测 Director 是否恢复（自治退出二次确认 + 回滚）。"""
+        """检测 Director 是否恢复（自治退出二次确认 + 回滚）。
+
+        两种模式：
+        1. Task 2 旧式（_autonomous_mode=True, _autonomous.enabled=False）：
+           读取 director.md，检查 epoch 递增 + tick 新鲜，sleep 0.1s 后二次确认，
+           退出或回滚（保持 _autonomous_mode=True）
+        2. Task 7 新式（_autonomous.enabled=True）：
+           调用 _check_director_health() 获取健康级别，
+           - healthy + not confirming_exit → 进入二次确认（confirming_exit=True）
+           - healthy + confirming_exit → 退出自治（enabled=False）
+           - not healthy + confirming_exit → 回滚（confirming_exit=False, 保持 enabled=True）
+        """
+        # Task 7 新式：基于 _autonomous.enabled 的二次确认状态机
+        if self._autonomous.enabled:
+            health = await self._check_director_health()
+            if health == "healthy":
+                if not self._autonomous.confirming_exit:
+                    # 第一次检测到 Director 恢复，进入二次确认状态
+                    self._autonomous.confirming_exit = True
+                    logger.info("Director 恢复，进入自治退出二次确认状态")
+                else:
+                    # 二次确认通过，退出自治
+                    new_epoch = 0
+                    director_md = await read_director_md(self._bb_root)
+                    if director_md:
+                        new_epoch = director_md.get("current_epoch", 0)
+                    await self._autonomous.exit(new_epoch)
+                    self._autonomous_mode = False
+                    self._autonomous_epoch = 0
+                    logger.info("Director 持续健康，退出自治模式")
+            else:
+                # Director 仍未恢复
+                if self._autonomous.confirming_exit:
+                    # 二次确认期间 Director 再次故障，回滚
+                    self._autonomous.confirming_exit = False
+                    # 保持 enabled=True
+                    logger.warning("二次确认期间 Director 再次故障，回滚保持自治")
+                    await append_audit(
+                        self._bb_root,
+                        {
+                            "ts": _now_iso(),
+                            "actor": self._agent_id,
+                            "action": "arbitrate",
+                            "target": "director.md",
+                            "op_id": str(uuid.uuid4()),
+                            "epoch": self._autonomous_epoch,
+                            "details": {
+                                "reason": "autonomous_exit_rollback",
+                                "director_re_crashed": True,
+                            },
+                            "prev_hash": "",
+                            "hash": "",
+                            "signature": "",
+                        },
+                    )
+            return
+
+        # Task 2 旧式：基于 director.md 的即时退出 + sleep 二次确认
         director_md = await read_director_md(self._bb_root)
         if not director_md:
             return
@@ -522,9 +638,11 @@ class WorkerAdapter:
             os.fsync(f.fileno())
 
     async def _get_autonomous_current_turn(self) -> str:
-        """获取自治模式当前轮次（时间片轮转）。
+        """获取自治模式当前轮次。
 
-        agent_id 字典序排列，每片 30 秒。
+        两种策略：
+        - _autonomous.enabled=True（Task 7 新式）：按 _turn_index 轮转（advance_turn 推进）
+        - 其他（Task 2 旧式）：按时间片轮转（30 秒/片）
         """
         from hermes.multiagent.agent_registry import AgentRegistry
         from hermes.multiagent.schema_validator import SchemaValidator
@@ -538,7 +656,11 @@ class WorkerAdapter:
         if not active_agent_ids:
             return self._agent_id
 
-        # 按时间片轮转
+        # Task 7 新式：按 _turn_index 轮转
+        if self._autonomous.enabled:
+            return active_agent_ids[self._autonomous._turn_index % len(active_agent_ids)]
+
+        # Task 2 旧式：按时间片轮转
         now = datetime.now(timezone.utc)
         slice_idx = int(now.timestamp() / AutonomousModeController.TIME_SLICE_SECONDS) % len(
             active_agent_ids
