@@ -329,7 +329,7 @@ async def _register_remote_agent(
         "owner": params.get("owner", "remote"),
         "capabilities": capabilities,
         "specialties": params.get("specialties", []),
-        "auth_method": params.get("auth_method", "ed25519"),
+        "auth_method": params.get("auth_method", "signed"),
         "trust_score": params.get("trust_score", 100),
         "trust_history": [],
         "extensions": params.get("extensions", {}),
