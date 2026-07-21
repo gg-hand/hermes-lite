@@ -200,3 +200,8 @@ class A2AGatewayError(ToolError):
         if not self.reason:
             self.reason = f"A2A gateway error: {self.endpoint}"
         super().__post_init__()
+
+
+class PathSafetyError(Exception):
+    """路径安全违规（绝对路径 / .. 穿越 / symlink 逃逸）。"""
+
