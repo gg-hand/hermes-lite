@@ -1,0 +1,47 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: task_md
+type: object
+required: [task_id, status, created_at]
+properties:
+  task_id:
+    type: string
+    pattern: '^[a-z0-9_]{3,32}$'
+  status:
+    type: string
+    enum: [pending, in_progress, blocked, completed, failed, cancelled]
+  priority:
+    type: string
+    enum: [low, normal, high, critical]
+  created_at:
+    type: string
+  updated_at:
+    type: string
+  created_by:
+    type: string
+    pattern: '^[a-z0-9_]{3,32}$'
+  assigned_to:
+    type: [string, "null"]
+    pattern: '^[a-z0-9_]{3,32}$'
+  parent_task_id:
+    type: [string, "null"]
+  description:
+    type: string
+  artifacts:
+    type: array
+    items:
+      type: object
+      required: [artifact_id, producer]
+      properties:
+        artifact_id:
+          type: string
+        producer:
+          type: string
+        timestamp:
+          type: string
+        version:
+          type: string
+  deadline_at:
+    type: [string, "null"]
+  tags:
+    type: array
+    items: {type: string}

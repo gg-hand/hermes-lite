@@ -1,0 +1,20 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: protocol_md
+type: object
+required: [protocol_version]
+properties:
+  protocol_version:
+    type: string
+    pattern: '^\d+\.\d+\.\d+$'
+  migration_guide:
+    type: string
+    description: Major 版本变更时的迁移说明（optional，仅 Major 变更必填）
+  compat_mode:
+    type: [string, "null"]
+    description: 兼容模式标记（向后兼容期间使用）
+  description:
+    type: string
+  disallow_unknown:
+    type: array
+    items: {type: string}
+    description: 拒绝未知字段的白名单（默认 additionalProperties: true）

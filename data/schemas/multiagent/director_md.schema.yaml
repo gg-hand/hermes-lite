@@ -1,0 +1,61 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: director_md
+type: object
+required:
+  - protocol_version
+  - director_version
+  - director_implementation
+  - current_epoch
+  - last_director_tick
+properties:
+  protocol_version:
+    type: string
+    pattern: '^\d+\.\d+\.\d+$'
+  director_version:
+    type: string
+  rules_version:
+    type: string
+  director_implementation:
+    type: string
+    enum: [agent, script]
+  current_epoch:
+    type: integer
+    minimum: 1
+  epoch_started_at:
+    type: string
+  last_director_tick:
+    type: string
+  turn_policy:
+    type: object
+    required: [mode]
+    properties:
+      mode:
+        type: string
+        enum: [round_robin, priority, leader_follower, freeform]
+      order:
+        type: array
+        items: {type: string}
+      timeout_seconds:
+        type: integer
+        minimum: 1
+  exclusion:
+    type: object
+    properties:
+      resources:
+        type: array
+        items: {type: string}
+      strategy:
+        type: string
+        enum: [file_lock, token, optimistic]
+  heartbeat:
+    type: object
+    properties:
+      interval_seconds:
+        type: integer
+        minimum: 1
+      timeout_seconds:
+        type: integer
+        minimum: 1
+  conflict_strategy:
+    type: string
+    enum: [llm_arbitration, priority, fifo, merge]
