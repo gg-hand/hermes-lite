@@ -178,6 +178,19 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("A2A Gateway 启动失败: %s", e)
 
+    # 1.7 multiagent REST 路由注册（仅 multiagent.enabled=True 时）
+    #    Plan 4 Task 5：从容器取出 multiagent_router 挂载到 FastAPI app。
+    #    路由由 register_components 条件注册，此处仅负责挂载。
+    multiagent_cfg_for_router = config.get("multiagent", {}) or {}
+    if multiagent_cfg_for_router.get("enabled", False):
+        try:
+            multiagent_router = container.get("multiagent_router")
+            if multiagent_router is not None:
+                app.include_router(multiagent_router)
+                logger.info("multiagent REST 路由已注册")
+        except Exception as e:
+            logger.error("multiagent 路由注册失败: %s", e)
+
     # 2. 触发工厂创建（无状态组件）
     session_logger = container.get("session_logger")
     metrics_collector = container.get("metrics_collector")

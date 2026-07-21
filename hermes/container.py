@@ -46,6 +46,7 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
         "recovery_manager",
         "watchdog_watcher",
         "multiagent_adapter",
+        "multiagent_router",
         "orchestrator",
     ],
     "a2a": ["a2a_router", "a2a_client"],
