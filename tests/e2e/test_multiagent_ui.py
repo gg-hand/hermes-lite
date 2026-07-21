@@ -74,3 +74,77 @@ class TestMultiagentSettingsUI:
         page.uncheck("#multiagent-enabled")
         # 验证子选项隐藏
         expect(page.locator("#multiagent-role")).to_be_hidden()
+
+
+class TestMultiagentSSE:
+    """multiagent SSE 通道测试（Plan 4 Task 3）。"""
+
+    def test_sse_indicator_present(self, page: Page, hermes_app_url):
+        """页面包含 multiagent 状态指示器。"""
+        page.goto(hermes_app_url)
+        # 验证状态指示器 DOM 存在
+        expect(page.locator("#multiagent-indicator")).to_be_visible()
+
+    def test_sse_indicator_shows_disabled_state(self, page: Page, hermes_app_url):
+        """multiagent 未启用时指示器显示禁用状态。"""
+        page.goto(hermes_app_url)
+        indicator = page.locator("#multiagent-indicator")
+        # 应显示"未启用"或类似文本
+        expect(indicator).to_contain_text("未启用")
+
+    def test_sse_indicator_shows_director_state(self, page: Page, hermes_app_url):
+        """启用后指示器显示 Director 状态。"""
+        page.goto(hermes_app_url)
+        # 启用 multiagent（通过设置模态框）
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+        # 等待指示器更新
+        page.wait_for_selector(
+            "#multiagent-indicator.state-healthy, "
+            "#multiagent-indicator.state-degraded, "
+            "#multiagent-indicator.state-fault"
+        )
+        indicator = page.locator("#multiagent-indicator")
+        # 应有状态类
+        class_attr = indicator.get_attribute("class") or ""
+        assert any(
+            state in class_attr
+            for state in [
+                "state-healthy",
+                "state-degraded",
+                "state-autonomous",
+                "state-fault",
+            ]
+        )
+
+    def test_sse_agent_panel_shows_list(self, page: Page, hermes_app_url):
+        """Agent 列表面板显示活跃 agents。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+        # 等待 Agent 面板加载
+        page.wait_for_selector("#multiagent-agents-panel")
+        # 应至少显示自己
+        agents = page.locator("#multiagent-agents-panel .agent-card")
+        expect(agents.first).to_be_visible()
+
+    def test_sse_autonomous_alert(self, page: Page, hermes_app_url):
+        """自治模式触发时显示告警。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+        # 模拟自治模式触发（通过 SSE 事件）
+        page.evaluate(
+            """
+            window.dispatchEvent(new CustomEvent('multiagent-alert', {
+                detail: { type: 'autonomous_enter', data: { autonomous_mode: true } }
+            }));
+            """
+        )
+        # 应显示自治模式告警
+        expect(page.locator("#multiagent-alert-banner")).to_be_visible()
+        expect(page.locator("#multiagent-alert-banner")).to_contain_text("自治")
+
