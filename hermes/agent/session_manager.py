@@ -41,6 +41,56 @@ class SessionManager:
         # 事件循环持弱引用，未保存会被 GC 回收导致任务从未执行。
         # 任务完成后由 add_done_callback 自动从 set 中移除，避免内存泄漏。
         self._pending_title_tasks: set = set()
+        # Multi-Agent 钩子：[(on_start, on_end), ...]
+        # on_start: create_session 时调用，接收 session 对象
+        # on_end: destroy_session 时调用，接收 session_id
+        self._multiagent_hooks: list = []
+
+    def add_multiagent_hook(self, on_start: Any, on_end: Any) -> None:
+        """注册 multiagent 钩子。
+
+        Args:
+            on_start: create_session 时调用的 async callable，接收 session 对象
+            on_end: destroy_session 时调用的 async callable，接收 session_id
+        """
+        self._multiagent_hooks.append((on_start, on_end))
+
+    async def _create_session_internal(self, *args, **kwargs) -> Any:
+        """内部会话创建逻辑（由 create_session 调用）。
+
+        默认实现返回 None；实际项目由子类或外部 patch 覆盖。
+        """
+        return None
+
+    async def _destroy_session_internal(self, session_id: str, *args, **kwargs) -> None:
+        """内部会话销毁逻辑（由 destroy_session 调用）。
+
+        默认实现 no-op；实际项目由子类或外部 patch 覆盖。
+        """
+        return None
+
+    async def create_session(self, *args, **kwargs) -> Any:
+        """创建会话，调用 multiagent on_start 钩子。
+
+        流程：
+        1. 调用 _create_session_internal 创建会话
+        2. 遍历 _multiagent_hooks 调用 on_start(session)
+        """
+        session = await self._create_session_internal(*args, **kwargs)
+        for on_start, _ in self._multiagent_hooks:
+            await on_start(session)
+        return session
+
+    async def destroy_session(self, session_id: str, *args, **kwargs) -> None:
+        """销毁会话，调用 multiagent on_end 钩子。
+
+        流程：
+        1. 遍历 _multiagent_hooks 调用 on_end(session_id)
+        2. 调用 _destroy_session_internal 执行实际销毁
+        """
+        for _, on_end in self._multiagent_hooks:
+            await on_end(session_id)
+        await self._destroy_session_internal(session_id, *args, **kwargs)
 
     def ensure_session(self, session_id: str) -> None:
         """确保 session 存在，不存在则创建。
