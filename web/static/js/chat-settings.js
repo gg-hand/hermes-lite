@@ -90,6 +90,11 @@ async function openSettings() {
     const data = await api('/config');
     currentConfig = data.config;
     renderSettingsForm(currentConfig);
+    // Plan 4: 渲染 multiagent 配置段
+    const multiagentContainer = document.getElementById('multiagent-settings-container');
+    if (multiagentContainer && window.MultiagentSettings) {
+      window.MultiagentSettings.render(multiagentContainer, currentConfig);
+    }
   } catch (e) {
     settingsBodyEl.innerHTML = '<div style="color: var(--danger);">加载配置失败: ' + escapeHtml(e.message) + '</div>';
   }
@@ -128,7 +133,7 @@ function renderSettingsForm(config) {
   // ---------- 基础分类 sections ----------
   const secLLM = `
     <div class="form-section">
-      <div class="form-section-title">LLM 配置<span class="config-tag restart">需重启</span></div>
+      <div class="form-section-title">LLM 配置<span class="config-tag hot">热更新</span></div>
       <div class="form-row">
         <div class="form-group">
           <label>主对话 Provider</label>
@@ -145,8 +150,11 @@ function renderSettingsForm(config) {
         </div>
       </div>
       <div class="form-group">
-        <label>主对话 API Key</label>
-        <input class="form-input" type="password" data-cfg="llm.main_api_key" value="${llm.main_api_key || ''}" placeholder="sk-...">
+        <label class="key-label${llm.main_api_key ? ' key-set' : ''}">主对话 API Key${llm.main_api_key ? '<span class="key-dot" title="已设置"></span>' : ''}</label>
+        <div class="key-input-wrap">
+          <input class="form-input" type="password" data-cfg="llm.main_api_key" value="${llm.main_api_key || ''}" placeholder="sk-...">
+          <span class="key-hint">${llm.main_api_key ? '当前已设置，输入新值可替换' : '未设置'}</span>
+        </div>
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -164,8 +172,11 @@ function renderSettingsForm(config) {
         </div>
       </div>
       <div class="form-group">
-        <label>Consolidation API Key</label>
-        <input class="form-input" type="password" data-cfg="llm.consolidation_api_key" value="${llm.consolidation_api_key || ''}" placeholder="留空则同主对话 Key">
+        <label class="key-label${llm.consolidation_api_key ? ' key-set' : ''}">Consolidation API Key${llm.consolidation_api_key ? '<span class="key-dot" title="已设置"></span>' : ''}</label>
+        <div class="key-input-wrap">
+          <input class="form-input" type="password" data-cfg="llm.consolidation_api_key" value="${llm.consolidation_api_key || ''}" placeholder="留空则同主对话 Key">
+          <span class="key-hint">${llm.consolidation_api_key ? '当前已设置，输入新值可替换' : '未设置'}</span>
+        </div>
       </div>
     </div>`;
 
@@ -308,9 +319,9 @@ function renderSettingsForm(config) {
 
   const secFiles = `
     <div class="form-section">
-      <div class="form-section-title">文件上传<span class="config-tag restart">需重启</span></div>
+      <div class="form-section-title">文件上传<span class="config-tag hot">热更新</span></div>
       <div class="form-group">
-        <label>允许图片上传 (OCR)<span class="config-tag restart">需重启</span></label>
+        <label>允许图片上传 (OCR)<span class="config-tag hot">热更新</span></label>
         <select class="form-select" data-cfg="files.ocr_enabled" data-type="boolean">
           <option value="true" ${files.ocr_enabled === true ? 'selected' : ''}>开启</option>
           <option value="false" ${files.ocr_enabled === false ? 'selected' : ''}>关闭</option>
@@ -319,27 +330,27 @@ function renderSettingsForm(config) {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>单文件上限 (MB)<span class="config-tag restart">需重启</span></label>
+          <label>单文件上限 (MB)<span class="config-tag hot">热更新</span></label>
           <input class="form-input" type="number" data-cfg="files.max_upload_size_mb" value="${files.max_upload_size_mb || 50}">
         </div>
         <div class="form-group">
-          <label>每会话文件数<span class="config-tag restart">需重启</span></label>
+          <label>每会话文件数<span class="config-tag hot">热更新</span></label>
           <input class="form-input" type="number" data-cfg="files.max_files_per_session" value="${files.max_files_per_session || 50}">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>分块大小<span class="config-tag restart">需重启</span></label>
+          <label>分块大小<span class="config-tag hot">热更新</span></label>
           <input class="form-input" type="number" data-cfg="files.chunk_size" value="${files.chunk_size || 512}">
         </div>
         <div class="form-group">
-          <label>分块重叠<span class="config-tag restart">需重启</span></label>
+          <label>分块重叠<span class="config-tag hot">热更新</span></label>
           <input class="form-input" type="number" data-cfg="files.chunk_overlap" value="${files.chunk_overlap || 64}">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>LLM 摘要兜底<span class="config-tag restart">需重启</span></label>
+          <label>LLM 摘要兜底<span class="config-tag hot">热更新</span></label>
           <select class="form-select" data-cfg="files.llm_fallback_enabled" data-type="boolean">
             <option value="true" ${files.llm_fallback_enabled === true ? 'selected' : ''}>开启</option>
             <option value="false" ${files.llm_fallback_enabled === false ? 'selected' : ''}>关闭</option>
@@ -347,7 +358,7 @@ function renderSettingsForm(config) {
           <div class="hint">ETL 解析失败时使用 LLM 生成摘要</div>
         </div>
         <div class="form-group">
-          <label>ETL 队列上限<span class="config-tag restart">需重启</span></label>
+          <label>ETL 队列上限<span class="config-tag hot">热更新</span></label>
           <input class="form-input" type="number" data-cfg="files.etl_max_queue" value="${files.etl_max_queue || 100}">
         </div>
       </div>
@@ -360,23 +371,23 @@ function renderSettingsForm(config) {
         图片走 PaddleOCR(L1) → Tesseract+预处理(L2) → 视觉LLM(L3) 三层降级通道，前层失败自动降级到下层
       </div>
       <div class="form-group">
-        <label>主引擎选择<span class="config-tag restart">需重启</span></label>
+        <label>主引擎选择<span class="config-tag hot">热更新</span></label>
         <select class="form-select" data-cfg="files.ocr.primary_engine">
           <option value="paddle" ${ocrCfg.primary_engine === 'paddle' ? 'selected' : ''}>PaddleOCR（中文优先）</option>
           <option value="tesseract" ${ocrCfg.primary_engine === 'tesseract' ? 'selected' : ''}>Tesseract（轻量兜底）</option>
           <option value="none" ${ocrCfg.primary_engine === 'none' ? 'selected' : ''}>none（禁用 OCR）</option>
         </select>
-        <div class="hint">缺依赖时自动降级；切换主引擎需重启重建 PaddleOCR 实例</div>
+        <div class="hint">缺依赖时自动降级；切换主引擎将重建 PaddleOCR 实例（热更新）</div>
       </div>
       <div class="form-section-title" style="margin-top:16px;font-size:11px">PaddleOCR（L1 主引擎）</div>
       <div class="form-row">
         <div class="form-group">
-          <label>语言<span class="config-tag restart">需重启</span></label>
+          <label>语言<span class="config-tag hot">热更新</span></label>
           <input class="form-input" data-cfg="files.ocr.paddle.lang" value="${paddleCfg.lang || 'ch'}" placeholder="ch / en / korean / japan">
-          <div class="hint">PaddleOCR 模型语言，切换需重启重建实例</div>
+          <div class="hint">PaddleOCR 模型语言，切换将重建实例（热更新）</div>
         </div>
         <div class="form-group">
-          <label>GPU 加速<span class="config-tag restart">需重启</span></label>
+          <label>GPU 加速<span class="config-tag hot">热更新</span></label>
           <select class="form-select" data-cfg="files.ocr.paddle.use_gpu" data-type="boolean">
             <option value="true" ${paddleCfg.use_gpu === true ? 'selected' : ''}>开启</option>
             <option value="false" ${paddleCfg.use_gpu === false ? 'selected' : ''}>关闭</option>
@@ -423,27 +434,30 @@ function renderSettingsForm(config) {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>Provider<span class="config-tag restart">需重启</span></label>
+          <label>Provider<span class="config-tag hot">热更新</span></label>
           <input class="form-input" data-cfg="files.ocr.vision_llm.provider" value="${visionCfg.provider || 'qwen'}" placeholder="qwen / openai">
         </div>
         <div class="form-group">
-          <label>Model<span class="config-tag restart">需重启</span></label>
+          <label>Model<span class="config-tag hot">热更新</span></label>
           <input class="form-input" data-cfg="files.ocr.vision_llm.model" value="${visionCfg.model || 'qwen-vl-max'}" placeholder="qwen-vl-max / gpt-4o">
         </div>
       </div>
       <div class="form-group">
-        <label>API Key<span class="config-tag restart">需重启</span></label>
-        <input class="form-input" type="password" data-cfg="files.ocr.vision_llm.api_key" value="${visionCfg.api_key || ''}" placeholder="sk-...">
+        <label class="key-label${visionCfg.api_key ? ' key-set' : ''}">API Key<span class="config-tag hot">热更新</span>${visionCfg.api_key ? '<span class="key-dot" title="已设置"></span>' : ''}</label>
+        <div class="key-input-wrap">
+          <input class="form-input" type="password" data-cfg="files.ocr.vision_llm.api_key" value="${visionCfg.api_key || ''}" placeholder="sk-...">
+          <span class="key-hint">${visionCfg.api_key ? '当前已设置，输入新值可替换' : '未设置'}</span>
+        </div>
       </div>
       <div class="form-group">
-        <label>Base URL<span class="config-tag restart">需重启</span></label>
+        <label>Base URL<span class="config-tag hot">热更新</span></label>
         <input class="form-input" data-cfg="files.ocr.vision_llm.base_url" value="${visionCfg.base_url || ''}" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
       </div>
     </div>`;
 
   const secStorageAdv = `
     <div class="form-section">
-      <div class="form-section-title">存储进阶<span class="config-tag restart">需重启</span></div>
+      <div class="form-section-title">存储进阶<span class="config-tag hot">热更新</span></div>
       <div class="form-row">
         <div class="form-group">
           <label>会话保留天数</label>
@@ -459,14 +473,14 @@ function renderSettingsForm(config) {
   // ---------- 进阶分类 sections ----------
   const secLLMAdv = `
     <div class="form-section">
-      <div class="form-section-title">LLM 进阶<span class="config-tag restart">需重启</span></div>
+      <div class="form-section-title">LLM 进阶<span class="config-tag hot">热更新</span></div>
       <div class="form-row">
         <div class="form-group">
-          <label>主对话 Base URL<span class="config-tag restart">需重启</span></label>
+          <label>主对话 Base URL<span class="config-tag hot">热更新</span></label>
           <input class="form-input" data-cfg="llm.main_base_url" value="${llm.main_base_url || ''}" placeholder="https://api.deepseek.com">
         </div>
         <div class="form-group">
-          <label>Consolidation Base URL<span class="config-tag restart">需重启</span></label>
+          <label>Consolidation Base URL<span class="config-tag hot">热更新</span></label>
           <input class="form-input" data-cfg="llm.consolidation_base_url" value="${llm.consolidation_base_url || ''}" placeholder="https://api.deepseek.com">
         </div>
       </div>
@@ -645,6 +659,13 @@ async function saveConfig() {
     }
     obj[path[path.length - 1]] = val;
   });
+
+  // Plan 4: 收集 multiagent 配置段并合并
+  const multiagentContainer = document.getElementById('multiagent-settings-container');
+  if (multiagentContainer && window.MultiagentSettings) {
+    const multiagentCfg = window.MultiagentSettings.collect(multiagentContainer);
+    newConfig.multiagent = multiagentCfg.multiagent;
+  }
 
   try {
     const data = await api('/config', { method: 'PUT', body: { config: newConfig } });

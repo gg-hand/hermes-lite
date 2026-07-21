@@ -92,7 +92,7 @@
       </a>
     </div>
     <div class="sidebar-footer">
-      <button class="nav-item" id="btnSettingsFlyout">
+      <button class="nav-item" id="btnSettingsFlyout" data-action="open-settings">
         <span class="nav-icon">⚙</span><span class="nav-label">设置</span>
       </button>
     </div>
@@ -189,11 +189,13 @@
     <div class="modal-body" id="settingsBody">
       <div class="empty-state"><div class="empty-state-text">加载配置中...</div></div>
     </div>
+    <!-- multiagent 配置段容器（由 multiagent-settings.js 渲染，openSettings 时填充） -->
+    <div id="multiagent-settings-container"></div>
     <div class="modal-footer" style="display:flex;justify-content:space-between">
       <button class="btn btn-danger" id="restartServerBtn">重启服务</button>
       <div>
         <button class="btn btn-secondary" onclick="closeModal('settingsModal')">取消</button>
-        <button class="btn btn-primary" id="saveConfigBtn">保存配置</button>
+        <button class="btn btn-primary" id="saveConfigBtn" data-action="save-settings">保存配置</button>
       </div>
     </div>
   </div>
@@ -238,6 +240,11 @@
 <script src="/static/js/chat-memory.js"></script>
 <script src="/static/js/chat-schedule-badge.js"></script>
 <script src="/static/js/chat-files.js"></script>
+<!-- multiagent 模块（Plan 4 Task 2/3/4） -->
+<script src="/js/multiagent-settings.js"></script>
+<script src="/js/multiagent-sse.js"></script>
+<script src="/js/multiagent-render.js"></script>
+<link rel="stylesheet" href="/css/multiagent.css">
 <script src="/static/js/chat-settings.js"></script>
 <script src="/static/js/chat-main.js"></script>
 

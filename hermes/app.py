@@ -299,6 +299,14 @@ elif os.path.isdir(_WEB_DIR):
     app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
 logger.info("静态文件挂载: _WEB_DIR=%s, _STATIC_DIR=%s", _WEB_DIR, _STATIC_DIR)
 
+# Plan 4: multiagent 前端模块挂载（web/js → /js, web/css → /css）
+_JS_DIR = os.path.join(_WEB_DIR, "js")
+_CSS_DIR = os.path.join(_WEB_DIR, "css")
+if os.path.isdir(_JS_DIR):
+    app.mount("/js", StaticFiles(directory=_JS_DIR), name="js")
+if os.path.isdir(_CSS_DIR):
+    app.mount("/css", StaticFiles(directory=_CSS_DIR), name="css")
+
 
 # ---------------------------------------------------------------------------
 # 组件注册（Task 3: 注册15个外部组件到容器）
