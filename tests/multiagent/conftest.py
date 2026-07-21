@@ -6,6 +6,26 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    """注册自定义标记。"""
+    config.addinivalue_line(
+        "markers", "e2e: end-to-end test (slow, run with -m e2e)"
+    )
+    config.addinivalue_line(
+        "markers", "slow: slow test (run with -m slow)"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """默认跳过 e2e/slow 测试，除非通过 -m 显式选择。"""
+    marker_expr = config.getoption("-m") or ""
+    if "e2e" not in marker_expr and "slow" not in marker_expr:
+        skip_marker = pytest.mark.skip(reason="e2e/slow test, run with -m e2e")
+        for item in items:
+            if "e2e" in item.keywords or "slow" in item.keywords:
+                item.add_marker(skip_marker)
+
+
 @pytest.fixture
 def bb_root(tmp_path: Path) -> Path:
     """初始化黑板目录骨架。"""
