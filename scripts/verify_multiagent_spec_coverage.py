@@ -516,12 +516,12 @@ def _p2_06_ed25519_signature() -> CheckResult:
 
 def _p2_07_autonomous_mode() -> CheckResult:
     """§4.11 自治模式 + 二次确认退出。"""
-    text = _read_file("hermes/multiagent/autonomous.py")
+    text = _read_file("hermes/multiagent/worker_adapter.py")
     if not _grep(r"autonomous|confirm_exit|rollback_exit|AutonomousModeController", text):
         return CheckResult(
             "p2_07_autonomous_mode",
             False,
-            "autonomous.py missing AutonomousModeController / confirm_exit",
+            "worker_adapter.py missing AutonomousModeController / confirm_exit",
             "plan2",
         )
     return CheckResult(
@@ -552,12 +552,12 @@ def _p2_08_trust_score() -> CheckResult:
 
 def _p2_09_reactloop_integration() -> CheckResult:
     """补充：ReactLoop 7 集成点。"""
-    text = _read_file("hermes/orchestrator.py")
+    text = _read_file("hermes/multiagent/worker_adapter.py")
     if not _grep(r"_build_multiagent_prompt|_check_capabilities|_session_hook|_check_turn|_heartbeat|InjectionIsolator", text):
         return CheckResult(
             "p2_09_reactloop_integration",
             False,
-            "orchestrator.py missing multiagent integration points",
+            "worker_adapter.py missing multiagent integration points",
             "plan2",
         )
     return CheckResult(
