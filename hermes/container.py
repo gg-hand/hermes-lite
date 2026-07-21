@@ -37,6 +37,16 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
     "history":    ["orchestrator"],
     "tools":      ["orchestrator"],
     "server":     [],
+    "multiagent": [
+        "blackboard",
+        "agent_registry",
+        "lock_manager",
+        "multiagent_audit_logger",
+        "schema_validator",
+        "recovery_manager",
+        "watchdog_watcher",
+        "orchestrator",
+    ],
 }
 
 

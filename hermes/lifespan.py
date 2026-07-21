@@ -64,6 +64,67 @@ async def lifespan(app: FastAPI):
     container = get_container()
     register_components(container)
 
+    # 1.5 multiagent 组件注册（仅 enabled=true 时）
+    if config.get("multiagent", {}).get("enabled", False):
+        from pathlib import Path as _Path
+        from hermes.multiagent.schema_validator import SchemaValidator
+        from hermes.multiagent.file_lock import LockManager
+        from hermes.multiagent.audit_logger import MultiAgentAuditLogger
+        from hermes.multiagent.agent_registry import AgentRegistry
+        from hermes.multiagent.watchdog_watcher import WatchdogWatcher
+        from hermes.multiagent.recovery import RecoveryCoordinator
+
+        bb_root_str = config["multiagent"]["blackboard_dir"]
+        # 解析环境变量占位符
+        if bb_root_str.startswith("${") and bb_root_str.endswith("}"):
+            env_var = bb_root_str[2:-1]
+            bb_root_str = os.environ.get(env_var)
+            if not bb_root_str:
+                raise RuntimeError(
+                    f"multiagent.enabled=true but {env_var} is not set. "
+                    f"Please set {env_var} to the blackboard directory path."
+                )
+        bb_root = _Path(bb_root_str)
+        bb_root.mkdir(parents=True, exist_ok=True)
+        for sub in ("agents", "audit", "locks", "tasks", "schemas", "snapshots"):
+            (bb_root / sub).mkdir(exist_ok=True)
+
+        schema_val_enabled = config["multiagent"].get("schema_validation", True)
+        container.register("blackboard", lambda c: bb_root, deps=[], hot_reloadable=False)
+        container.register(
+            "schema_validator",
+            lambda c: SchemaValidator(enabled=schema_val_enabled),
+            deps=[], hot_reloadable=True,
+        )
+        container.register("lock_manager", lambda c: LockManager(bb_root), deps=[], hot_reloadable=True)
+        container.register(
+            "multiagent_audit_logger",
+            lambda c: MultiAgentAuditLogger(bb_root),
+            deps=[], hot_reloadable=True,
+        )
+        container.register(
+            "agent_registry",
+            lambda c: AgentRegistry(bb_root, c.get("schema_validator")),
+            deps=["schema_validator"], hot_reloadable=True,
+        )
+        container.register(
+            "watchdog_watcher",
+            lambda c: WatchdogWatcher(bb_root, lambda evt: None),  # callback 由后续集成注入
+            deps=[], hot_reloadable=True,
+        )
+        container.register(
+            "recovery_manager",
+            lambda c: RecoveryCoordinator(bb_root, c.get("multiagent_audit_logger")),
+            deps=["multiagent_audit_logger"], hot_reloadable=True,
+        )
+
+        # 启动时恢复检查
+        recovery = container.get("recovery_manager")
+        try:
+            await recovery.check_and_recover()
+        except Exception as e:
+            logger.warning("multiagent 启动恢复检查失败: %s", e)
+
     # 2. 触发工厂创建（无状态组件）
     session_logger = container.get("session_logger")
     metrics_collector = container.get("metrics_collector")

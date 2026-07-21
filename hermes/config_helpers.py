@@ -19,39 +19,14 @@ logger = logging.getLogger("hermes.server")
 
 from hermes.tasks.cron_expr import CronExpr
 _RESTART_REQUIRED_KEYS = {
-    "llm.main_provider",
-    "llm.main_model",
-    "llm.main_api_key",
-    "llm.main_base_url",
-    "llm.consolidation_provider",
-    "llm.consolidation_model",
-    "llm.consolidation_api_key",
-    "llm.consolidation_base_url",
-    "llm.max_context_tokens",
-    "llm.context_threshold",
+    "server",
+    "storage.sqlite_path",
     "memory.chroma_path",
     "memory.memory_md_path",
-    "storage.sqlite_path",
-    "server",
-    "monitoring.audit_log_path",
-    "skills.mcp",
-    "security.rules",
-    "guardrails.input_scan.action",
-    "guardrails.sanitizer.trusted_tools",
-    "guardrails.sanitizer.max_output_length",
-    "guardrails.output_filter.enable_bank_card",
-    "memory.condenser.strategy",
-    "schedules",
     "history.persistence_dir",
-    "files.ocr.primary_engine",
-    "files.ocr.paddle.use_gpu",
-    "files.ocr.paddle.lang",
-    "files.ocr.vision_llm.provider",
-    "files.ocr.vision_llm.model",
-    "files.ocr.vision_llm.api_key",
-    "files.ocr.vision_llm.base_url",
-    "reasoning.main.provider",
-    "reasoning.main.model",
+    "security.rules",
+    "schedules",
+    "multiagent.blackboard_dir",
 }
 
 _MISSING = object()
@@ -141,7 +116,7 @@ def _validate_config_schema(config: dict) -> None:
     """校验配置字典的结构与关键字段类型。"""
     if not isinstance(config, dict):
         raise ValueError("配置校验失败: 配置根节点必须是字典")
-    for seg in ("llm", "memory", "server", "storage", "skills", "monitoring", "tools", "security", "history"):
+    for seg in ("llm", "memory", "server", "storage", "skills", "monitoring", "tools", "security", "history", "multiagent"):
         if seg in config and not isinstance(config[seg], dict):
             raise ValueError(f"配置校验失败: {seg} 必须是字典")
     llm = config.get("llm")
