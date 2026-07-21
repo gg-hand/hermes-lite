@@ -843,9 +843,26 @@ candidate_at: 2026-07-20T10:00:08Z
 @agent_a 我这边有相关资料，等轮到我时回复
 ```
 
-**flush 与仲裁流程**：
-- `messages.pending.md`：Director 在轮到对应 agent 时 flush，分配全局 `seq` 后追加到 `messages.md`，并删除 pending 记录
-- `messages.replay_candidates.md`：Director LLM 仲裁器判定 `arbiter_decision=accept` 的消息按上述 flush 流程追加；`reject` 的消息保留记录但标记决策，不追加
+**flush 触发时机与流程**（v1.0.3 spec 补充，明确 Q2 落地细节）：
+
+**flush 触发时机**：
+- Director 推进轮次到某 agent 时（`current_turn.agent_id == pending.from`），Director 扫描 `messages.pending.md` 中 `from == 该 agent_id` 的所有记录
+- 按 `pending_seq` 升序处理
+
+**messages.pending.md flush 流程**：
+1. Director 获取 messages 锁
+2. 读取 `messages.md` 最后一行的 `seq`，记为 `last_seq`
+3. 对每条 pending 记录：
+   a. 分配全局 `seq = last_seq + 1`，`last_seq` 递增
+   b. 追加到 `messages.md`（替换 `pending_seq` 为 `seq`，移除 `pending_reason` / `pending_at` 字段）
+   c. 追加 audit（`action=write`, `details.reason="pending_flushed"`）
+   d. 从 `messages.pending.md` 删除该记录
+4. 释放 messages 锁
+
+**messages.replay_candidates.md flush 流程**：
+- Director LLM 仲裁器周期扫描 `arbiter_decision="pending"` 的记录
+- 仲裁为 `accept` 的记录按上述 flush 流程追加到 `messages.md`（移除 `arbiter_*` / `candidate_*` 字段）
+- 仲裁为 `reject` 的记录保留在 `messages.replay_candidates.md`，标记 `arbiter_decision="reject"` + `arbiter_reason`，不追加
 
 #### 3.3.6 tasks/{id}.md
 
@@ -906,26 +923,27 @@ audit.jsonl 并发 append 在 Windows / 大记录场景下不保证原子性，�
 ```python
 async def append_audit(bb_root, record):
     """获取 audit.lock（portalocker 文件锁，绕过 CAS）后追加记录，计算 hash 链。
-    v1.0.3 修订：改用 portalocker.Lock 文件级锁，TTL=30s，fail_when_locked=False 避免与 CAS 嵌套死锁。
+    v1.0.3 修订：portalocker.Lock 是同步锁，用 run_in_executor 包装避免阻塞事件循环。
+    audit.jsonl 是 append-only 文件，直接用 append 模式打开写入（不写 .tmp 再 rename，
+    因为 rename 会覆盖已有内容，破坏 append-only 语义）。
     """
     import portalocker
     lock_path = bb_root / "locks" / "audit.lock"
-    # portalocker.Lock 是同步锁，用 run_in_executor 包装避免阻塞事件循环
+    audit_path = bb_root / "audit" / "audit.jsonl"
     loop = asyncio.get_event_loop()
+
     def _write_with_lock():
         with portalocker.Lock(str(lock_path), timeout=30, fail_when_locked=False):
-            prev_hash = read_last_hash(bb_root / "audit" / "audit.jsonl")
+            # 1. 读取最后一行计算 prev_hash（seek 到末尾前一段读取）
+            prev_hash = read_last_hash(audit_path)
             record["prev_hash"] = prev_hash
             record["hash"] = sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
-            # atomic write：先写 .tmp 再 rename
-            tmp_path = bb_root / "audit" / "audit.jsonl.tmp"
-            with open(tmp_path, "a", encoding="utf-8") as f:
+            # 2. 直接 append 模式写入（portalocker 保证串行化，append 在同文件原子）
+            with open(audit_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
-            # 追加到主文件（portalocker 保证串行化，rename 在同目录内原子）
-            os.replace(tmp_path, bb_root / "audit" / "audit.jsonl.append")
-            # 注意：实际实现用 append 模式写主文件，此处伪代码简化
+
     await loop.run_in_executor(None, _write_with_lock)
 ```
 
