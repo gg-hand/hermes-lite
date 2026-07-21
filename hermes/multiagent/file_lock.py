@@ -43,8 +43,15 @@ class LockManager:
     fencing_token 从 status.json.last_fencing_token 读取并递增。
     """
 
-    def __init__(self, bb_root: Path) -> None:
+    def __init__(self, bb_root: Path, agent_id: str | None = None) -> None:
+        """初始化锁管理器。
+
+        Args:
+            bb_root: 黑板根目录
+            agent_id: 可选的持有者标识（用于 Director 强制释放场景的审计）
+        """
         self._bb_root = bb_root
+        self._agent_id = agent_id
         self._status_path = bb_root / "status.json"
         self._write_lock = asyncio.Lock()  # 进程内串行化 CAS 写入
 
@@ -99,8 +106,16 @@ class LockManager:
             # 不应到达
             raise LockAcquisitionError(lock_name=lock_name, reason="cas_exhausted")
 
-    async def release(self, lock_name: str, holder: str, fencing_token: int) -> None:
-        """释放锁。校验 fencing_token。"""
+    async def release(self, lock_name: str, holder: str, fencing_token: int, force: bool = False) -> None:
+        """释放锁。校验 fencing_token。
+
+        Args:
+            lock_name: 锁名
+            holder: 持有者标识
+            fencing_token: acquire 时返回的 fencing_token
+            force: Director 强制释放标志；为 True 时跳过 fencing_token 校验
+                  （用于 Director 强制释放 Worker 持有的锁场景）
+        """
         async with self._write_lock:
             for attempt in range(_CAS_RETRY_LIMIT + 1):
                 status = read_json(self._status_path)
@@ -108,7 +123,7 @@ class LockManager:
                 if not lock:
                     return  # 锁已不存在
 
-                if lock.get("fencing_token") != fencing_token:
+                if not force and lock.get("fencing_token") != fencing_token:
                     raise FencingTokenMismatchError(
                         lock_name=lock_name,
                         expected_token=lock.get("fencing_token", 0),
@@ -121,6 +136,8 @@ class LockManager:
                 lock["holder"] = None
                 lock["acquired_at"] = None
                 lock["expires_at"] = None
+                if force:
+                    lock["force_releasing"] = True
                 # fencing_token / grace_until / force_releasing 保留用于审计
                 status["locks"][lock_name] = lock
 

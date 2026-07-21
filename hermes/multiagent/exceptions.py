@@ -5,7 +5,8 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 from hermes.agent.tool_error import ErrorStage, ToolError
 
@@ -204,4 +205,46 @@ class A2AGatewayError(ToolError):
 
 class PathSafetyError(Exception):
     """路径安全违规（绝对路径 / .. 穿越 / symlink 逃逸）。"""
+
+
+# =============================================================================
+# Phase 2 新增：Director 签名 + VerifyResult
+# =============================================================================
+
+
+@dataclass
+class VerifyResult:
+    """Director 签名验证结果（三级：ok / degraded / distrust）。
+
+    level:
+        - ok: 签名验证通过，failure_count 重置为 0
+        - degraded: 单次失败或签名字段缺失（软约束），可继续执行
+        - distrust: 连续失败达阈值（3 次），进入自治模式
+    """
+
+    level: Literal["ok", "degraded", "distrust"]
+    reason: str
+    failure_count: int = 0
+
+
+@dataclass(kw_only=True)
+class DirectorSignatureError(ToolError):
+    """Director 签名验证失败（衔接 VerifyResult.degraded / distrust）。"""
+
+    level: Literal["degraded", "distrust"] = "degraded"
+    failure_count: int = 0
+    threshold: int = 3
+    tool_name: str = "director_engine"
+    category: str = "director_signature_failed"
+    stage: ErrorStage = ErrorStage.PROTOCOL
+    suggestion: str = "连续失败达阈值时进入自治模式"
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.reason:
+            self.reason = (
+                f"director signature verification failed "
+                f"(level={self.level}, failure_count={self.failure_count}/{self.threshold})"
+            )
+        super().__post_init__()
 

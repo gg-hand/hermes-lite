@@ -67,14 +67,35 @@ class AgentRegistry:
 
         await atomic_write(agent_file, self._dump_frontmatter(frontmatter, body))
 
-    async def update_heartbeat(self, agent_id: str) -> None:
-        """更新 agent 心跳。"""
+    async def update_heartbeat(self, agent_id: str, timestamp: str | None = None) -> None:
+        """更新 agent 心跳。
+
+        Args:
+            agent_id: agent 标识
+            timestamp: 可选自定义时间戳（用于测试模拟过期心跳）；默认当前 UTC 时间
+        """
         agent_file = self._agents_dir / f"{agent_id}.md"
         if not agent_file.exists():
             return
 
         frontmatter, body = read_yaml_frontmatter(agent_file)
-        frontmatter["last_heartbeat"] = _now_iso()
+        frontmatter["last_heartbeat"] = timestamp or _now_iso()
+
+        await atomic_write(agent_file, self._dump_frontmatter(frontmatter, body))
+
+    async def update_agent_status(self, agent_id: str, status: str) -> None:
+        """更新 agent 状态（active / degraded / offline）。
+
+        Args:
+            agent_id: agent 标识
+            status: 新状态值
+        """
+        agent_file = self._agents_dir / f"{agent_id}.md"
+        if not agent_file.exists():
+            return
+
+        frontmatter, body = read_yaml_frontmatter(agent_file)
+        frontmatter["status"] = status
 
         await atomic_write(agent_file, self._dump_frontmatter(frontmatter, body))
 
