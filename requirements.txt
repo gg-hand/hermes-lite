@@ -10,7 +10,12 @@ python-dotenv>=1.0.0
 httpx>=0.27.0
 numpy>=1.26.0
 python-multipart>=0.0.9
-jsonschema>=4.0.0
+jsonschema>=4.20
+# multiagent 协作模块依赖
+watchdog>=4.0
+aiofiles>=24.0
+portalocker>=2.7
+cryptography>=42.0
 # OCR 分层依赖（PaddleOCR 2.x 主引擎 + Tesseract 兜底 + 预处理）
 pytesseract>=0.3.10   # Tesseract OCR 引擎（L2 兜底，需另装 tesseract）
 Pillow>=9.0.0         # 图片处理
