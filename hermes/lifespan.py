@@ -167,6 +167,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("multiagent adapter 启动失败: %s", e)
 
+    # 1.6 A2A Gateway 路由注册（仅 a2a.enabled=True 时）
+    a2a_cfg = config.get("a2a", {}) or {}
+    if a2a_cfg.get("enabled"):
+        try:
+            a2a_router = container.get("a2a_router")
+            if a2a_router is not None:
+                app.include_router(a2a_router)
+                logger.info("A2A Gateway 路由已注册")
+        except Exception as e:
+            logger.error("A2A Gateway 启动失败: %s", e)
+
     # 2. 触发工厂创建（无状态组件）
     session_logger = container.get("session_logger")
     metrics_collector = container.get("metrics_collector")

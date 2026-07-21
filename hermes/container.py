@@ -48,6 +48,7 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
         "multiagent_adapter",
         "orchestrator",
     ],
+    "a2a": ["a2a_router", "a2a_client"],
 }
 
 

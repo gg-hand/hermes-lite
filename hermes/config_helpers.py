@@ -27,6 +27,8 @@ _RESTART_REQUIRED_KEYS = {
     "security.rules",
     "schedules",
     "multiagent.blackboard_dir",
+    "a2a.listen_host",
+    "a2a.listen_port",
 }
 
 _MISSING = object()

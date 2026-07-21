@@ -132,6 +132,9 @@ async def log_requests(request: Request, call_next):
 # DI 容器（Task 5）
 # ---------------------------------------------------------------------------
 
+# 重导出 _RESTART_REQUIRED_KEYS 供测试和路由模块使用
+from hermes.config_helpers import _RESTART_REQUIRED_KEYS  # noqa: E402
+
 _container = None
 
 
@@ -284,6 +287,17 @@ app.include_router(files_router)
 app.include_router(memory_router)
 app.include_router(chat_router)
 app.include_router(schedules_router)
+
+# 静态文件挂载（CSS/JS/图片等前端资源）
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+_STATIC_DIR = os.path.join(_WEB_DIR, "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+elif os.path.isdir(_WEB_DIR):
+    app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
+logger.info("静态文件挂载: _WEB_DIR=%s, _STATIC_DIR=%s", _WEB_DIR, _STATIC_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +572,31 @@ def register_components(container) -> None:
         deps=["orchestrator", "session_logger", "mcp_manager", "skill_loader",
               "metrics_collector", "proposal_store"],
         hot_reloadable=False)
+
+    # 5. A2A 段（条件注册：仅 a2a.enabled=True 时）
+    a2a_cfg = container.config.get("a2a", {}) or {}
+    if a2a_cfg.get("enabled"):
+        from pathlib import Path as _Path
+        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from hermes.multiagent.a2a_client import A2AClient
+
+        # blackboard 目录（复用 multiagent 的）
+        multiagent_cfg = container.config.get("multiagent", {}) or {}
+        bb_dir = multiagent_cfg.get("blackboard_dir", "data/blackboard")
+        _Path(bb_dir).mkdir(parents=True, exist_ok=True)
+
+        container.register(
+            "a2a_router",
+            lambda c: create_a2a_router(_Path(bb_dir), container.config),
+            deps=[],
+            hot_reloadable=True,
+        )
+        container.register(
+            "a2a_client",
+            lambda c: A2AClient(container.config),
+            deps=[],
+            hot_reloadable=True,
+        )
 
 
 def inject_lifespan_instances(
