@@ -118,12 +118,54 @@ async def lifespan(app: FastAPI):
             deps=["multiagent_audit_logger"], hot_reloadable=True,
         )
 
+        # Plan 2 新增：multiagent_adapter（DirectorEngine 或 WorkerAdapter）
+        role = config["multiagent"].get("role", "worker")
+        if role == "director":
+            from hermes.multiagent.director_engine import DirectorEngine
+            director_cfg = config["multiagent"].get("director", {})
+            director_agent_id = director_cfg.get("agent_id", "director_001")
+            container.register(
+                "multiagent_adapter",
+                lambda c: DirectorEngine(
+                    bb_root=bb_root,
+                    config=config,
+                    agent_id=director_agent_id,
+                ),
+                deps=[], hot_reloadable=True,
+            )
+        else:
+            from hermes.multiagent.worker_adapter import WorkerAdapter
+            worker_cfg = config["multiagent"].get("worker", {})
+            worker_agent_id = worker_cfg.get("agent_id", "worker_001")
+            container.register(
+                "multiagent_adapter",
+                lambda c: WorkerAdapter(
+                    bb_root=bb_root,
+                    config=config,
+                    agent_id=worker_agent_id,
+                ),
+                deps=[], hot_reloadable=True,
+            )
+
         # 启动时恢复检查
         recovery = container.get("recovery_manager")
         try:
             await recovery.check_and_recover()
         except Exception as e:
             logger.warning("multiagent 启动恢复检查失败: %s", e)
+
+        # Plan 2 新增：启动 multiagent_adapter（DirectorEngine 或 WorkerAdapter）
+        try:
+            multiagent_adapter = container.get("multiagent_adapter")
+            if multiagent_adapter is not None and hasattr(multiagent_adapter, "start"):
+                await multiagent_adapter.start()
+                logger.info(
+                    "multiagent adapter 启动完成 (role=%s, agent_id=%s)",
+                    role,
+                    multiagent_adapter._agent_id,
+                )
+        except Exception as e:
+            logger.error("multiagent adapter 启动失败: %s", e)
 
     # 2. 触发工厂创建（无状态组件）
     session_logger = container.get("session_logger")
@@ -190,6 +232,18 @@ async def lifespan(app: FastAPI):
     # 9. 关闭
     logger.info("lifespan 开始关闭")
     await task_registry.cancel_all()
+
+    # Plan 2 新增：关闭 multiagent_adapter（DirectorEngine 或 WorkerAdapter）
+    multiagent_cfg = config.get("multiagent", {}) or {}
+    if multiagent_cfg.get("enabled", False):
+        try:
+            multiagent_adapter = container.get("multiagent_adapter")
+            if multiagent_adapter is not None and hasattr(multiagent_adapter, "stop"):
+                await multiagent_adapter.stop()
+                logger.info("multiagent adapter 已停止")
+        except Exception as e:
+            logger.warning("multiagent adapter 关闭失败: %s", e)
+
     close_container()
     logger.info("lifespan 关闭完成")
 

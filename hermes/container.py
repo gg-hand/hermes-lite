@@ -45,6 +45,7 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
         "schema_validator",
         "recovery_manager",
         "watchdog_watcher",
+        "multiagent_adapter",
         "orchestrator",
     ],
 }
