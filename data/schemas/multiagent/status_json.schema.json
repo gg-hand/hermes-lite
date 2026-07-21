@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "status.json",
+  "type": "object",
+  "required": ["protocol_version", "session_id", "phase", "version", "epoch", "current_turn", "active_agents", "locks", "last_message_seq", "last_heartbeat", "director_status", "director_signature", "last_fencing_token"],
+  "properties": {
+    "protocol_version": {"type": "string"},
+    "session_id": {"type": "string"},
+    "phase": {"type": "string", "enum": ["initializing", "active", "paused", "ended"]},
+    "version": {"type": "integer", "minimum": 0},
+    "epoch": {"type": "integer", "minimum": 1},
+    "compat_mode": {"type": ["string", "null"]},
+    "current_turn": {
+      "type": "object",
+      "required": ["agent_id", "started_at", "deadline_at", "epoch"],
+      "properties": {
+        "agent_id": {"type": "string"},
+        "started_at": {"type": "string"},
+        "deadline_at": {"type": "string"},
+        "epoch": {"type": "integer"}
+      }
+    },
+    "turn_history": {"type": "array"},
+    "active_agents": {"type": "array", "items": {"type": "string"}},
+    "locks": {"type": "object"},
+    "last_message_seq": {"type": "integer", "minimum": 0},
+    "last_heartbeat": {"type": "object"},
+    "director_status": {"type": "string", "enum": ["active", "autonomous", "recovering", "degraded"]},
+    "director_signature": {"type": "string"},
+    "last_fencing_token": {"type": "integer", "minimum": 0},
+    "recovery_started_at": {"type": ["string", "null"]},
+    "recovery_progress": {"type": ["string", "null"]},
+    "recovery_stage": {"type": ["string", "null"]},
+    "extensions": {"type": "object"}
+  }
+}

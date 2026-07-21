@@ -6,8 +6,12 @@ config.yaml.bak
 # .env.example 仅含占位符模板，需提交以便用户参考
 
 # ── 运行时数据（数据库、日志、向量库、会话历史） ──
-data/
+# 使用 data/* 而非 data/，以便可重新包含 schemas 子目录（git 限制：父目录被忽略时无法 negation）
+data/*
 !data/.gitkeep
+# multiagent 协议 schema 文件需打包发布，跟踪到仓库
+!data/schemas/
+!data/schemas/multiagent/
 
 # ── IDE / 编辑器 ──
 .trae/

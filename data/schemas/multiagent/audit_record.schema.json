@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "audit_record",
+  "type": "object",
+  "required": ["ts", "actor", "action", "target", "details", "prev_hash", "hash"],
+  "properties": {
+    "ts": {"type": "string"},
+    "actor": {"type": "string"},
+    "action": {
+      "type": "string",
+      "enum": [
+        "read", "write", "update", "delete", "lock_acquire", "lock_release",
+        "lock_force_release", "lock_renew", "heartbeat", "register",
+        "unregister", "turn_advance", "director_preempt", "recovery_start",
+        "snapshot_create"
+      ]
+    },
+    "target": {"type": "string"},
+    "details": {"type": "object"},
+    "prev_hash": {"type": "string"},
+    "hash": {"type": "string"}
+  }
+}

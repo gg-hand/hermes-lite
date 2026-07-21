@@ -1,0 +1,63 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: agent_card
+type: object
+required:
+  - agent_id
+  - agent_version
+  - protocol_version
+  - status
+  - role
+  - last_heartbeat
+  - heartbeat_interval_seconds
+properties:
+  agent_id:
+    type: string
+    pattern: '^[a-z0-9_]{3,32}$'
+  agent_version:
+    type: string
+  protocol_version:
+    type: string
+  supported_protocol_versions:
+    type: array
+    items: {type: string}
+  created_at:
+    type: string
+  last_heartbeat:
+    type: string
+  heartbeat_interval_seconds:
+    type: integer
+    minimum: 1
+  status:
+    type: string
+    enum: [registering, active, busy, idle, degraded, offline, rejected]
+  role:
+    type: string
+    enum: [worker, director, observer, judge, recorder, custom]
+  endpoint:
+    type: string
+  owner:
+    type: string
+  capabilities:
+    type: array
+    items: {type: string}
+  specialties:
+    type: array
+    items: {type: string}
+  auth_method:
+    type: string
+    enum: [local, api_key, signed, oauth2, mtls]
+  pid:
+    type: [integer, "null"]
+  host:
+    type: [string, "null"]
+  trust_score:
+    type: integer
+    minimum: 0
+    maximum: 100
+  extensions:
+    type: object
+allOf:
+  - if:
+      properties: {role: {const: observer}}
+    then:
+      required: [last_heartbeat, heartbeat_interval_seconds]

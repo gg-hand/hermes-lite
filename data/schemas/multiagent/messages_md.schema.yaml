@@ -1,0 +1,27 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: messages_md_record
+type: object
+required: [seq, from, to, timestamp, type, content]
+properties:
+  seq:
+    type: integer
+    minimum: 1
+  from:
+    type: string
+    pattern: '^[a-z0-9_]{3,32}$'
+  to:
+    oneOf:
+      - type: string
+      - type: array
+        items: {type: string}
+  timestamp:
+    type: string
+  type:
+    type: string
+    enum: [chat, system, broadcast, action, error]
+  content:
+    type: string
+  reply_to:
+    type: [integer, "null"]
+  trust_score:
+    type: [integer, "null"]
