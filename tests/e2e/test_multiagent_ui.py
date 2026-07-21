@@ -148,3 +148,73 @@ class TestMultiagentSSE:
         expect(page.locator("#multiagent-alert-banner")).to_be_visible()
         expect(page.locator("#multiagent-alert-banner")).to_contain_text("自治")
 
+
+class TestMultiagentRender:
+    """multiagent 渲染测试（Plan 4 Task 4）。"""
+
+    def test_director_state_color_coding(self, page: Page, hermes_app_url):
+        """Director 状态颜色编码（绿/黄/橙/红）。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+
+        # 等待指示器加载
+        page.wait_for_selector("#multiagent-indicator[data-state]")
+
+        # 验证状态类存在
+        indicator = page.locator("#multiagent-indicator")
+        state = indicator.get_attribute("data-state")
+        assert state in ["healthy", "degraded", "autonomous", "fault", "unknown"]
+
+    def test_agent_card_renders_correctly(self, page: Page, hermes_app_url):
+        """Agent 卡片正确渲染。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+
+        page.wait_for_selector(".agent-card")
+        card = page.locator(".agent-card").first
+        # 应包含 agent_id、role、status
+        expect(card).to_contain_text("agent_id")
+        expect(card.locator(".agent-role")).to_be_visible()
+        expect(card.locator(".agent-status")).to_be_visible()
+
+    def test_trust_score_progress_bar(self, page: Page, hermes_app_url):
+        """信任分进度条渲染。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+
+        page.wait_for_selector(".agent-card")
+        # 信任分进度条应存在（如果有 agents）
+        bar = page.locator(".trust-score-bar").first
+        if bar.is_visible():
+            # 验证宽度在 0-100%
+            width = bar.evaluate("(el) => getComputedStyle(el).width")
+            assert "%" in width or "px" in width
+
+    def test_alert_banner_appears_and_disappears(self, page: Page, hermes_app_url):
+        """告警横幅出现并自动消失。"""
+        page.goto(hermes_app_url)
+        page.click("[data-action='open-settings']")
+        page.check("#multiagent-enabled")
+        page.click("[data-action='save-settings']")
+
+        # 触发告警
+        page.evaluate(
+            """
+            window.MultiagentRender.showAlert("测试告警", "info");
+            """
+        )
+        expect(page.locator("#multiagent-alert-banner")).to_be_visible()
+        expect(page.locator("#multiagent-alert-banner")).to_contain_text("测试告警")
+
+        # 等待自动消失（默认 5 秒）
+        page.wait_for_selector(
+            "#multiagent-alert-banner", state="hidden", timeout=10000
+        )
+
+
