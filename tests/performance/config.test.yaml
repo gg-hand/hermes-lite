@@ -1,4 +1,4 @@
-# Performance Test Configuration for Hermes Lite
+# Performance Test Configuration for Teage Liu
 # Uses mock LLM backend with isolated test data directories
 
 llm:

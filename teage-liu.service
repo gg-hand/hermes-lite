@@ -1,5 +1,5 @@
 [Unit]
-Description=Hermes Lite AI Agent
+Description=Teage Liu AI Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -7,14 +7,14 @@ Wants=network-online.target
 Type=simple
 User=deploy
 Group=deploy
-WorkingDirectory=/opt/hermes-lite
-EnvironmentFile=/opt/hermes-lite/.env
+WorkingDirectory=/opt/teage-liu
+EnvironmentFile=/opt/teage-liu/.env
 
 # 启动前安全告警：TEAGE_API_KEY 未设置时打印 WARNING（不阻断）
 ExecStartPre=/bin/bash -c 'if [ -z "${TEAGE_API_KEY}" ]; then echo "WARNING: TEAGE_API_KEY 未设置，API 端点无认证保护"; else echo "TEAGE_API_KEY 已设置，API 认证将启用"; fi'
 
 # 启动命令（可调整 port 和 host）
-ExecStart=/opt/hermes-lite/.venv/bin/uvicorn teage_liu.app:app \
+ExecStart=/opt/teage-liu/.venv/bin/uvicorn teage_liu.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --workers 1 \
@@ -30,16 +30,16 @@ RestartSec=10
 LimitNOFILE=65536
 
 # ONNX/HuggingFace 模型缓存路径（避免 ProtectHome=true 导致写 /home/ubuntu 报错）
-Environment="HF_HOME=/opt/hermes-lite/data/hf-cache"
-Environment="XDG_CACHE_HOME=/opt/hermes-lite/data/cache"
-Environment="SENTENCE_TRANSFORMERS_HOME=/opt/hermes-lite/data/hf-cache"
-Environment="HOME=/opt/hermes-lite/data"
+Environment="HF_HOME=/opt/teage-liu/data/hf-cache"
+Environment="XDG_CACHE_HOME=/opt/teage-liu/data/cache"
+Environment="SENTENCE_TRANSFORMERS_HOME=/opt/teage-liu/data/hf-cache"
+Environment="HOME=/opt/teage-liu/data"
 
 # 安全加固
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/opt/hermes-lite/data
+ReadWritePaths=/opt/teage-liu/data
 ProtectHome=true
 
 [Install]

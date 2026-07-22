@@ -1,5 +1,5 @@
 # =============================================================
-# Hermes Lite restart script (PowerShell)
+# Teage Liu restart script (PowerShell)
 # Usage: .\restart.ps1
 # =============================================================
 $ErrorActionPreference = "Continue"
@@ -15,7 +15,7 @@ if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
-Write-Host "=== Hermes Lite restart ===" -ForegroundColor Cyan
+Write-Host "=== Teage Liu restart ===" -ForegroundColor Cyan
 Write-Host "Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host ""
 
@@ -103,7 +103,7 @@ Write-Host "  Log:    $env:TEAGE_SERVER_LOG"
 Write-Host ""
 
 # ========== 3. Start service ==========
-Write-Host "[3/3] Starting Hermes Lite..." -ForegroundColor Yellow
+Write-Host "[3/3] Starting Teage Liu..." -ForegroundColor Yellow
 Write-Host ""
 
 # start python in background, let it own its own log file

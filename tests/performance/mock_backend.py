@@ -1,6 +1,6 @@
 """Mock LLM Backend for performance benchmarking.
 
-Provides deterministic, configurable mock responses for the Hermes Lite LLM
+Provides deterministic, configurable mock responses for the Teage Liu LLM
 backend interface, eliminating network variability from profiling measurements.
 """
 

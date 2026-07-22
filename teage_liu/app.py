@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Hermes Lite",
+    title="Teage Liu",
     description="个人 AI Agent 长驻 HTTP 服务",
     version=VERSION,
     lifespan=lifespan,

@@ -23,7 +23,7 @@
 - 误报接受：脱敏优于漏报。11 位数字订单号如 ``13800138000`` 会被
   匹配为手机号，这是可接受的边界，调用方按需在 UI 上提示用户即可。
 - ``detect_prompt_leakage`` 可选检测 ``SYSTEM_PROMPT`` 泄漏：响应同时
-  包含 ``"指令优先级"`` 与 ``"Hermes Lite"`` 时判定为泄漏。
+  包含 ``"指令优先级"`` 与 ``"Teage Liu"`` 时判定为泄漏。
 
 PII 正则匹配顺序（特异性优先，避免相互覆盖）：
 1. **邮箱**：含 ``@`` 与域名点，特异性最高，先匹配。
@@ -69,7 +69,7 @@ _PII_PATTERNS: Tuple[Tuple[str, Pattern], ...] = (
 
 # SYSTEM_PROMPT 泄漏检测的标志性短语（同时出现判定为泄漏）
 _LEAKAGE_MARKER_PROMPT_PRIORITY = "指令优先级"
-_LEAKAGE_MARKER_HERMES = "Hermes Lite"
+_LEAKAGE_MARKER_HERMES = "Teage Liu"
 
 
 class OutputFilter:
@@ -157,7 +157,7 @@ class OutputFilter:
     def detect_prompt_leakage(self, text: str) -> bool:
         """检测响应是否泄漏 ``SYSTEM_PROMPT``（可选）。
 
-        当响应同时包含 ``"指令优先级"`` 与 ``"Hermes Lite"`` 时判定为
+        当响应同时包含 ``"指令优先级"`` 与 ``"Teage Liu"`` 时判定为
         泄漏 ``SYSTEM_PROMPT``。这两个短语是 ``src/llm/prompts.py`` 中
         ``SYSTEM_PROMPT`` 的标志性内容（首段标题与角色描述），同时出现
         强烈提示模型在响应中复述了系统提示词。

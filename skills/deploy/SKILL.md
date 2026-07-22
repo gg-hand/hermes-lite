@@ -38,6 +38,6 @@ python -c "from skills.deploy.scripts.deploy import ssh_run_handler; print(ssh_r
 ssh_run_handler(host="1.2.3.4", username="root", command="uptime", password="xxx")
 
 # 上传项目并部署
-scp_push_handler(host="1.2.3.4", username="root", local_path="./deploy.sh", remote_path="/opt/hermes-lite/", password="xxx")
-ssh_run_handler(host="1.2.3.4", username="root", command="cd /opt/hermes-lite && sudo ./deploy.sh", password="xxx")
+scp_push_handler(host="1.2.3.4", username="root", local_path="./deploy.sh", remote_path="/opt/teage-liu/", password="xxx")
+ssh_run_handler(host="1.2.3.4", username="root", command="cd /opt/teage-liu && sudo ./deploy.sh", password="xxx")
 ```

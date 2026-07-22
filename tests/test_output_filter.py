@@ -362,20 +362,20 @@ class TestOutputFilterPromptLeakage(unittest.TestCase):
         self.f = OutputFilter()
 
     def test_leakage_detected_with_both_markers(self):
-        """响应同时含"指令优先级"与"Hermes Lite" → 判定泄漏。"""
+        """响应同时含"指令优先级"与"Teage Liu" → 判定泄漏。"""
         text = (
             "## 指令优先级\n按以下优先级处理...\n"
-            "你是一个 AI Agent，名为 Hermes Lite。"
+            "你是一个 AI Agent，名为 Teage Liu。"
         )
         self.assertTrue(self.f.detect_prompt_leakage(text))
 
     def test_no_leakage_without_priority_marker(self):
-        """响应仅含"Hermes Lite"但无"指令优先级" → 不判定泄漏。"""
-        text = "Hermes Lite 是一个 AI Agent 项目。"
+        """响应仅含"Teage Liu"但无"指令优先级" → 不判定泄漏。"""
+        text = "Teage Liu 是一个 AI Agent 项目。"
         self.assertFalse(self.f.detect_prompt_leakage(text))
 
     def test_no_leakage_without_hermes_marker(self):
-        """响应仅含"指令优先级"但无"Hermes Lite" → 不判定泄漏。"""
+        """响应仅含"指令优先级"但无"Teage Liu" → 不判定泄漏。"""
         text = "任务优先级 vs 指令优先级，需要讨论。"
         self.assertFalse(self.f.detect_prompt_leakage(text))
 
@@ -406,7 +406,7 @@ class TestOutputFilterIntegration(unittest.TestCase):
         """
         text = (
             "## 指令优先级\n联系 13800138000 或 test@example.com。\n"
-            "名为 Hermes Lite 的 Agent。"
+            "名为 Teage Liu 的 Agent。"
         )
         filtered, n = self.f.filter(text)
         # PII 已替换

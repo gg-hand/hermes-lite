@@ -1,4 +1,4 @@
-"""Hermes Lite Performance Benchmark Runner.
+"""Teage Liu Performance Benchmark Runner.
 
 Runs 5 benchmark scenarios against the orchestrator with mock LLM backend,
 collects latency, memory, GC, and lock contention metrics.
@@ -620,7 +620,7 @@ def run_all_scenarios(profile_cpu: bool = False):
 
     # Setup
     logger.info("=" * 60)
-    logger.info("Hermes Lite Performance Benchmark Suite")
+    logger.info("Teage Liu Performance Benchmark Suite")
     logger.info("=" * 60)
 
     # Create test data directory
@@ -728,7 +728,7 @@ def run_all_scenarios(profile_cpu: bool = False):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Hermes Lite Performance Benchmark")
+    parser = argparse.ArgumentParser(description="Teage Liu Performance Benchmark")
     parser.add_argument(
         "--scenario", choices=["all", "a", "b", "c", "d", "e"],
         default="all", help="Scenario to run (default: all)"

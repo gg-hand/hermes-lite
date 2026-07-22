@@ -2,8 +2,8 @@
 """打包项目文件为 tar.gz"""
 import os, tarfile, sys
 
-src_dir = r"E:\Java\webser\web_app\webme\hermes-lite"
-out_path = r"E:\Java\webser\web_app\webme\hermes-lite-deploy.tar.gz"
+src_dir = r"E:\Java\webser\web_app\webme\teage-liu"
+out_path = r"E:\Java\webser\web_app\webme\teage-liu-deploy.tar.gz"
 
 exclude_dirs = {'.venv', '__pycache__', '.pytest_cache', '.git', 'data', 'node_modules', '_onnx_model'}
 exclude_suffixes = {'.pyc', '.pyo'}
@@ -26,7 +26,7 @@ with tarfile.open(out_path, 'w:gz') as tar:
                 continue
             
             fpath = os.path.join(root, f)
-            arcname = os.path.join('hermes-lite', rel_root, f).replace('\\', '/')
+            arcname = os.path.join('teage-liu', rel_root, f).replace('\\', '/')
             tar.add(fpath, arcname=arcname)
 
 size = os.path.getsize(out_path)

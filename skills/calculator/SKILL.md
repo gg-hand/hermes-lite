@@ -2,7 +2,7 @@
 name: calculator
 version: 1.1.0
 description: 简易计算器 Skill，提供加法与减法运算
-author: hermes-lite
+author: teage-liu
 requires: []
 ---
 

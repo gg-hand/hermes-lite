@@ -200,7 +200,7 @@ def register_write_cron_tool(
             "name: <工具名，与 tool_name 一致>\n"
             "version: 1.0.0\n"
             "description: <一句话描述工具功能>\n"
-            "author: hermes-lite\n"
+            "author: teage-liu\n"
             "timeout: 30\n"
             "input_schema:\n"
             "  type: object\n"

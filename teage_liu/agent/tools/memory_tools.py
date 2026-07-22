@@ -116,7 +116,7 @@ def _register_update_profile(
                 r"(src/|agent/|llm/|memory/|storage/|tasks/)",
                 r"(config\.yaml|requirements\.txt|\.venv|__pycache__)",
                 r"(FastAPI|uvicorn|ChromaDB|SQLite|Redis|PostgreSQL)",
-                r"(Hermes Lite 是一个|项目路径|项目作者|作者：)",
+                r"(Teage Liu 是一个|项目路径|项目作者|作者：)",
                 # 7 条同义词扩充
                 r"(流式架构|事件循环|异步后端|AsyncBaseBackend)",
                 r"(react_loop|orchestrator|tool_registry|policy_engine)",

@@ -1,6 +1,6 @@
 """tests/e2e 公共 fixtures。
 
-Plan 4 前端 UI 测试需要运行中的 hermes-lite 服务。默认情况下，若服务不可达
+Plan 4 前端 UI 测试需要运行中的 teage-liu 服务。默认情况下，若服务不可达
 或 Playwright 浏览器未安装，所有 e2e 测试自动跳过。
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import pytest
 
 
 def _server_reachable(url: str) -> bool:
-    """检查 hermes-lite 服务是否可达。"""
+    """检查 teage-liu 服务是否可达。"""
     try:
         # 解析 URL 中的 host:port
         from urllib.parse import urlparse
@@ -28,7 +28,7 @@ def _server_reachable(url: str) -> bool:
 def pytest_configure(config):
     """注册自定义标记。"""
     config.addinivalue_line(
-        "markers", "e2e: end-to-end test (requires running hermes-lite server + Playwright browser)"
+        "markers", "e2e: end-to-end test (requires running teage-liu server + Playwright browser)"
     )
 
 
@@ -45,7 +45,7 @@ def pytest_collection_modifyitems(config, items):
     # 显式选择 e2e 时，若服务不可达也跳过
     hermes_url = "http://127.0.0.1:18394"
     if not _server_reachable(hermes_url):
-        skip_marker = pytest.mark.skip(reason=f"hermes-lite server not reachable at {hermes_url}")
+        skip_marker = pytest.mark.skip(reason=f"teage-liu server not reachable at {hermes_url}")
         for item in items:
             if "e2e" in item.keywords:
                 item.add_marker(skip_marker)
@@ -63,5 +63,5 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def hermes_app_url() -> str:
-    """hermes-lite 服务 URL。"""
+    """teage-liu 服务 URL。"""
     return "http://127.0.0.1:18394"

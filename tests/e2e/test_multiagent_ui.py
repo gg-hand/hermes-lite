@@ -2,7 +2,7 @@
 
 Plan 4 Task 2/3/4：覆盖设置 UI、SSE 订阅、状态渲染。
 
-默认情况下这些测试会被跳过（需要运行中的 hermes-lite 服务 + Playwright 浏览器）。
+默认情况下这些测试会被跳过（需要运行中的 teage-liu 服务 + Playwright 浏览器）。
 显式运行：``python -m pytest tests/e2e/test_multiagent_ui.py -v -m e2e``
 """
 from __future__ import annotations

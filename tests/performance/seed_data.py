@@ -1,4 +1,4 @@
-"""Pre-seed test data for Hermes Lite performance benchmarks.
+"""Pre-seed test data for Teage Liu performance benchmarks.
 
 Creates isolated test directories with pre-populated:
 - ChromaDB: 1000 random vectors (various topics)

@@ -2,7 +2,7 @@
 name: echo_text
 version: 1.0.0
 description: 示例 cron_tool，原样回显输入文本（用于验证子进程执行链路）
-author: hermes-lite
+author: teage-liu
 timeout: 10
 input_schema:
   type: object

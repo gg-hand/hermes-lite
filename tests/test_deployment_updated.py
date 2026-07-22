@@ -78,7 +78,7 @@ class TestDeployScriptsUpdated:
         self._check_script("restart.ps1")
 
     def test_hermes_lite_service(self):
-        self._check_script("hermes-lite.service")
+        self._check_script("teage-liu.service")
 
 
 class TestTeageLiuModuleEntry:

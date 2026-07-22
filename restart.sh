@@ -1,5 +1,5 @@
 #!/bin/bash
-# Hermes Lite 重启脚本（Linux 版）
+# Teage Liu 重启脚本（Linux 版）
 # 用法: ./restart.sh
 # =============================================================
 set -e
@@ -14,7 +14,7 @@ SERVER_LOG="$LOG_DIR/server.log"
 # 确保日志目录存在
 mkdir -p "$LOG_DIR"
 
-echo "=== Hermes Lite 重启 ==="
+echo "=== Teage Liu 重启 ==="
 echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
@@ -95,7 +95,7 @@ echo "  日志: $TEAGE_SERVER_LOG"
 echo ""
 
 # ---------- 3. 启动服务 ----------
-echo "[3/3] 启动 Hermes Lite 服务..."
+echo "[3/3] 启动 Teage Liu 服务..."
 
 # 后台启动并记录 PID
 nohup python -m uvicorn teage_liu.app:app \

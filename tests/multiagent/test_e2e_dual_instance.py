@@ -1,4 +1,4 @@
-"""端到端双实例测试：两个 hermes-lite 进程通过 blackboard 协作。
+"""端到端双实例测试：两个 teage-liu 进程通过 blackboard 协作。
 
 测试场景：
 1. Director 进程 + Worker 进程同时启动

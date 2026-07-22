@@ -1,5 +1,5 @@
 #!/bin/bash
-# Hermes Lite 启动脚本（Linux）
+# Teage Liu 启动脚本（Linux）
 # 用法: ./start.sh
 set -e
 

@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 BUILTIN_TOOLS = [
     (
         "file_read",
-        "读取指定路径文件的内容并返回文本。读取文件应优先使用此工具，而非通过 bash_exec 执行 cat/type 命令——本工具更安全、无需 shell 权限、自动处理编码。\n\n⚠ 路径边界：Hermes Lite 自身源码（src/、tests/、config.yaml 等）受 PolicyEngine 黑名单保护，调用 file_read 读取这些路径会被直接 deny。如需了解项目实现请询问用户。",
+        "读取指定路径文件的内容并返回文本。读取文件应优先使用此工具，而非通过 bash_exec 执行 cat/type 命令——本工具更安全、无需 shell 权限、自动处理编码。\n\n⚠ 路径边界：Teage Liu 自身源码（src/、tests/、config.yaml 等）受 PolicyEngine 黑名单保护，调用 file_read 读取这些路径会被直接 deny。如需了解项目实现请询问用户。",
         {
             "type": "object",
             "properties": {

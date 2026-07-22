@@ -2,17 +2,17 @@
 set -euo pipefail
 
 # ============================================================
-# Hermes Lite 一键部署脚本（Linux x86_64/aarch64）
+# Teage Liu 一键部署脚本（Linux x86_64/aarch64）
 # 用法: chmod +x deploy.sh && sudo ./deploy.sh
 # ============================================================
 
-APP_NAME="hermes-lite"
+APP_NAME="teage-liu"
 APP_DIR="/opt/${APP_NAME}"
 SERVICE_USER="deploy"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 
 echo "========================================"
-echo "  Hermes Lite 裸机部署脚本"
+echo "  Teage Liu 裸机部署脚本"
 echo "========================================"
 
 # --- 检查环境 ---
@@ -57,7 +57,7 @@ if [ -f "hermes/__main__.py" ]; then
     ./ ${APP_DIR}/
   echo "  ✓ 从当前目录复制项目文件"
 else
-  echo "  [!] 未检测到项目文件，请先 cd 到 hermes-lite 目录再执行"
+  echo "  [!] 未检测到项目文件，请先 cd 到 teage-liu 目录再执行"
   echo "  或手动将文件复制到 ${APP_DIR}"
   exit 1
 fi
@@ -96,7 +96,7 @@ echo "[6/6] 配置 systemd 服务..."
 
 cat > ${SERVICE_FILE} << 'SERVICEEOF'
 [Unit]
-Description=Hermes Lite AI Agent
+Description=Teage Liu AI Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -104,11 +104,11 @@ Wants=network-online.target
 Type=simple
 User=deploy
 Group=deploy
-WorkingDirectory=/opt/hermes-lite
-EnvironmentFile=/opt/hermes-lite/.env
+WorkingDirectory=/opt/teage-liu
+EnvironmentFile=/opt/teage-liu/.env
 
 # 启动命令
-ExecStart=/opt/hermes-lite/.venv/bin/uvicorn teage_liu.app:app \
+ExecStart=/opt/teage-liu/.venv/bin/uvicorn teage_liu.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --workers 1 \
@@ -143,7 +143,7 @@ echo "  ✓ systemd 服务已配置并启动"
 # --- 完成 ---
 echo ""
 echo "========================================"
-echo "  ✅ Hermes Lite 部署完成！"
+echo "  ✅ Teage Liu 部署完成！"
 echo "========================================"
 echo ""
 echo "  服务状态:  systemctl status ${APP_NAME}"
@@ -158,6 +158,6 @@ echo "  ⚠️  如果配置了 TEAGE_API_KEY，所有请求需携带"
 echo "     Authorization: Bearer <your-api-key>"
 echo ""
 echo "  ⚠️  生产环境建议加 Nginx 反向代理 + HTTPS"
-echo "  快速配置:  sudo nano /etc/nginx/sites-available/hermes-lite"
+echo "  快速配置:  sudo nano /etc/nginx/sites-available/teage-liu"
 echo ""
 echo "========================================"

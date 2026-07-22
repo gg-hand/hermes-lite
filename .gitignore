@@ -79,9 +79,9 @@ Thumbs.db
 desktop/
 
 # 架构清理：备份目录和调试脚本
-hermes-lite.bak.*/
-hermes-lite/_test_*.py
-hermes-lite/bili_*.py
-hermes-lite/debug_*.txt
-hermes-lite/server_*.txt
-hermes-lite/sv*.txt
+teage-liu.bak.*/
+teage-liu/_test_*.py
+teage-liu/bili_*.py
+teage-liu/debug_*.txt
+teage-liu/server_*.txt
+teage-liu/sv*.txt

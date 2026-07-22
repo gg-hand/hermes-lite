@@ -14,7 +14,7 @@ with sync_playwright() as p:
     page.goto("http://127.0.0.1:8000/monitor", wait_until="networkidle", timeout=15000)
     page.wait_for_timeout(2000)
 
-    screenshot_path = "e:/Java/webser/web_app/webme/hermes-lite/tests/monitor_screenshot.png"
+    screenshot_path = "e:/Java/webser/web_app/webme/teage-liu/tests/monitor_screenshot.png"
     page.screenshot(path=screenshot_path, full_page=True)
 
     health_cells = page.locator(".health-cell").count()
@@ -48,7 +48,7 @@ with sync_playwright() as p:
     for e in errors[:5]:
         print(f"  {e}")
 
-    page.screenshot(path="e:/Java/webser/web_app/webme/hermes-lite/tests/monitor_light.png", full_page=False)
+    page.screenshot(path="e:/Java/webser/web_app/webme/teage-liu/tests/monitor_light.png", full_page=False)
 
     browser.close()
 

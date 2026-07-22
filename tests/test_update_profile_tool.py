@@ -139,11 +139,11 @@ class TestProfileUpdateBlacklist(_ProfileToolTestBase):
         self.assert_rejected(result, "FastAPI")
 
     def test_pattern5_project_meta(self):
-        """原始模式 5：Hermes Lite 是一个 / 项目路径 / 项目作者 / 作者：。"""
+        """原始模式 5：Teage Liu 是一个 / 项目路径 / 项目作者 / 作者：。"""
         result = self._call(
-            "add", "项目信息", "Hermes Lite 是一个个人 agent 项目"
+            "add", "项目信息", "Teage Liu 是一个个人 agent 项目"
         )
-        self.assert_rejected(result, "Hermes Lite")
+        self.assert_rejected(result, "Teage Liu")
 
     def test_pattern6_streaming_arch(self):
         """扩充模式 6：流式架构 / 事件循环 / 异步后端 / AsyncBaseBackend。"""

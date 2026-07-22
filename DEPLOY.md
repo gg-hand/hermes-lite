@@ -1,6 +1,6 @@
-# Hermes Lite 部署文档
+# Teage Liu 部署文档
 
-本文档描述 Hermes Lite 个人长期 AI Agent 的环境要求、安装步骤、本地运行、EC2 部署、API 接口、配置说明与故障排查。
+本文档描述 Teage Liu 个人长期 AI Agent 的环境要求、安装步骤、本地运行、EC2 部署、API 接口、配置说明与故障排查。
 
 ---
 
@@ -40,8 +40,8 @@ sentence-transformers>=3.0.0
 ### 2.1 克隆项目
 
 ```bash
-git clone <your-repo-url> hermes-lite
-cd hermes-lite
+git clone <your-repo-url> teage-liu
+cd teage-liu
 ```
 
 ### 2.2 创建虚拟环境（推荐）
@@ -138,9 +138,9 @@ sudo dnf install -y python3.11 python3.11-pip git
 ### 4.3 克隆项目
 
 ```bash
-sudo mkdir -p /opt/hermes-lite
-sudo chown ec2-user:ec2-user /opt/hermes-lite
-cd /opt/hermes-lite
+sudo mkdir -p /opt/teage-liu
+sudo chown ec2-user:ec2-user /opt/teage-liu
+cd /opt/teage-liu
 git clone <your-repo-url> .
 ```
 
@@ -159,32 +159,32 @@ pip install -r requirements.txt
 
 ```bash
 # 创建环境变量文件（仅 root/ec2-user 可读）
-sudo tee /etc/hermes-lite/env > /dev/null <<EOF
+sudo tee /etc/teage-liu/env > /dev/null <<EOF
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
 EOF
-sudo chmod 600 /etc/hermes-lite/env
-sudo chown ec2-user:ec2-user /etc/hermes-lite/env
+sudo chmod 600 /etc/teage-liu/env
+sudo chown ec2-user:ec2-user /etc/teage-liu/env
 ```
 
 ### 4.6 配置 systemd 服务
 
-将项目根目录下的 `hermes-lite.service` 复制到 systemd 目录：
+将项目根目录下的 `teage-liu.service` 复制到 systemd 目录：
 
 ```bash
-sudo cp /opt/hermes-lite/hermes-lite.service /etc/systemd/system/hermes-lite.service
+sudo cp /opt/teage-liu/teage-liu.service /etc/systemd/system/teage-liu.service
 ```
 
-`hermes-lite.service` 内容：
+`teage-liu.service` 内容：
 
 ```ini
 [Unit]
-Description=Hermes Lite Personal AI Agent
+Description=Teage Liu Personal AI Agent
 After=network.target
 
 [Service]
 Type=simple
 User=ec2-user
-WorkingDirectory=/opt/hermes-lite
+WorkingDirectory=/opt/teage-liu
 Environment=ANTHROPIC_API_KEY=your_api_key_here
 ExecStart=/usr/bin/python3 -m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1
 Restart=always
@@ -194,11 +194,11 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-> **安全建议**：生产环境建议使用 `EnvironmentFile=/etc/hermes-lite/env` 替代 `Environment=ANTHROPIC_API_KEY=...`，避免 API Key 明文出现在 service 文件中：
+> **安全建议**：生产环境建议使用 `EnvironmentFile=/etc/teage-liu/env` 替代 `Environment=ANTHROPIC_API_KEY=...`，避免 API Key 明文出现在 service 文件中：
 >
 > ```ini
-> EnvironmentFile=/etc/hermes-lite/env
-> ExecStart=/opt/hermes-lite/.venv/bin/python -m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1
+> EnvironmentFile=/etc/teage-liu/env
+> ExecStart=/opt/teage-liu/.venv/bin/python -m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1
 > ```
 
 ### 4.7 启动服务
@@ -208,23 +208,23 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 
 # 启动服务
-sudo systemctl start hermes-lite
+sudo systemctl start teage-liu
 
 # 设置开机自启
-sudo systemctl enable hermes-lite
+sudo systemctl enable teage-liu
 
 # 查看服务状态
-sudo systemctl status hermes-lite
+sudo systemctl status teage-liu
 ```
 
 ### 4.8 查看日志
 
 ```bash
 # 实时查看服务日志
-sudo journalctl -u hermes-lite -f
+sudo journalctl -u teage-liu -f
 
 # 查看最近 100 行日志
-sudo journalctl -u hermes-lite -n 100
+sudo journalctl -u teage-liu -n 100
 ```
 
 ### 4.9 配置安全组（EC2 控制台）
@@ -283,7 +283,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "session_id": "abc-123-def",
-  "response": "你好！我是 Hermes Lite...",
+  "response": "你好！我是 Teage Liu...",
   "timestamp": "2026-01-01T00:00:00.000000"
 }
 ```
@@ -409,7 +409,7 @@ tools:
 
 ## 7. AI 护栏（AI Guardrails）
 
-Hermes Lite 在 Phase 9 引入 AI 护栏工程，构建多层防御以应对 Prompt 注入、工具滥用与 PII 泄漏。护栏与既有 L5 PolicyEngine（白名单/审批/路径门控）**并存**：PolicyEngine 守护「工具能否被调用」，护栏守护「输入是否可信、输出是否安全」。
+Teage Liu 在 Phase 9 引入 AI 护栏工程，构建多层防御以应对 Prompt 注入、工具滥用与 PII 泄漏。护栏与既有 L5 PolicyEngine（白名单/审批/路径门控）**并存**：PolicyEngine 守护「工具能否被调用」，护栏守护「输入是否可信、输出是否安全」。
 
 ### 7.1 护栏架构概述
 
@@ -493,7 +493,7 @@ L1 注入检测基于模式列表（关键词 + 结构模板），随攻击手�
 修改 `config.yaml` 中的 `guardrails` 段后：
 
 ```bash
-sudo systemctl restart hermes-lite
+sudo systemctl restart teage-liu
 ```
 
 或通过 `/config/reload` 接口提交配置时，`_RESTART_REQUIRED_KEYS` 会判定 `guardrails` 变更需重启，返回 `needs_restart: true`，前端可提示用户重启。
@@ -504,22 +504,22 @@ sudo systemctl restart hermes-lite
 
 ### 8.1 服务无法启动
 
-**现象**：`systemctl start hermes-lite` 失败或进程立即退出。
+**现象**：`systemctl start teage-liu` 失败或进程立即退出。
 
 **排查步骤**：
 
 ```bash
 # 查看详细错误日志
-sudo journalctl -u hermes-lite -n 50 --no-pager
+sudo journalctl -u teage-liu -n 50 --no-pager
 
 # 手动启动测试（绕过 systemd）
-cd /opt/hermes-lite
+cd /opt/teage-liu
 source .venv/bin/activate
 python -m uvicorn src.server:app --host 0.0.0.0 --port 8000
 ```
 
 **常见原因**：
-- Python 路径错误：`ExecStart` 中的 Python 路径不对，改用虚拟环境的 `/opt/hermes-lite/.venv/bin/python`
+- Python 路径错误：`ExecStart` 中的 Python 路径不对，改用虚拟环境的 `/opt/teage-liu/.venv/bin/python`
 - 依赖未安装：重新执行 `pip install -r requirements.txt`
 - 配置文件不存在：确认 `config.yaml` 在 `WorkingDirectory` 下
 
@@ -534,13 +534,13 @@ python -m uvicorn src.server:app --host 0.0.0.0 --port 8000
 echo $ANTHROPIC_API_KEY
 
 # 或在 systemd service 中使用 EnvironmentFile
-sudo tee -a /etc/hermes-lite/env > /dev/null <<EOF
+sudo tee -a /etc/teage-liu/env > /dev/null <<EOF
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 EOF
-# 然后修改 hermes-lite.service：
-# EnvironmentFile=/etc/hermes-lite/env
+# 然后修改 teage-liu.service：
+# EnvironmentFile=/etc/teage-liu/env
 sudo systemctl daemon-reload
-sudo systemctl restart hermes-lite
+sudo systemctl restart teage-liu
 ```
 
 ### 7.3 sentence-transformers 模型下载失败
@@ -565,8 +565,8 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 **解决**：
 
 ```bash
-sudo chown -R ec2-user:ec2-user /opt/hermes-lite/data
-sudo chmod -R 755 /opt/hermes-lite/data
+sudo chown -R ec2-user:ec2-user /opt/teage-liu/data
+sudo chmod -R 755 /opt/teage-liu/data
 ```
 
 ### 7.5 端口被占用
@@ -593,7 +593,7 @@ sudo kill -9 <PID>
 
 ```bash
 # 查看服务日志中的异常堆栈
-sudo journalctl -u hermes-lite -n 100 --no-pager | grep -A 20 "Traceback"
+sudo journalctl -u teage-liu -n 100 --no-pager | grep -A 20 "Traceback"
 
 # 常见原因：
 # 1. Anthropic API 限流（429）→ 等待后重试
@@ -615,7 +615,7 @@ sudo journalctl -u hermes-lite -n 100 --no-pager | grep -A 20 "Traceback"
 部署完成后，运行测试确认环境正常：
 
 ```bash
-cd /opt/hermes-lite
+cd /opt/teage-liu
 
 # 语法验证
 python -m py_compile src/*.py src/**/*.py
@@ -632,7 +632,7 @@ python tests/test_integration.py
 ## 9. 目录结构
 
 ```
-hermes-lite/
+teage-liu/
 ├── src/
 │   ├── __init__.py
 │   ├── config.py                 # 配置加载（解析 ${ENV_VAR}）
@@ -667,7 +667,7 @@ hermes-lite/
 ├── config.yaml                   # 配置文件
 ├── requirements.txt              # Python 依赖
 ├── start.sh                      # 启动脚本
-├── hermes-lite.service           # systemd 服务文件
+├── teage-liu.service           # systemd 服务文件
 ├── DEPLOY.md                     # 本部署文档
 └── README.md                     # 项目说明
 ```

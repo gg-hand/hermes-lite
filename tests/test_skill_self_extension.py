@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 # resolve correctly: ``..`` goes from the ``agent`` package up to ``src``,
 # which is a proper package (it has __init__.py).
 _src = Path(__file__).parent.parent / "teage_liu"
-sys.path.insert(0, str(_src.parent))  # hermes-lite/  — enables src.agent etc.
-sys.path.insert(0, str(_src))         # hermes-lite/src/  — enables direct agent.*
+sys.path.insert(0, str(_src.parent))  # teage-liu/  — enables src.agent etc.
+sys.path.insert(0, str(_src))         # teage-liu/src/  — enables direct agent.*
 
 from teage_liu.agent.tool_registry import ToolRegistry
 from teage_liu.agent.skill_tools import register_skill_tools

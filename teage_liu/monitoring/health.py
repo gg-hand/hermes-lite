@@ -1,6 +1,6 @@
 """全子系统健康检查模块。
 
-提供 :class:`HealthChecker` 类，对所有 Hermes Lite 子系统进行轻量级健康检查。
+提供 :class:`HealthChecker` 类，对所有 Teage Liu 子系统进行轻量级健康检查。
 所有检查均为属性读取或本地 I/O（<5ms），适合 ~30s 轮询频率。
 
 用法::

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Hermes Lite Performance Benchmark Suite — Consolidated Runner.
+"""Teage Liu Performance Benchmark Suite — Consolidated Runner.
 
 Measures end-to-end latency, subsystem overhead, memory, GC, and lock contention
 across 5 benchmark scenarios. Uses a MockBackend to eliminate LLM API variability.
 
 Usage:
-    cd hermes-lite
+    cd teage-liu
     python tests/performance/run_benchmark.py [--profile] [--quick]
 """
 
@@ -649,13 +649,13 @@ def _create_orchestrator(data_dir: str, scenario: str, max_loops: int = 1, conso
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Hermes Lite Performance Benchmark")
+    parser = argparse.ArgumentParser(description="Teage Liu Performance Benchmark")
     parser.add_argument("--quick", action="store_true", help="Fewer iterations for faster run")
     parser.add_argument("--profile", action="store_true", help="Enable cProfile")
     args = parser.parse_args()
 
     logger.info("=" * 60)
-    logger.info("Hermes Lite — Performance Benchmark Suite")
+    logger.info("Teage Liu — Performance Benchmark Suite")
     logger.info("=" * 60)
 
     data_dir = "data/test_profiling"
