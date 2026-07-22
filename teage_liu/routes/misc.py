@@ -119,7 +119,7 @@ def get_audit_logs(limit: int = Query(50, ge=1, le=1000),
                    audit_logger=Depends(get_audit_logger)):
     from teage_liu.config import load_config
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+    config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
     if audit_logger is None:
         return JSONResponse({"logs": []})
@@ -153,7 +153,7 @@ def get_audit_since(
     """
     from teage_liu.config import load_config
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+    config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
     if audit_logger is None:
         return JSONResponse({"entries": [], "cursor": cursor})
@@ -290,7 +290,7 @@ async def restart_server(request: Request,
     try:
         # 0. 简易配置校验
         from teage_liu.config import load_config, validate_required_env_vars
-        config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+        config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
         new_config = load_config(config_path)
         try:
             validate_required_env_vars(new_config)

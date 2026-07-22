@@ -24,7 +24,7 @@ _SHELL_META_RE = re.compile(r'[|>&;`$(){}!~]|&&|\|\|')
 
 # 工具输出截断阈值（字符数），与 file_read 的 max_chars 对齐
 # 避免大量命令输出（如 dir /s、cat 大日志）注入 LLM 上下文导致 token 预算耗尽
-_MAX_OUTPUT_CHARS = int(os.environ.get("HERMES_MAX_OUTPUT_CHARS", "20000"))
+_MAX_OUTPUT_CHARS = int(os.environ.get("TEAGE_MAX_OUTPUT_CHARS", "20000"))
 
 
 def _truncate_output(text: str) -> str:

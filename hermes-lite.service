@@ -10,8 +10,8 @@ Group=deploy
 WorkingDirectory=/opt/hermes-lite
 EnvironmentFile=/opt/hermes-lite/.env
 
-# 启动前安全告警：HERMES_API_KEY 未设置时打印 WARNING（不阻断）
-ExecStartPre=/bin/bash -c 'if [ -z "${HERMES_API_KEY}" ]; then echo "WARNING: HERMES_API_KEY 未设置，API 端点无认证保护"; else echo "HERMES_API_KEY 已设置，API 认证将启用"; fi'
+# 启动前安全告警：TEAGE_API_KEY 未设置时打印 WARNING（不阻断）
+ExecStartPre=/bin/bash -c 'if [ -z "${TEAGE_API_KEY}" ]; then echo "WARNING: TEAGE_API_KEY 未设置，API 端点无认证保护"; else echo "TEAGE_API_KEY 已设置，API 认证将启用"; fi'
 
 # 启动命令（可调整 port 和 host）
 ExecStart=/opt/hermes-lite/.venv/bin/uvicorn teage_liu.app:app \

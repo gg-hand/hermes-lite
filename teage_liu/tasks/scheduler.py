@@ -55,7 +55,7 @@ from teage_liu.config import load_config
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
+CONFIG_PATH = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
 
 # ---------------------------------------------------------------------------

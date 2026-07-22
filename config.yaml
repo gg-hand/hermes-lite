@@ -117,7 +117,7 @@ skills:
   mcp: []
 security:
   enabled: true
-  # 生产部署必须设置 api_key（建议通过 HERMES_API_KEY 环境变量注入）
+  # 生产部署必须设置 api_key（建议通过 TEAGE_API_KEY 环境变量注入）
   # 留空 = 所有 API 端点无认证保护，仅本地开发适用
   api_key: ''
   workspace_root: .

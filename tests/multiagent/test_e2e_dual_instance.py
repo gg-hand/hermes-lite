@@ -47,7 +47,7 @@ class TestEndToEndDualInstance:
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
-            env={**os.environ, "HERMES_ROLE": "director"},
+            env={**os.environ, "TEAGE_ROLE": "director"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -59,7 +59,7 @@ class TestEndToEndDualInstance:
                 "--bb-root", str(bb_root),
                 "--agent-id", "worker_001",
             ],
-            env={**os.environ, "HERMES_ROLE": "worker"},
+            env={**os.environ, "TEAGE_ROLE": "worker"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -130,7 +130,7 @@ class TestEndToEndDualInstance:
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
-            env={**os.environ, "HERMES_ROLE": "director"},
+            env={**os.environ, "TEAGE_ROLE": "director"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -143,7 +143,7 @@ class TestEndToEndDualInstance:
                 "--agent-id", "worker_001",
                 "--heartbeat-timeout", "2",
             ],
-            env={**os.environ, "HERMES_ROLE": "worker"},
+            env={**os.environ, "TEAGE_ROLE": "worker"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

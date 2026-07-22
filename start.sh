@@ -22,15 +22,15 @@ if [ -z "${DEEPSEEK_API_KEY}" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
     exit 1
 fi
 
-# 安全告警：HERMES_API_KEY 未设置时打印 WARNING（不阻断启动）
-if [ -z "${HERMES_API_KEY}" ]; then
+# 安全告警：TEAGE_API_KEY 未设置时打印 WARNING（不阻断启动）
+if [ -z "${TEAGE_API_KEY}" ]; then
     echo "============================================================"
-    echo "WARNING: HERMES_API_KEY 未设置，所有 API 端点无认证保护。"
-    echo "         生产部署请在 .env 中设置 HERMES_API_KEY=<strong-password>"
+    echo "WARNING: TEAGE_API_KEY 未设置，所有 API 端点无认证保护。"
+    echo "         生产部署请在 .env 中设置 TEAGE_API_KEY=<strong-password>"
     echo "         本地开发可忽略此告警。"
     echo "============================================================"
 else
-    echo "HERMES_API_KEY 已设置，API 认证将启用。"
+    echo "TEAGE_API_KEY 已设置，API 认证将启用。"
 fi
 
 exec python -m uvicorn teage_liu.app:app \

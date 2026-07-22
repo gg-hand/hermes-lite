@@ -263,7 +263,7 @@ def get_schedule_audit(
     """
     from teage_liu.config import load_config
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+    config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")
@@ -307,7 +307,7 @@ def get_schedule_audit_by_run(schedule_id: str, run_id: str,
     """
     from teage_liu.config import load_config
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+    config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
     if cron_scheduler is None:
         raise HTTPException(status_code=503, detail="CronScheduler 尚未初始化")

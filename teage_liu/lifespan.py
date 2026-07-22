@@ -10,8 +10,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 VERSION = "0.1.0"
-CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
-SERVER_LOG_PATH = os.environ.get("HERMES_SERVER_LOG", "data/server.log")
+CONFIG_PATH = os.environ.get("TEAGE_CONFIG", "config.yaml")
+SERVER_LOG_PATH = os.environ.get("TEAGE_SERVER_LOG", "data/server.log")
 
 from teage_liu.logging_setup import logger  # noqa: E402
 from teage_liu.background_loops import cleanup_loop, file_cleanup_loop, metrics_persist_loop  # noqa: E402
@@ -45,7 +45,7 @@ from teage_liu.tasks.scheduler import CronScheduler
 from teage_liu.tasks.cron_expr import CronExpr
 from teage_liu.agent.tools.file_tools import register_file_tools
 from teage_liu.agent.tools.shell_tools import register_bash_tool
-_CRON_TOOL_BASE_DIR = os.environ.get("HERMES_CRON_TOOL_DIR", "cron_tool")
+_CRON_TOOL_BASE_DIR = os.environ.get("TEAGE_CRON_TOOL_DIR", "cron_tool")
 
 # 导入为无条件绝对导入，若失败模块本身无法加载，因此标志恒为 True
 SKILL_MCP_AVAILABLE = True

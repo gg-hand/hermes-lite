@@ -19,7 +19,7 @@ def test_config_multiagent_section_parsed(tmp_path: Path):
 multiagent:
   enabled: true
   role: worker
-  blackboard_dir: "${HERMES_BB_DIR}"
+  blackboard_dir: "${TEAGE_BB_DIR}"
   default_session_id: default
   worker:
     agent_id: hermes_default
@@ -51,7 +51,7 @@ multiagent:
 """,
         encoding="utf-8",
     )
-    os.environ["HERMES_BB_DIR"] = str(tmp_path / "blackboard")
+    os.environ["TEAGE_BB_DIR"] = str(tmp_path / "blackboard")
     config = load_config(str(config_path))
     assert config["multiagent"]["enabled"] is True
     assert config["multiagent"]["role"] == "worker"
@@ -105,7 +105,7 @@ def test_config_to_components_includes_multiagent():
 
 def test_container_registers_multiagent_components(tmp_path: Path):
     """Container 应能注册 multiagent 组件。"""
-    os.environ["HERMES_BB_DIR"] = str(tmp_path / "blackboard")
+    os.environ["TEAGE_BB_DIR"] = str(tmp_path / "blackboard")
     config = {
         "multiagent": {
             "enabled": True,

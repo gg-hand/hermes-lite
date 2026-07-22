@@ -56,7 +56,7 @@ def deep_health(health_checker=Depends(get_health_checker)):
 def get_metrics(metrics_collector=Depends(get_metrics_collector)):
     from teage_liu.config import load_config
 
-    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+    config_path = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
     if metrics_collector is None:
         return JSONResponse({})

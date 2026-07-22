@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 
 
-SERVER_LOG_PATH = os.environ.get("HERMES_SERVER_LOG", "data/server.log")
+SERVER_LOG_PATH = os.environ.get("TEAGE_SERVER_LOG", "data/server.log")
 
 
 class JSONLogFormatter(logging.Formatter):

@@ -95,11 +95,11 @@ if (Test-Path $envFile) {
     }
 }
 
-if (-not $env:HERMES_CONFIG)     { $env:HERMES_CONFIG     = "config.yaml" }
-if (-not $env:HERMES_SERVER_LOG) { $env:HERMES_SERVER_LOG = "data/server.log" }
+if (-not $env:TEAGE_CONFIG)     { $env:TEAGE_CONFIG     = "config.yaml" }
+if (-not $env:TEAGE_SERVER_LOG) { $env:TEAGE_SERVER_LOG = "data/server.log" }
 
-Write-Host "  Config: $env:HERMES_CONFIG"
-Write-Host "  Log:    $env:HERMES_SERVER_LOG"
+Write-Host "  Config: $env:TEAGE_CONFIG"
+Write-Host "  Log:    $env:TEAGE_SERVER_LOG"
 Write-Host ""
 
 # ========== 3. Start service ==========

@@ -15,7 +15,7 @@ logger = logging.getLogger("teage_liu.server")
 
 from teage_liu.config import load_config
 from teage_liu.monitoring.metrics_store import compute_delta
-CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
+CONFIG_PATH = os.environ.get("TEAGE_CONFIG", "config.yaml")
 
 
 async def cleanup_loop(session_logger=None, metrics_store=None, orchestrator=None):

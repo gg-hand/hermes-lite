@@ -182,7 +182,7 @@ def get_llm_timeouts(config: dict) -> tuple[float, float]:
 SENSITIVE_FIELDS: dict[str, str] = {
     "llm.main_api_key": "LLM_MAIN_API_KEY",
     "llm.consolidation_api_key": "LLM_CONSOLIDATION_API_KEY",
-    "security.api_key": "HERMES_API_KEY",
+    "security.api_key": "TEAGE_API_KEY",
     "files.ocr.vision_llm.api_key": "FILES_OCR_VISION_LLM_API_KEY",
     "web_search.bing_api_key": "BING_API_KEY",
     "web_search.baidu_api_key": "BAIDU_API_KEY",

@@ -87,11 +87,11 @@ if [ -f .env ]; then
 fi
 
 # 默认配置
-export HERMES_CONFIG=${HERMES_CONFIG:-config.yaml}
-export HERMES_SERVER_LOG=${HERMES_SERVER_LOG:-data/server.log}
+export TEAGE_CONFIG=${TEAGE_CONFIG:-config.yaml}
+export TEAGE_SERVER_LOG=${TEAGE_SERVER_LOG:-data/server.log}
 
-echo "  配置: $HERMES_CONFIG"
-echo "  日志: $HERMES_SERVER_LOG"
+echo "  配置: $TEAGE_CONFIG"
+echo "  日志: $TEAGE_SERVER_LOG"
 echo ""
 
 # ---------- 3. 启动服务 ----------

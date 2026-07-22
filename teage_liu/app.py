@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 VERSION = "0.1.0"
-CONFIG_PATH = os.environ.get("HERMES_CONFIG", "config.yaml")
+CONFIG_PATH = os.environ.get("TEAGE_CONFIG", "config.yaml")
 logger = logging.getLogger("teage_liu.server")
 
 
@@ -95,7 +95,7 @@ if _security_api_key:
 else:
     logger.warning(
         "API 认证未启用（security.api_key 未配置）。"
-        "生产环境建议设置 HERMES_API_KEY 环境变量。"
+        "生产环境建议设置 TEAGE_API_KEY 环境变量。"
     )
 
 
