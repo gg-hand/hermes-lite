@@ -1,6 +1,6 @@
 """multiagent 协作异常类。
 
-对齐 hermes/agent/tool_error.py 的 @dataclass(kw_only=True) 风格。
+对齐 teage_liu/agent/tool_error.py 的 @dataclass(kw_only=True) 风格。
 所有异常继承 ToolError，stage=PROTOCOL（不走 tool_result 链路）。
 """
 from __future__ import annotations

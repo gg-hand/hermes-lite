@@ -1,4 +1,4 @@
-"""python -m hermes 入口：启动 uvicorn 服务。
+"""python -m teage_liu 入口：启动 uvicorn 服务。
 
 等价于 `python -m uvicorn teage_liu.app:app --host 0.0.0.0 --port 8000`，
 但通过 __main__ 提供统一入口，方便部署脚本和桌面端 sidecar 调用。

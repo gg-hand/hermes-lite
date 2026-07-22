@@ -1,4 +1,4 @@
-"""Hermes Skill 本地插件系统。
+"""Teage Skill 本地插件系统。
 
 提供 SkillLoader 用于扫描 skills/ 目录、解析 SKILL.md frontmatter、
 动态 importlib 加载 tools.py。

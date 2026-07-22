@@ -608,7 +608,7 @@ def register_components(container) -> None:
 
     # 6. multiagent REST 路由（条件注册：仅 multiagent.enabled=True 时）
     #    Plan 4 Task 5：注册 multiagent_router 供 lifespan 启动时挂载到 FastAPI app。
-    #    路由本身在 hermes/api/multiagent_routes.py 实现（Task 1）。
+    #    路由本身在 teage_liu/api/multiagent_routes.py 实现（Task 1）。
     multiagent_cfg_for_router = container.config.get("multiagent", {}) or {}
     if multiagent_cfg_for_router.get("enabled"):
         from teage_liu.api.multiagent_routes import create_multiagent_router

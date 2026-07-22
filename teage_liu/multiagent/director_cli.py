@@ -72,7 +72,7 @@ async def main_async(bb_root: Path, mode: str = "script") -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Hermes Director")
+    parser = argparse.ArgumentParser(description="Teage Director")
     parser.add_argument("--bb-root", required=True, help="Blackboard 根目录")
     parser.add_argument(
         "--mode", default="script", choices=["agent", "script"],

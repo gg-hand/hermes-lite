@@ -161,7 +161,7 @@ def main():
         )
         user_pos = page.evaluate("() => document.getElementById('messages').scrollTop")
         # 调用非强制滚动（模拟流式更新/工具卡片创建触发的内部调用）
-        page.evaluate("() => window.HermesUtils.scrollMessagesToBottom(false)")
+        page.evaluate("() => window.TeageUtils.scrollMessagesToBottom(false)")
         page.wait_for_timeout(300)
         after_non_force = page.evaluate("() => document.getElementById('messages').scrollTop")
         results["F.user_pos"] = user_pos
@@ -179,7 +179,7 @@ def main():
             )
 
         # G. 强制模式应拉到底部
-        page.evaluate("() => window.HermesUtils.scrollMessagesToBottom(true)")
+        page.evaluate("() => window.TeageUtils.scrollMessagesToBottom(true)")
         page.wait_for_timeout(300)
         after_force = page.evaluate("() => document.getElementById('messages').scrollTop")
         sh = page.evaluate("() => document.getElementById('messages').scrollHeight")
@@ -192,7 +192,7 @@ def main():
 
         # H. isMessagesNearBottom 工具函数应正确判断
         # 在底部附近时应返回 true
-        near_bot = page.evaluate("() => window.HermesUtils.isMessagesNearBottom()")
+        near_bot = page.evaluate("() => window.TeageUtils.isMessagesNearBottom()")
         results["H.near_bottom_true"] = near_bot
         assert near_bot is True, f"FAIL H: 在底部附近时 isMessagesNearBottom 应返回 true，实际 {near_bot}"
         # 滚到中间后应返回 false
@@ -200,7 +200,7 @@ def main():
             "() => { const el = document.getElementById('messages');"
             " el.scrollTop = Math.floor(el.scrollHeight * 0.3); }"
         )
-        near_mid = page.evaluate("() => window.HermesUtils.isMessagesNearBottom()")
+        near_mid = page.evaluate("() => window.TeageUtils.isMessagesNearBottom()")
         results["H.near_bottom_false"] = near_mid
         assert near_mid is False, f"FAIL H: 在中间位置时 isMessagesNearBottom 应返回 false，实际 {near_mid}"
 

@@ -29,7 +29,7 @@ def test_json_log_formatter_outputs_valid_json():
     assert "timestamp" in parsed
 
 
-def test_setup_logging_returns_hermes_logger():
+def test_setup_logging_returns_teage_logger():
     """_setup_logging 返回名为 teage_liu.server 的 logger。"""
     from teage_liu.logging_setup import _setup_logging
     logger = _setup_logging("data/test_server.log")

@@ -101,13 +101,13 @@ def _setup_logging(log_file: str) -> logging.Logger:
         )
     file_handler.setFormatter(formatter)
 
-    # 加过滤器：只允许 hermes、mcp 命名空间的日志写入文件
-    class HermesLogFilter(logging.Filter):
+    # 加过滤器：只允许 teage_liu、mcp 命名空间的日志写入文件
+    class TeageLogFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
             name = record.name
             return name.startswith("teage_liu.") or name.startswith("mcp.")
 
-    file_handler.addFilter(HermesLogFilter())
+    file_handler.addFilter(TeageLogFilter())
     root_logger.addHandler(file_handler)
 
     return logging.getLogger("teage_liu.server")

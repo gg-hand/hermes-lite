@@ -69,7 +69,7 @@ _PII_PATTERNS: Tuple[Tuple[str, Pattern], ...] = (
 
 # SYSTEM_PROMPT 泄漏检测的标志性短语（同时出现判定为泄漏）
 _LEAKAGE_MARKER_PROMPT_PRIORITY = "指令优先级"
-_LEAKAGE_MARKER_HERMES = "Teage Liu"
+_LEAKAGE_MARKER_TEAGE = "Teage Liu"
 
 
 class OutputFilter:
@@ -173,7 +173,7 @@ class OutputFilter:
         # 必须同时含两个标志性短语才判定为泄漏（降低误报）
         if _LEAKAGE_MARKER_PROMPT_PRIORITY not in text:
             return False
-        return _LEAKAGE_MARKER_HERMES in text
+        return _LEAKAGE_MARKER_TEAGE in text
 
     # ------------------------------------------------------------------
     # 内部辅助方法

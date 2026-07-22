@@ -22,7 +22,7 @@ multiagent:
   blackboard_dir: "${TEAGE_BB_DIR}"
   default_session_id: default
   worker:
-    agent_id: hermes_default
+    agent_id: teage_default
     heartbeat_interval_seconds: 10
     watchdog_backend: watchdog
     capabilities: [file_read, file_write]

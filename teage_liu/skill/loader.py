@@ -1,4 +1,4 @@
-"""Hermes Skill 加载器实现。
+"""Teage Skill 加载器实现。
 
 扫描 ``skills/`` 目录下的子目录，解析 ``SKILL.md`` YAML frontmatter 作为
 元数据（轻量发现），按需通过 ``importlib`` 动态加载 ``tools.py`` 与

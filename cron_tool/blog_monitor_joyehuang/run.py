@@ -58,7 +58,7 @@ RECEIVER_EMAIL = SMTP_CONFIG["receiver_email"]
 def fetch_rss() -> list[dict]:
     """抓取 RSS 并返回文章列表"""
     req = urllib.request.Request(RSS_URL, headers={
-        "User-Agent": "HermesLite-BlogMonitor/1.0"
+        "User-Agent": "TeageLiu-BlogMonitor/1.0"
     })
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = resp.read()

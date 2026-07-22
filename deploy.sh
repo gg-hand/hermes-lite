@@ -51,7 +51,7 @@ echo "[3/6] 部署项目文件..."
 mkdir -p ${APP_DIR}
 
 # 如果当前目录有源码，直接复制
-if [ -f "hermes/__main__.py" ]; then
+if [ -f "teage_liu/__main__.py" ]; then
   rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='.git' --exclude='.env' --exclude='data/' \
     ./ ${APP_DIR}/

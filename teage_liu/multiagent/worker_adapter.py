@@ -745,7 +745,7 @@ class WorkerAdapter:
 
         return f"""# Multi-Agent Collaboration Context
 
-You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
+You are participating in a Teage Multi-Agent Protocol v1.0 blackboard.
 
 ## Active Agents
 {agents_str}

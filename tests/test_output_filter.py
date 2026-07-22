@@ -374,7 +374,7 @@ class TestOutputFilterPromptLeakage(unittest.TestCase):
         text = "Teage Liu 是一个 AI Agent 项目。"
         self.assertFalse(self.f.detect_prompt_leakage(text))
 
-    def test_no_leakage_without_hermes_marker(self):
+    def test_no_leakage_without_teage_marker(self):
         """响应仅含"指令优先级"但无"Teage Liu" → 不判定泄漏。"""
         text = "任务优先级 vs 指令优先级，需要讨论。"
         self.assertFalse(self.f.detect_prompt_leakage(text))

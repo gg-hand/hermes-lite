@@ -1,7 +1,7 @@
 """向后兼容入口：静态文件挂载已移至 teage_liu.app。
 
-保留此文件仅为兼容旧脚本 `python src/server.py`（现已迁移到 hermes/）。
-新入口请使用 `python -m hermes` 或 `uvicorn teage_liu.app:app`。
+保留此文件仅为兼容旧脚本 `python src/server.py`（现已迁移到 teage_liu/）。
+新入口请使用 `python -m teage_liu` 或 `uvicorn teage_liu.app:app`。
 """
 from __future__ import annotations
 

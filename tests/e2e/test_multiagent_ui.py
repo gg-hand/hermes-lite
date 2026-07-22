@@ -14,24 +14,24 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture
-def hermes_app_url() -> str:
+def teage_app_url() -> str:
     return "http://127.0.0.1:18394"
 
 
 class TestMultiagentSettingsUI:
     """multiagent 设置 UI 测试。"""
 
-    def test_settings_modal_has_multiagent_section(self, page: Page, hermes_app_url):
+    def test_settings_modal_has_multiagent_section(self, page: Page, teage_app_url):
         """设置模态框包含 multiagent 段。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         # 点击齿轮图标打开设置
         page.click("[data-action='open-settings']")
         # 验证 multiagent 段存在
         expect(page.locator("#multiagent-section")).to_be_visible()
 
-    def test_enable_multiagent_toggle(self, page: Page, hermes_app_url):
+    def test_enable_multiagent_toggle(self, page: Page, teage_app_url):
         """启用 multiagent 开关。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         # 勾选启用
         page.check("#multiagent-enabled")
@@ -39,9 +39,9 @@ class TestMultiagentSettingsUI:
         expect(page.locator("#multiagent-role")).to_be_visible()
         expect(page.locator("#multiagent-blackboard-dir")).to_be_visible()
 
-    def test_role_selector_has_director_and_worker(self, page: Page, hermes_app_url):
+    def test_role_selector_has_director_and_worker(self, page: Page, teage_app_url):
         """角色选择器包含 Director 和 Worker。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         # 验证角色选项
@@ -49,9 +49,9 @@ class TestMultiagentSettingsUI:
         expect(options.nth(0)).to_have_text("Worker")
         expect(options.nth(1)).to_have_text("Director")
 
-    def test_save_multiagent_config_calls_api(self, page: Page, hermes_app_url):
+    def test_save_multiagent_config_calls_api(self, page: Page, teage_app_url):
         """保存配置调用 PUT /config API。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.select_option("#multiagent-role", "worker")
@@ -66,9 +66,9 @@ class TestMultiagentSettingsUI:
         assert "multiagent" in post_data
         assert "worker" in post_data
 
-    def test_disabled_hides_multiagent_section(self, page: Page, hermes_app_url):
+    def test_disabled_hides_multiagent_section(self, page: Page, teage_app_url):
         """multiagent 关闭时隐藏相关 UI。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         # 取消勾选启用
         page.uncheck("#multiagent-enabled")
@@ -79,22 +79,22 @@ class TestMultiagentSettingsUI:
 class TestMultiagentSSE:
     """multiagent SSE 通道测试（Plan 4 Task 3）。"""
 
-    def test_sse_indicator_present(self, page: Page, hermes_app_url):
+    def test_sse_indicator_present(self, page: Page, teage_app_url):
         """页面包含 multiagent 状态指示器。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         # 验证状态指示器 DOM 存在
         expect(page.locator("#multiagent-indicator")).to_be_visible()
 
-    def test_sse_indicator_shows_disabled_state(self, page: Page, hermes_app_url):
+    def test_sse_indicator_shows_disabled_state(self, page: Page, teage_app_url):
         """multiagent 未启用时指示器显示禁用状态。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         indicator = page.locator("#multiagent-indicator")
         # 应显示"未启用"或类似文本
         expect(indicator).to_contain_text("未启用")
 
-    def test_sse_indicator_shows_director_state(self, page: Page, hermes_app_url):
+    def test_sse_indicator_shows_director_state(self, page: Page, teage_app_url):
         """启用后指示器显示 Director 状态。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         # 启用 multiagent（通过设置模态框）
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
@@ -118,9 +118,9 @@ class TestMultiagentSSE:
             ]
         )
 
-    def test_sse_agent_panel_shows_list(self, page: Page, hermes_app_url):
+    def test_sse_agent_panel_shows_list(self, page: Page, teage_app_url):
         """Agent 列表面板显示活跃 agents。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -130,9 +130,9 @@ class TestMultiagentSSE:
         agents = page.locator("#multiagent-agents-panel .agent-card")
         expect(agents.first).to_be_visible()
 
-    def test_sse_autonomous_alert(self, page: Page, hermes_app_url):
+    def test_sse_autonomous_alert(self, page: Page, teage_app_url):
         """自治模式触发时显示告警。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -152,9 +152,9 @@ class TestMultiagentSSE:
 class TestMultiagentRender:
     """multiagent 渲染测试（Plan 4 Task 4）。"""
 
-    def test_director_state_color_coding(self, page: Page, hermes_app_url):
+    def test_director_state_color_coding(self, page: Page, teage_app_url):
         """Director 状态颜色编码（绿/黄/橙/红）。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -167,9 +167,9 @@ class TestMultiagentRender:
         state = indicator.get_attribute("data-state")
         assert state in ["healthy", "degraded", "autonomous", "fault", "unknown"]
 
-    def test_agent_card_renders_correctly(self, page: Page, hermes_app_url):
+    def test_agent_card_renders_correctly(self, page: Page, teage_app_url):
         """Agent 卡片正确渲染。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -181,9 +181,9 @@ class TestMultiagentRender:
         expect(card.locator(".agent-role")).to_be_visible()
         expect(card.locator(".agent-status")).to_be_visible()
 
-    def test_trust_score_progress_bar(self, page: Page, hermes_app_url):
+    def test_trust_score_progress_bar(self, page: Page, teage_app_url):
         """信任分进度条渲染。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -196,9 +196,9 @@ class TestMultiagentRender:
             width = bar.evaluate("(el) => getComputedStyle(el).width")
             assert "%" in width or "px" in width
 
-    def test_alert_banner_appears_and_disappears(self, page: Page, hermes_app_url):
+    def test_alert_banner_appears_and_disappears(self, page: Page, teage_app_url):
         """告警横幅出现并自动消失。"""
-        page.goto(hermes_app_url)
+        page.goto(teage_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")

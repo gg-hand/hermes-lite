@@ -32,7 +32,7 @@ class TestAuditRotation(unittest.TestCase):
     """验证 audit.jsonl 的轮转行为。"""
 
     def setUp(self):
-        self._tmp_dir = tempfile.mkdtemp(prefix="hermes_audit_test_")
+        self._tmp_dir = tempfile.mkdtemp(prefix="teage_audit_test_")
         self._log_path = os.path.join(self._tmp_dir, "audit.jsonl")
 
     def tearDown(self):

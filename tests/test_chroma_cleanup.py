@@ -33,7 +33,7 @@ class TestChromaCleanup(unittest.TestCase):
     """验证 delete_old_entries 删除过期记忆。"""
 
     def setUp(self):
-        self._tmp_dir = tempfile.mkdtemp(prefix="hermes_chroma_test_")
+        self._tmp_dir = tempfile.mkdtemp(prefix="teage_chroma_test_")
 
     def tearDown(self):
         import shutil

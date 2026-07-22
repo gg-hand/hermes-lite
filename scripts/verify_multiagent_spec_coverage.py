@@ -67,7 +67,7 @@ def _grep_count(pattern: str, text: str, flags: int = 0) -> int:
 
 def _p1_01_exceptions_8_classes() -> CheckResult:
     """§4.1 异常类完整（8 个）。"""
-    text = _read_file("hermes/multiagent/exceptions.py")
+    text = _read_file("teage_liu/multiagent/exceptions.py")
     classes = [
         "CASConflictError",
         "CASVersionMismatchError",
@@ -124,7 +124,7 @@ def _p1_02_schemas_7_files() -> CheckResult:
 
 def _p1_03_blackboard_path_sandbox() -> CheckResult:
     """§4.3 blackboard 路径沙箱（绝对路径拒绝）。"""
-    text = _read_file("hermes/multiagent/blackboard.py")
+    text = _read_file("teage_liu/multiagent/blackboard.py")
     if not _grep(r"is_absolute|validate_path_safety|PathSafetyError", text):
         return CheckResult(
             "p1_03_blackboard_path_sandbox",
@@ -142,7 +142,7 @@ def _p1_03_blackboard_path_sandbox() -> CheckResult:
 
 def _p1_04_blackboard_atomic_write() -> CheckResult:
     """补充：blackboard atomic_write 函数。"""
-    text = _read_file("hermes/multiagent/blackboard.py")
+    text = _read_file("teage_liu/multiagent/blackboard.py")
     if not _grep(r"async def atomic_write", text):
         return CheckResult(
             "p1_04_blackboard_atomic_write",
@@ -160,7 +160,7 @@ def _p1_04_blackboard_atomic_write() -> CheckResult:
 
 def _p1_05_blackboard_yaml_safe_load() -> CheckResult:
     """补充：blackboard 必须 yaml.safe_load，禁用 yaml.load。"""
-    text = _read_file("hermes/multiagent/blackboard.py")
+    text = _read_file("teage_liu/multiagent/blackboard.py")
     if not _grep(r"yaml\.safe_load", text):
         return CheckResult(
             "p1_05_blackboard_yaml_safe_load",
@@ -185,7 +185,7 @@ def _p1_05_blackboard_yaml_safe_load() -> CheckResult:
 
 def _p1_06_blackboard_append_jsonl() -> CheckResult:
     """补充：blackboard append_jsonl 函数（append-only）。"""
-    text = _read_file("hermes/multiagent/blackboard.py")
+    text = _read_file("teage_liu/multiagent/blackboard.py")
     if not _grep(r"async def append_jsonl", text):
         return CheckResult(
             "p1_06_blackboard_append_jsonl",
@@ -203,7 +203,7 @@ def _p1_06_blackboard_append_jsonl() -> CheckResult:
 
 def _p1_07_file_lock_cas() -> CheckResult:
     """§4.4 file_lock CAS 机制。"""
-    text = _read_file("hermes/multiagent/file_lock.py")
+    text = _read_file("teage_liu/multiagent/file_lock.py")
     if not _grep(r"_cas_write|CASVersionMismatchError|expected_version", text):
         return CheckResult(
             "p1_07_file_lock_cas",
@@ -221,7 +221,7 @@ def _p1_07_file_lock_cas() -> CheckResult:
 
 def _p1_08_file_lock_fencing_token() -> CheckResult:
     """§4.4 file_lock fencing_token。"""
-    text = _read_file("hermes/multiagent/file_lock.py")
+    text = _read_file("teage_liu/multiagent/file_lock.py")
     if not _grep(r"fencing_token|FencingTokenMismatchError", text):
         return CheckResult(
             "p1_08_file_lock_fencing_token",
@@ -239,7 +239,7 @@ def _p1_08_file_lock_fencing_token() -> CheckResult:
 
 def _p1_09_file_lock_grace_period() -> CheckResult:
     """§4.4 file_lock grace_period。"""
-    text = _read_file("hermes/multiagent/file_lock.py")
+    text = _read_file("teage_liu/multiagent/file_lock.py")
     if not _grep(r"grace_period|grace_until|force_releasing", text):
         return CheckResult(
             "p1_09_file_lock_grace_period",
@@ -257,7 +257,7 @@ def _p1_09_file_lock_grace_period() -> CheckResult:
 
 def _p1_10_audit_logger_class() -> CheckResult:
     """补充：MultiAgentAuditLogger 类存在。"""
-    text = _read_file("hermes/multiagent/audit_logger.py")
+    text = _read_file("teage_liu/multiagent/audit_logger.py")
     if not _grep(r"class MultiAgentAuditLogger", text):
         return CheckResult(
             "p1_10_audit_logger_class",
@@ -275,7 +275,7 @@ def _p1_10_audit_logger_class() -> CheckResult:
 
 def _p1_11_audit_logger_hash_chain() -> CheckResult:
     """补充：audit_logger hash 链。"""
-    text = _read_file("hermes/multiagent/audit_logger.py")
+    text = _read_file("teage_liu/multiagent/audit_logger.py")
     if not _grep(r"prev_hash|hashlib\.sha256", text):
         return CheckResult(
             "p1_11_audit_logger_hash_chain",
@@ -293,7 +293,7 @@ def _p1_11_audit_logger_hash_chain() -> CheckResult:
 
 def _p1_12_agent_registry_class() -> CheckResult:
     """补充：AgentRegistry 类存在。"""
-    text = _read_file("hermes/multiagent/agent_registry.py")
+    text = _read_file("teage_liu/multiagent/agent_registry.py")
     if not _grep(r"class AgentRegistry", text):
         return CheckResult(
             "p1_12_agent_registry_class",
@@ -311,7 +311,7 @@ def _p1_12_agent_registry_class() -> CheckResult:
 
 def _p1_13_watchdog_class() -> CheckResult:
     """补充：WatchdogWatcher 类存在 + 自检。"""
-    text = _read_file("hermes/multiagent/watchdog_watcher.py")
+    text = _read_file("teage_liu/multiagent/watchdog_watcher.py")
     if not _grep(r"class WatchdogWatcher", text):
         return CheckResult(
             "p1_13_watchdog_class",
@@ -336,7 +336,7 @@ def _p1_13_watchdog_class() -> CheckResult:
 
 def _p1_14_recovery_class() -> CheckResult:
     """补充：RecoveryCoordinator 类存在 + audit 重放。"""
-    text = _read_file("hermes/multiagent/recovery.py")
+    text = _read_file("teage_liu/multiagent/recovery.py")
     if not _grep(r"class RecoveryCoordinator", text):
         return CheckResult(
             "p1_14_recovery_class",
@@ -361,10 +361,10 @@ def _p1_14_recovery_class() -> CheckResult:
 
 def _p1_15_config_container_integration() -> CheckResult:
     """补充：配置与容器集成（CONFIG_TO_COMPONENTS + _RESTART_REQUIRED_KEYS + lifespan）。"""
-    container_text = _read_file("hermes/container.py")
-    config_helpers_text = _read_file("hermes/config_helpers.py")
-    lifespan_text = _read_file("hermes/lifespan.py")
-    tool_error_text = _read_file("hermes/agent/tool_error.py")
+    container_text = _read_file("teage_liu/container.py")
+    config_helpers_text = _read_file("teage_liu/config_helpers.py")
+    lifespan_text = _read_file("teage_liu/lifespan.py")
+    tool_error_text = _read_file("teage_liu/agent/tool_error.py")
     requirements_text = _read_file("requirements.txt")
 
     failures = []
@@ -401,7 +401,7 @@ def _p1_15_config_container_integration() -> CheckResult:
 
 def _p2_01_director_engine_flush() -> CheckResult:
     """§4.5 flush 流程（messages.pending.md 幂等）。"""
-    text = _read_file("hermes/multiagent/director_engine.py")
+    text = _read_file("teage_liu/multiagent/director_engine.py")
     if not _grep(r"messages\.pending\.md|flush|op_id", text):
         return CheckResult(
             "p2_01_director_engine_flush",
@@ -419,7 +419,7 @@ def _p2_01_director_engine_flush() -> CheckResult:
 
 def _p2_02_audit_append_only() -> CheckResult:
     """§4.6 append_audit append-only 语义（无 os.replace）。"""
-    text = _read_file("hermes/multiagent/audit_logger.py")
+    text = _read_file("teage_liu/multiagent/audit_logger.py")
     if _grep(r"os\.replace\s*\(", text):
         return CheckResult(
             "p2_02_audit_append_only",
@@ -444,7 +444,7 @@ def _p2_02_audit_append_only() -> CheckResult:
 
 def _p2_03_director_dual_form() -> CheckResult:
     """§4.7 Director 双形态（agent / script）。"""
-    text = _read_file("hermes/multiagent/director_engine.py")
+    text = _read_file("teage_liu/multiagent/director_engine.py")
     if not _grep(r"director_implementation|agent|script", text):
         return CheckResult(
             "p2_03_director_dual_form",
@@ -462,7 +462,7 @@ def _p2_03_director_dual_form() -> CheckResult:
 
 def _p2_04_epoch_mechanism() -> CheckResult:
     """§4.8 Epoch 机制。"""
-    text = _read_file("hermes/multiagent/director_engine.py")
+    text = _read_file("teage_liu/multiagent/director_engine.py")
     if not _grep(r"current_epoch|epoch", text):
         return CheckResult(
             "p2_04_epoch_mechanism",
@@ -480,7 +480,7 @@ def _p2_04_epoch_mechanism() -> CheckResult:
 
 def _p2_05_startup_mutex_lock() -> CheckResult:
     """§4.9 启动互斥锁 + 硬超时强抢。"""
-    text = _read_file("hermes/multiagent/director_engine.py")
+    text = _read_file("teage_liu/multiagent/director_engine.py")
     if not _grep(r"director\.lock|emergency_release|LockFileEx|F_SETLK", text):
         return CheckResult(
             "p2_05_startup_mutex_lock",
@@ -498,7 +498,7 @@ def _p2_05_startup_mutex_lock() -> CheckResult:
 
 def _p2_06_ed25519_signature() -> CheckResult:
     """§4.10 ed25519 签名。"""
-    text = _read_file("hermes/multiagent/signature.py")
+    text = _read_file("teage_liu/multiagent/signature.py")
     if not _grep(r"ed25519|director_signature|SignatureVerifier|VerifyResult", text):
         return CheckResult(
             "p2_06_ed25519_signature",
@@ -516,7 +516,7 @@ def _p2_06_ed25519_signature() -> CheckResult:
 
 def _p2_07_autonomous_mode() -> CheckResult:
     """§4.11 自治模式 + 二次确认退出。"""
-    text = _read_file("hermes/multiagent/worker_adapter.py")
+    text = _read_file("teage_liu/multiagent/worker_adapter.py")
     if not _grep(r"autonomous|confirm_exit|rollback_exit|AutonomousModeController", text):
         return CheckResult(
             "p2_07_autonomous_mode",
@@ -534,7 +534,7 @@ def _p2_07_autonomous_mode() -> CheckResult:
 
 def _p2_08_trust_score() -> CheckResult:
     """补充：信任分管理。"""
-    text = _read_file("hermes/multiagent/director_engine.py")
+    text = _read_file("teage_liu/multiagent/director_engine.py")
     if not _grep(r"trust_score|degraded_threshold|rejected_threshold|force_offline_threshold", text):
         return CheckResult(
             "p2_08_trust_score",
@@ -552,7 +552,7 @@ def _p2_08_trust_score() -> CheckResult:
 
 def _p2_09_reactloop_integration() -> CheckResult:
     """补充：ReactLoop 7 集成点。"""
-    text = _read_file("hermes/multiagent/worker_adapter.py")
+    text = _read_file("teage_liu/multiagent/worker_adapter.py")
     if not _grep(r"_build_multiagent_prompt|_check_capabilities|_session_hook|_check_turn|_heartbeat|InjectionIsolator", text):
         return CheckResult(
             "p2_09_reactloop_integration",
@@ -575,7 +575,7 @@ def _p2_09_reactloop_integration() -> CheckResult:
 
 def _p3_01_a2a_gateway_jsonrpc() -> CheckResult:
     """§4.12 A2A Gateway JSON-RPC 2.0。"""
-    text = _read_file("hermes/multiagent/a2a_gateway.py")
+    text = _read_file("teage_liu/multiagent/a2a_gateway.py")
     if not _grep(r"jsonrpc.*2\.0|method|params", text):
         return CheckResult(
             "p3_01_a2a_gateway_jsonrpc",
@@ -593,7 +593,7 @@ def _p3_01_a2a_gateway_jsonrpc() -> CheckResult:
 
 def _p3_02_httpx_async_client() -> CheckResult:
     """§4.13 httpx 异步客户端。"""
-    text = _read_file("hermes/multiagent/a2a_client.py")
+    text = _read_file("teage_liu/multiagent/a2a_client.py")
     if not _grep(r"httpx\.AsyncClient|async with", text):
         return CheckResult(
             "p3_02_httpx_async_client",
@@ -611,7 +611,7 @@ def _p3_02_httpx_async_client() -> CheckResult:
 
 def _p3_03_remote_agent_adapter() -> CheckResult:
     """§4.14 远程 agent 适配器。"""
-    text = _read_file("hermes/multiagent/remote_agent_adapter.py")
+    text = _read_file("teage_liu/multiagent/remote_agent_adapter.py")
     if not _grep(r"RemoteAgentAdapter|register_remote", text):
         return CheckResult(
             "p3_03_remote_agent_adapter",
@@ -629,7 +629,7 @@ def _p3_03_remote_agent_adapter() -> CheckResult:
 
 def _p3_04_director_election() -> CheckResult:
     """§4.15 Director 跨设备选举。"""
-    text = _read_file("hermes/multiagent/election.py")
+    text = _read_file("teage_liu/multiagent/election.py")
     if not _grep(r"Election|ElectionResult|epoch|lexicographic", text):
         return CheckResult(
             "p3_04_director_election",
@@ -647,7 +647,7 @@ def _p3_04_director_election() -> CheckResult:
 
 def _p3_05_path_sandbox_sanitize() -> CheckResult:
     """§4.16 路径沙箱（sanitize_path + sanitize_dict_paths）。"""
-    text = _read_file("hermes/multiagent/path_sandbox.py")
+    text = _read_file("teage_liu/multiagent/path_sandbox.py")
     if not _grep(r"sanitize_path|to_absolute|sanitize_dict_paths", text):
         return CheckResult(
             "p3_05_path_sandbox_sanitize",
@@ -665,7 +665,7 @@ def _p3_05_path_sandbox_sanitize() -> CheckResult:
 
 def _p3_06_rate_limiter() -> CheckResult:
     """§4.17 限流器（滑动窗口）。"""
-    text = _read_file("hermes/multiagent/rate_limiter.py")
+    text = _read_file("teage_liu/multiagent/rate_limiter.py")
     if not _grep(r"RateLimiter|sliding_window|100", text):
         return CheckResult(
             "p3_06_rate_limiter",
@@ -683,7 +683,7 @@ def _p3_06_rate_limiter() -> CheckResult:
 
 def _p3_07_jsonrpc_error_codes() -> CheckResult:
     """§4.18 JSON-RPC 错误码（10 个）。"""
-    text = _read_file("hermes/multiagent/a2a_gateway.py")
+    text = _read_file("teage_liu/multiagent/a2a_gateway.py")
     codes = ["-32700", "-32600", "-32601", "-32602", "-32603", "-32001", "-32002", "-32003", "-32004", "-32005"]
     missing = [c for c in codes if c not in text]
     if missing:
@@ -708,7 +708,7 @@ def _p3_07_jsonrpc_error_codes() -> CheckResult:
 
 def _p4_01_sse_channel() -> CheckResult:
     """§4.19 multiagent_alert SSE 通道。"""
-    text = _read_file("hermes/api/multiagent_routes.py")
+    text = _read_file("teage_liu/api/multiagent_routes.py")
     if not _grep(r"multiagent_alert|text/event-stream", text):
         return CheckResult(
             "p4_01_sse_channel",
@@ -780,8 +780,8 @@ def _p4_04_status_indicator() -> CheckResult:
 
 def _p4_05_container_hot_reload() -> CheckResult:
     """§4.23 容器映射 + 热更新边界。"""
-    container_text = _read_file("hermes/container.py")
-    config_helpers_text = _read_file("hermes/config_helpers.py")
+    container_text = _read_file("teage_liu/container.py")
+    config_helpers_text = _read_file("teage_liu/config_helpers.py")
     if not _grep(r"multiagent.*:.*\[", container_text):
         return CheckResult(
             "p4_05_container_hot_reload",

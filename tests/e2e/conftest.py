@@ -43,9 +43,9 @@ def pytest_collection_modifyitems(config, items):
         return
 
     # 显式选择 e2e 时，若服务不可达也跳过
-    hermes_url = "http://127.0.0.1:18394"
-    if not _server_reachable(hermes_url):
-        skip_marker = pytest.mark.skip(reason=f"teage-liu server not reachable at {hermes_url}")
+    teage_url = "http://127.0.0.1:18394"
+    if not _server_reachable(teage_url):
+        skip_marker = pytest.mark.skip(reason=f"teage-liu server not reachable at {teage_url}")
         for item in items:
             if "e2e" in item.keywords:
                 item.add_marker(skip_marker)
@@ -62,6 +62,6 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture
-def hermes_app_url() -> str:
+def teage_app_url() -> str:
     """teage-liu 服务 URL。"""
     return "http://127.0.0.1:18394"
