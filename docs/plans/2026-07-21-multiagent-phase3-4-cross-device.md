@@ -40,7 +40,7 @@ design_sections: [§9 A2A Gateway, §10.2 配置段, §10.4 容器映射]
 ## File Structure
 
 ```
-hermes/
+teage_liu/
 ├── multiagent/
 │   ├── a2a_gateway.py          # 新增：A2A Gateway 服务端（FastAPI 路由）
 │   ├── a2a_client.py           # 新增：A2A 远程客户端（httpx + JSON-RPC）
@@ -83,7 +83,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 async def bb_root(tmp_path: Path) -> Path:
-    from hermes.multiagent.blackboard import Blackboard
+    from teage_liu.multiagent.blackboard import Blackboard
     bb = Blackboard(tmp_path)
     await bb.init_blackboard()
     return tmp_path
@@ -108,7 +108,7 @@ class TestA2AGatewayEndpoints:
 
     async def test_health_endpoint(self, bb_root: Path, gateway_config):
         """GET /a2a/health 返回 200。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -124,7 +124,7 @@ class TestA2AGatewayEndpoints:
 
     async def test_jsonrpc_unknown_method(self, bb_root: Path, gateway_config):
         """未知 JSON-RPC 方法返回 -32601 错误。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -145,8 +145,8 @@ class TestA2AGatewayEndpoints:
 
     async def test_jsonrpc_list_agents(self, bb_root: Path, gateway_config):
         """JSON-RPC list_agents 返回 active agents 列表。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         from fastapi import FastAPI
 
         # 先注册 agent
@@ -171,8 +171,8 @@ class TestA2AGatewayEndpoints:
 
     async def test_jsonrpc_read_messages(self, bb_root: Path, gateway_config):
         """JSON-RPC read_messages 返回 messages.md 内容。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
-        from hermes.multiagent.blackboard import append_message
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.blackboard import append_message
         from fastapi import FastAPI
 
         await append_message(bb_root, {
@@ -201,7 +201,7 @@ class TestA2AGatewayEndpoints:
         self, bb_root: Path, gateway_config
     ):
         """JSON-RPC append_message 校验签名（无签名 → 拒绝）。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -230,7 +230,7 @@ class TestA2AGatewayEndpoints:
 
     async def test_jsonrpc_acquire_lock(self, bb_root: Path, gateway_config):
         """JSON-RPC acquire_lock 获取跨设备锁。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -259,7 +259,7 @@ class TestA2AGatewayPathSandbox:
 
     async def test_path_with_absolute_rejected(self, bb_root: Path, gateway_config):
         """请求中包含绝对路径 → 拒绝。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -281,7 +281,7 @@ class TestA2AGatewayPathSandbox:
 
     async def test_path_with_traversal_rejected(self, bb_root: Path, gateway_config):
         """请求中包含 .. 路径穿越 → 拒绝。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         app = FastAPI()
@@ -307,7 +307,7 @@ class TestA2AGatewayRateLimit:
 
     async def test_rate_limit_429_on_exceed(self, bb_root: Path):
         """超过限流阈值返回 429。"""
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
 
         config = {
@@ -334,14 +334,14 @@ class TestA2AGatewayRateLimit:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_gateway.py -v
 # 预期：全部失败（a2a_gateway 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/a2a_gateway.py`：
+创建 `teage_liu/multiagent/a2a_gateway.py`：
 
 ```python
 """A2A Gateway 服务端：基于 FastAPI + JSON-RPC 2.0 的跨设备 agent 通信网关。
@@ -384,17 +384,17 @@ import httpx
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     append_message,
     append_audit,
     read_messages,
     read_director_md,
 )
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.path_sandbox import sanitize_path, PathSandboxError
-from hermes.multiagent.rate_limiter import RateLimiter
-from hermes.multiagent.file_lock import LockManager
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.path_sandbox import sanitize_path, PathSandboxError
+from teage_liu.multiagent.rate_limiter import RateLimiter
+from teage_liu.multiagent.file_lock import LockManager
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +535,7 @@ async def _append_message(bb_root: Path, params: dict, lock_manager) -> dict:
         raise SignatureError(f"Missing signature for agent {signer_id}")
 
     # 签名校验（复用 Plan 2 SignatureVerifier）
-    from hermes.multiagent.director import SignatureVerifier
+    from teage_liu.multiagent.director import SignatureVerifier
     verifier = SignatureVerifier(bb_root)
     verify_result = await verifier.verify(signer_id, message, signature)
     if verify_result.status == "distrust":
@@ -632,7 +632,7 @@ class LockAcquireError(Exception):
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_gateway.py -v
 # 预期：全部通过
 ```
@@ -640,7 +640,7 @@ python -m pytest tests/multiagent/test_a2a_gateway.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/a2a_gateway.py tests/multiagent/test_a2a_gateway.py
+git add teage_liu/multiagent/a2a_gateway.py tests/multiagent/test_a2a_gateway.py
 git commit -m "feat(multiagent): Plan 3 Task 1 A2A Gateway 服务端（FastAPI+JSON-RPC+路径沙箱+限流）"
 ```
 
@@ -680,14 +680,14 @@ class TestA2AClient:
 
     async def test_client_initialization(self, client_config):
         """客户端正确初始化。"""
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_client import A2AClient
         client = A2AClient(client_config)
         assert len(client._endpoints) == 2
         assert client._endpoints[0]["name"] == "device_b"
 
     async def test_call_method_returns_result(self, client_config):
         """call_method 返回 JSON-RPC result。"""
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_client import A2AClient
 
         # Mock httpx.AsyncClient.post
         mock_response = httpx.Response(
@@ -702,7 +702,7 @@ class TestA2AClient:
 
     async def test_call_method_returns_error(self, client_config):
         """call_method 返回 JSON-RPC error。"""
-        from hermes.multiagent.a2a_client import A2AClient, A2AClientError
+        from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
 
         mock_response = httpx.Response(
             200,
@@ -720,7 +720,7 @@ class TestA2AClient:
 
     async def test_call_method_with_retry(self, client_config):
         """网络错误时自动重试。"""
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_client import A2AClient
 
         call_count = 0
 
@@ -739,7 +739,7 @@ class TestA2AClient:
 
     async def test_call_method_retry_exhausted(self, client_config):
         """重试耗尽后抛出 A2AClientError。"""
-        from hermes.multiagent.a2a_client import A2AClient, A2AClientError
+        from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock,
                    side_effect=httpx.ConnectError("Connection refused")):
@@ -749,7 +749,7 @@ class TestA2AClient:
 
     async def test_call_all_endpoints(self, client_config):
         """call_all_endpoints 并行调用所有端点。"""
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_client import A2AClient
 
         mock_response = httpx.Response(
             200, json={"jsonrpc": "2.0", "result": "ok", "id": 1}
@@ -764,8 +764,8 @@ class TestA2AClient:
 
     async def test_sign_request_with_ed25519(self, client_config, tmp_path: Path):
         """请求自动签名。"""
-        from hermes.multiagent.a2a_client import A2AClient
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.director import SignatureVerifier
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         # 生成测试密钥
@@ -794,7 +794,7 @@ class TestA2AClient:
 
     async def test_client_context_manager(self, client_config):
         """客户端可作为 async context manager 使用。"""
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_client import A2AClient
 
         async with A2AClient(client_config) as client:
             assert client._http_client is not None
@@ -805,14 +805,14 @@ class TestA2AClient:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_client.py -v
 # 预期：全部失败（a2a_client 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/a2a_client.py`：
+创建 `teage_liu/multiagent/a2a_client.py`：
 
 ```python
 """A2A 客户端：基于 httpx + JSON-RPC 2.0 的异步跨设备通信客户端。
@@ -982,7 +982,7 @@ class A2AClient:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_client.py -v
 # 预期：全部通过
 ```
@@ -990,7 +990,7 @@ python -m pytest tests/multiagent/test_a2a_client.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/a2a_client.py tests/multiagent/test_a2a_client.py
+git add teage_liu/multiagent/a2a_client.py tests/multiagent/test_a2a_client.py
 git commit -m "feat(multiagent): Plan 3 Task 2 A2A 客户端（httpx 异步+JSON-RPC+ed25519 签名+重试）"
 ```
 
@@ -1008,7 +1008,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest.fixture
@@ -1040,14 +1040,14 @@ class TestRemoteAgentAdapter:
 
     async def test_adapter_initialization(self, local_bb: Path, remote_config):
         """适配器正确初始化。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
         assert adapter._agent_id == "remote_worker_001"
         assert adapter._a2a_client is not None
 
     async def test_register_to_remote(self, local_bb: Path, remote_config):
         """注册到远程 blackboard。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1059,7 +1059,7 @@ class TestRemoteAgentAdapter:
 
     async def test_heartbeat_loop_calls_remote(self, local_bb: Path, remote_config):
         """心跳循环调用远程 heartbeat。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1073,7 +1073,7 @@ class TestRemoteAgentAdapter:
 
     async def test_read_remote_messages(self, local_bb: Path, remote_config):
         """读取远程消息。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1087,7 +1087,7 @@ class TestRemoteAgentAdapter:
 
     async def test_append_remote_message_with_signature(self, local_bb: Path, remote_config):
         """向远程 blackboard 追加消息（带签名）。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1110,7 +1110,7 @@ class TestRemoteAgentAdapter:
 
     async def test_acquire_remote_lock(self, local_bb: Path, remote_config):
         """获取远程锁。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1125,7 +1125,7 @@ class TestRemoteAgentAdapter:
 
     async def test_start_stop_lifecycle(self, local_bb: Path, remote_config):
         """适配器 start/stop 生命周期。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -1146,14 +1146,14 @@ import asyncio  # for test_start_stop_lifecycle
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_remote_agent.py -v
 # 预期：全部失败（remote_agent_adapter 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/remote_agent_adapter.py`：
+创建 `teage_liu/multiagent/remote_agent_adapter.py`：
 
 ```python
 """远程 agent 适配器：通过 A2A Gateway 与远程 blackboard 交互。
@@ -1171,7 +1171,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from hermes.multiagent.a2a_client import A2AClient, A2AClientError
+from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
 
 logger = logging.getLogger(__name__)
 
@@ -1311,7 +1311,7 @@ def _now_iso() -> str:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_remote_agent.py -v
 # 预期：全部通过
 ```
@@ -1319,7 +1319,7 @@ python -m pytest tests/multiagent/test_remote_agent.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/remote_agent_adapter.py tests/multiagent/test_remote_agent.py
+git add teage_liu/multiagent/remote_agent_adapter.py tests/multiagent/test_remote_agent.py
 git commit -m "feat(multiagent): Plan 3 Task 3 远程 agent 适配器（RemoteAgentAdapter+心跳+签名）"
 ```
 
@@ -1337,7 +1337,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest.fixture
@@ -1352,7 +1352,7 @@ class TestElection:
 
     async def test_single_device_becomes_director(self, bb_root: Path):
         """单设备场景，本机自动成为 Director。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         election = Election(bb_root, agent_id="device_a", config={
             "election_timeout_seconds": 5,
@@ -1363,8 +1363,8 @@ class TestElection:
 
     async def test_higher_epoch_wins(self, bb_root: Path):
         """epoch 更高的设备当选 Director。"""
-        from hermes.multiagent.election import Election
-        from hermes.multiagent.blackboard import atomic_write
+        from teage_liu.multiagent.election import Election
+        from teage_liu.multiagent.blackboard import atomic_write
         import yaml
 
         # 模拟设备 B 已声明 epoch=5
@@ -1385,7 +1385,7 @@ class TestElection:
 
     async def test_stale_director_gets_preempted(self, bb_root: Path):
         """Director 心跳超时，本机抢占。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
         from datetime import datetime, timedelta, timezone
         import json
 
@@ -1408,8 +1408,8 @@ class TestElection:
 
     async def test_election_writes_audit(self, bb_root: Path):
         """选举结果写 audit。"""
-        from hermes.multiagent.election import Election
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.election import Election
+        from teage_liu.multiagent.blackboard import read_audit_records
 
         election = Election(bb_root, agent_id="device_a", config={
             "election_timeout_seconds": 5,
@@ -1422,7 +1422,7 @@ class TestElection:
 
     async def test_election_uses_remote_endpoints(self, bb_root: Path):
         """选举时查询远程端点 epoch。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         config = {
             "election_timeout_seconds": 5,
@@ -1446,7 +1446,7 @@ class TestElection:
 
     async def test_election_tie_break_by_agent_id(self, bb_root: Path):
         """epoch 相同时，agent_id 字典序更小者当选。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
         import json
 
         # 模拟设备 A 和 B 都是 epoch=0，但 B 字典序更小
@@ -1474,14 +1474,14 @@ class TestElection:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_election.py -v
 # 预期：全部失败（election 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/election.py`：
+创建 `teage_liu/multiagent/election.py`：
 
 ```python
 """Director 跨设备选举：基于 epoch + fencing_token 仲裁。
@@ -1509,12 +1509,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     atomic_write,
     read_json,
     append_audit,
 )
-from hermes.multiagent.a2a_client import A2AClient, A2AClientError
+from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
 
 logger = logging.getLogger(__name__)
 
@@ -1656,7 +1656,7 @@ def _now_iso() -> str:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_election.py -v
 # 预期：全部通过
 ```
@@ -1664,7 +1664,7 @@ python -m pytest tests/multiagent/test_election.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/election.py tests/multiagent/test_election.py
+git add teage_liu/multiagent/election.py tests/multiagent/test_election.py
 git commit -m "feat(multiagent): Plan 3 Task 4 Director 跨设备选举（epoch+心跳超时+字典序仲裁）"
 ```
 
@@ -1681,7 +1681,7 @@ git commit -m "feat(multiagent): Plan 3 Task 4 Director 跨设备选举（epoch+
 import pytest
 from pathlib import Path
 
-from hermes.multiagent.path_sandbox import sanitize_path, PathSandboxError
+from teage_liu.multiagent.path_sandbox import sanitize_path, PathSandboxError
 
 
 class TestPathSandbox:
@@ -1725,19 +1725,19 @@ class TestPathSandbox:
 
     def test_resolve_to_absolute(self, tmp_path: Path):
         """to_absolute 方法将相对路径解析为绝对路径。"""
-        from hermes.multiagent.path_sandbox import to_absolute
+        from teage_liu.multiagent.path_sandbox import to_absolute
         result = to_absolute("agents/worker_001.md", tmp_path)
         assert result == tmp_path / "agents" / "worker_001.md"
 
     def test_resolve_to_absolute_rejects_escape(self, tmp_path: Path):
         """to_absolute 拒绝逃逸路径。"""
-        from hermes.multiagent.path_sandbox import to_absolute
+        from teage_liu.multiagent.path_sandbox import to_absolute
         with pytest.raises(PathSandboxError):
             to_absolute("../../../etc/passwd", tmp_path)
 
     def test_sanitize_dict_paths(self, tmp_path: Path):
         """sanitize_dict 递归处理 dict 中的路径字段。"""
-        from hermes.multiagent.path_sandbox import sanitize_dict_paths
+        from teage_liu.multiagent.path_sandbox import sanitize_dict_paths
         data = {
             "path": "agents/worker_001.md",  # 合法
             "nested": {
@@ -1751,7 +1751,7 @@ class TestPathSandbox:
 
     def test_sanitize_dict_rejects_absolute(self, tmp_path: Path):
         """sanitize_dict 拒绝绝对路径。"""
-        from hermes.multiagent.path_sandbox import sanitize_dict_paths
+        from teage_liu.multiagent.path_sandbox import sanitize_dict_paths
         data = {"path": "/etc/passwd"}
         with pytest.raises(PathSandboxError):
             sanitize_dict_paths(data, tmp_path)
@@ -1768,14 +1768,14 @@ class TestPathSandbox:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_path_sandbox.py -v
 # 预期：全部失败（path_sandbox 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/path_sandbox.py`：
+创建 `teage_liu/multiagent/path_sandbox.py`：
 
 ```python
 """路径沙箱：所有跨设备请求中的路径字段必须为相对路径，禁止绝对路径和路径穿越。
@@ -1882,7 +1882,7 @@ def sanitize_dict_paths(data: dict, bb_root: Path) -> None:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_path_sandbox.py -v
 # 预期：全部通过
 ```
@@ -1890,7 +1890,7 @@ python -m pytest tests/multiagent/test_path_sandbox.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/path_sandbox.py tests/multiagent/test_path_sandbox.py
+git add teage_liu/multiagent/path_sandbox.py tests/multiagent/test_path_sandbox.py
 git commit -m "feat(multiagent): Plan 3 Task 5 路径沙箱（绝对路径+穿越+递归 sanitize）"
 ```
 
@@ -1907,7 +1907,7 @@ git commit -m "feat(multiagent): Plan 3 Task 5 路径沙箱（绝对路径+穿�
 import time
 import pytest
 
-from hermes.multiagent.rate_limiter import RateLimiter
+from teage_liu.multiagent.rate_limiter import RateLimiter
 
 
 class TestRateLimiter:
@@ -1970,14 +1970,14 @@ class TestRateLimiter:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_rate_limiter.py -v
 # 预期：全部失败（rate_limiter 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/rate_limiter.py`：
+创建 `teage_liu/multiagent/rate_limiter.py`：
 
 ```python
 """令牌桶限流器：基于滑动窗口 + 线程安全。
@@ -2042,7 +2042,7 @@ class RateLimiter:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_rate_limiter.py -v
 # 预期：全部通过
 ```
@@ -2050,7 +2050,7 @@ python -m pytest tests/multiagent/test_rate_limiter.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/rate_limiter.py tests/multiagent/test_rate_limiter.py
+git add teage_liu/multiagent/rate_limiter.py tests/multiagent/test_rate_limiter.py
 git commit -m "feat(multiagent): Plan 3 Task 6 限流器（滑动窗口+线程安全+per-IP）"
 ```
 
@@ -2091,11 +2091,11 @@ class TestCrossDeviceEndToEnd:
         local_bb = tmp_path / "device_a"
         local_bb.mkdir()
 
-        # 启动本地 hermes-lite（含 Gateway）
+        # 启动本地 teage-liu（含 Gateway）
         # 这里简化为直接测试 Gateway 路由
-        from hermes.multiagent.blackboard import Blackboard
-        from hermes.multiagent.a2a_gateway import create_a2a_router
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.blackboard import Blackboard
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
@@ -2149,8 +2149,8 @@ class TestCrossDeviceEndToEnd:
 
     async def test_remote_agent_appends_message(self, tmp_path: Path):
         """远程 agent 通过 Gateway 追加消息（带签名）。"""
-        from hermes.multiagent.blackboard import Blackboard, read_messages
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.blackboard import Blackboard, read_messages
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
@@ -2186,8 +2186,8 @@ class TestCrossDeviceEndToEnd:
 
     async def test_path_sandbox_blocks_traversal(self, tmp_path: Path):
         """路径沙箱拦截穿越攻击。"""
-        from hermes.multiagent.blackboard import Blackboard
-        from hermes.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.blackboard import Blackboard
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
@@ -2219,8 +2219,8 @@ class TestCrossDeviceEndToEnd:
 
     async def test_director_failover(self, tmp_path: Path):
         """Director 故障切换：设备 A 崩溃 → 设备 B 当选。"""
-        from hermes.multiagent.blackboard import Blackboard
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.blackboard import Blackboard
+        from teage_liu.multiagent.election import Election
         import json
 
         # 设备 A：原 Director，已"崩溃"（心跳超时）
@@ -2265,7 +2265,7 @@ class TestCrossDeviceEndToEnd:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_e2e_cross_device.py -v -m e2e
 # 预期：失败（依赖前面的模块）
 ```
@@ -2279,7 +2279,7 @@ python -m pytest tests/multiagent/test_e2e_cross_device.py -v -m e2e
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_e2e_cross_device.py -v -m e2e
 # 预期：全部通过
 ```
@@ -2304,7 +2304,7 @@ git commit -m "test(multiagent): Plan 3 Task 7 跨设备端到端测试（注册
 import pytest
 from pathlib import Path
 
-from hermes.container import CONFIG_TO_COMPONENTS
+from teage_liu.container import CONFIG_TO_COMPONENTS
 
 
 class TestA2AContainerIntegration:
@@ -2316,7 +2316,7 @@ class TestA2AContainerIntegration:
 
     def test_a2a_router_registered_when_enabled(self, tmp_path: Path):
         """a2a.enabled=True 时注册路由。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {
             "a2a": {
@@ -2340,7 +2340,7 @@ class TestA2AContainerIntegration:
 
     def test_a2a_not_registered_when_disabled(self, tmp_path: Path):
         """a2a.enabled=False 时不注册路由。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {"a2a": {"enabled": False}}
         init_container(config)
@@ -2352,21 +2352,21 @@ class TestA2AContainerIntegration:
 
     def test_a2a_in_restart_required_keys(self):
         """a2a 路径变更需重启。"""
-        from hermes.app import _RESTART_REQUIRED_KEYS
+        from teage_liu.app import _RESTART_REQUIRED_KEYS
         assert any("a2a" in key for key in _RESTART_REQUIRED_KEYS)
 ```
 
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_container_integration.py -v
 # 预期：失败（CONFIG_TO_COMPONENTS 未包含 a2a）
 ```
 
 ### GREEN：最小实现
 
-修改 `hermes/container.py`：
+修改 `teage_liu/container.py`：
 
 ```python
 CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
@@ -2377,7 +2377,7 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
 }
 ```
 
-修改 `hermes/app.py`：
+修改 `teage_liu/app.py`：
 
 ```python
 def register_components(container: Container) -> None:
@@ -2386,8 +2386,8 @@ def register_components(container: Container) -> None:
     # a2a 段（条件注册）
     a2a_cfg = container.config.get("a2a", {}) or {}
     if a2a_cfg.get("enabled"):
-        from hermes.multiagent.a2a_gateway import create_a2a_router
-        from hermes.multiagent.a2a_client import A2AClient
+        from teage_liu.multiagent.a2a_gateway import create_a2a_router
+        from teage_liu.multiagent.a2a_client import A2AClient
 
         # blackboard 目录（复用 multiagent 的）
         multiagent_cfg = container.config.get("multiagent", {}) or {}
@@ -2408,7 +2408,7 @@ def register_components(container: Container) -> None:
         )
 ```
 
-修改 `hermes/app.py` 的 `_RESTART_REQUIRED_KEYS`：
+修改 `teage_liu/app.py` 的 `_RESTART_REQUIRED_KEYS`：
 
 ```python
 _RESTART_REQUIRED_KEYS = [
@@ -2420,7 +2420,7 @@ _RESTART_REQUIRED_KEYS = [
 ]
 ```
 
-修改 `hermes/lifespan.py`（在 multiagent 启动后启动 a2a）：
+修改 `teage_liu/lifespan.py`（在 multiagent 启动后启动 a2a）：
 
 ```python
 # 在 multiagent_adapter 启动后新增
@@ -2439,7 +2439,7 @@ if a2a_cfg.get("enabled"):
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_container_integration.py -v
 # 预期：全部通过
 ```
@@ -2447,7 +2447,7 @@ python -m pytest tests/multiagent/test_a2a_container_integration.py -v
 ### commit
 
 ```bash
-git add hermes/container.py hermes/app.py hermes/lifespan.py tests/multiagent/test_a2a_container_integration.py
+git add teage_liu/container.py teage_liu/app.py teage_liu/lifespan.py tests/multiagent/test_a2a_container_integration.py
 git commit -m "feat(multiagent): Plan 3 Task 8 A2A 配置与容器集成（CONFIG_TO_COMPONENTS+lifespan+路由注册）"
 ```
 
@@ -2472,7 +2472,7 @@ git commit -m "feat(multiagent): Plan 3 Task 8 A2A 配置与容器集成（CONFI
 #### 2. Placeholder Scan
 
 ```bash
-grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" hermes/multiagent/a2a_gateway.py hermes/multiagent/a2a_client.py hermes/multiagent/remote_agent_adapter.py hermes/multiagent/election.py hermes/multiagent/path_sandbox.py hermes/multiagent/rate_limiter.py
+grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" teage_liu/multiagent/a2a_gateway.py teage_liu/multiagent/a2a_client.py teage_liu/multiagent/remote_agent_adapter.py teage_liu/multiagent/election.py teage_liu/multiagent/path_sandbox.py teage_liu/multiagent/rate_limiter.py
 # 预期：无输出
 ```
 
@@ -2480,12 +2480,12 @@ grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" hermes/multiagent/a2a_gateway.py hermes
 
 ```bash
 python -c "
-from hermes.multiagent.a2a_gateway import create_a2a_router
-from hermes.multiagent.a2a_client import A2AClient, A2AClientError
-from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
-from hermes.multiagent.election import Election, ElectionResult
-from hermes.multiagent.path_sandbox import sanitize_path, to_absolute, sanitize_dict_paths, PathSandboxError
-from hermes.multiagent.rate_limiter import RateLimiter
+from teage_liu.multiagent.a2a_gateway import create_a2a_router
+from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
+from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
+from teage_liu.multiagent.election import Election, ElectionResult
+from teage_liu.multiagent.path_sandbox import sanitize_path, to_absolute, sanitize_dict_paths, PathSandboxError
+from teage_liu.multiagent.rate_limiter import RateLimiter
 print('All imports OK')
 "
 ```
@@ -2493,7 +2493,7 @@ print('All imports OK')
 #### 4. 测试覆盖率
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_a2a_gateway.py tests/multiagent/test_a2a_client.py tests/multiagent/test_remote_agent.py tests/multiagent/test_election.py tests/multiagent/test_path_sandbox.py tests/multiagent/test_rate_limiter.py -v
 # 预期：全部通过
 python -m pytest tests/multiagent/test_e2e_cross_device.py -v -m e2e

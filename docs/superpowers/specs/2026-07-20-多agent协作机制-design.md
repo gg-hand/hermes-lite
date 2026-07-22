@@ -1,8 +1,8 @@
 ---
-title: 多 Agent 协作机制设计（Hermes Multi-Agent Protocol v1.0）
+title: 多 Agent 协作机制设计（Teage Multi-Agent Protocol v1.0）
 date: 2026-07-20
 status: draft
-authors: [hermes]
+authors: [teage-liu]
 tags: [multiagent, protocol, director, blackboard, a2a]
 revision: "1.0.3"
 revision_notes: |
@@ -66,7 +66,7 @@ revision_notes: |
 
 # 多 Agent 协作机制设计
 
-> Hermes Multi-Agent Protocol v1.0.2 — 基于 File-First 黑板目录 + A2A Gateway 适配层的 Director + Worker Mesh 多 Agent 协作机制。
+> Teage Multi-Agent Protocol v1.0.2 — 基于 File-First 黑板目录 + A2A Gateway 适配层的 Director + Worker Mesh 多 Agent 协作机制。
 >
 > **修订历史**：v1.0 (2026-07-20 初版) → v1.0.1 (2026-07-20 grill-me 第一轮审查修订) → v1.0.2 (2026-07-20 grill-me 第二轮"流畅度优先"修订)
 
@@ -74,7 +74,7 @@ revision_notes: |
 
 ### 1.1 当前系统能力边界
 
-hermes-lite 当前为**单实例单租户个人 agent**，已具备：
+teage-liu 当前为**单实例单租户个人 agent**，已具备：
 
 - 完整的 LLM/记忆/工具/调度子系统
 - MCP Client 实现（stdio/SSE/HTTP 三种传输）
@@ -93,7 +93,7 @@ hermes-lite 当前为**单实例单租户个人 agent**，已具备：
 
 ### 1.2 设计目标
 
-参考 A2A（Google → Linux Foundation，150+ 组织）、Magentic-One（Orchestrator + Sub-Agents + Shared Memory）、Blackboard 模式等最佳开源方案，结合 hermes-lite 现有架构打造**属于本系统的多 Agent 协作机制**。
+参考 A2A（Google → Linux Foundation，150+ 组织）、Magentic-One（Orchestrator + Sub-Agents + Shared Memory）、Blackboard 模式等最佳开源方案，结合 teage-liu 现有架构打造**属于本系统的多 Agent 协作机制**。
 
 **核心目标**：
 
@@ -103,7 +103,7 @@ hermes-lite 当前为**单实例单租户个人 agent**，已具备：
 4. **Director 制定协作规则**：轮次、不抢答、不并发触发等时序协调
 5. **可靠稳定**：完善基设保障，崩溃可恢复、消息不丢失
 6. **协议规范良好**：外部 agent 4 个原子操作即可快速接入
-7. **hermes-lite 原生适配**：保持现有架构风格，配置热更新边界清晰
+7. **teage-liu 原生适配**：保持现有架构风格，配置热更新边界清晰
 
 ### 1.3 非目标
 
@@ -133,7 +133,7 @@ hermes-lite 当前为**单实例单租户个人 agent**，已具备：
                     │ watchdog 监听          │ watchdog 监听
               ┌─────┴────────┐         ┌─────┴────────┐
               │  Worker A    │         │  Worker B    │  ... (平级 Mesh)
-              │ (hermes实例)│         │ (外部agent)  │
+              │ (teage-liu实例)│         │ (外部agent)  │
               └──────────────┘         └──────────────┘
                     │ ▲                       │ ▲
                     │ │ 规则约束              │ │
@@ -322,7 +322,7 @@ schema_url: "schemas/protocol-v1.json"
 
 # Protocol Overview
 
-This blackboard follows Hermes Multi-Agent Protocol v1.0.
+This blackboard follows Teage Multi-Agent Protocol v1.0.
 All participating agents MUST implement the 4 required file operations:
 1. Read `director.md` to load rules
 2. Read `status.json` to check current turn
@@ -955,7 +955,7 @@ async def append_audit(bb_root, record):
 
 ### 3.4 Schema 文件清单
 
-所有协议文件均有对应 JSON Schema，存放于 `schemas/` 目录（hermes-lite 仓库内 `hermes/multiagent/schemas/`）：
+所有协议文件均有对应 JSON Schema，存放于 `schemas/` 目录（teage-liu 仓库内 `teage_liu/multiagent/schemas/`）：
 
 | 协议文件 | Schema 文件 | 用途 |
 |---------|------------|------|
@@ -979,7 +979,7 @@ async def append_audit(bb_root, record):
 | Agent Card 字段 | agents/{id}.md 的 endpoint | URL（http/https），不是路径 | `http://localhost:8000` |
 | Agent Card 字段 | agents/{id}.md 的 capabilities | 工具名标识符，不含路径 | `web_search` |
 | 任务引用外部资源 | tasks/{id}.md | 用 `artifacts/{artifact_id}.md` 或 URL，禁止绝对路径 | `artifacts/report_001.md` |
-| 配置层路径 | hermes-lite config.yaml | 可用相对路径或环境变量占位符（无默认值语法） | `${HERMES_BB_DIR}` |
+| 配置层路径 | teage-liu config.yaml | 可用相对路径或环境变量占位符（无默认值语法） | `${TEAGE_BB_DIR}` |
 
 **所有 ID 字段统一正则**（v1.0.1 新增）：
 
@@ -1168,9 +1168,9 @@ def heartbeat(bb_dir, agent_id):
 #### 3.7.3 扩展字段命名
 
 - 所有协议文件 `extensions` 字段下的 key 必须以 `x_<owner>_<field>` 格式命名
-- `<owner>` 是 owner 的简短标识（如 `hermes` / `a2a` / `cron`）
+- `<owner>` 是 owner 的简短标识（如 `teage-liu` / `a2a` / `cron`）
 - `<field>` 是字段语义名（如 `required_ops` / `priority`）
-- 示例：`x_hermes_required_ops` / `x_a2a_gateway_endpoint` / `x_cron_schedule_id`
+- 示例：`x_teage-liu_required_ops` / `x_a2a_gateway_endpoint` / `x_cron_schedule_id`
 - 命名空间冲突时由 Director 仲裁，先注册方保留
 
 ## 4. Agent 身份、发现与心跳
@@ -2264,7 +2264,7 @@ class A2AGateway:
         """本地消息转发给远程 A2A agent。"""
 ```
 
-## 10. 与 hermes-lite 集成
+## 10. 与 teage-liu 集成
 
 ### 10.0 依赖更新（v1.0.1 新增）
 
@@ -2311,7 +2311,7 @@ cryptography>=42.0         # Director 签名/验签 + HMAC 链
 ### 10.1 新增模块结构
 
 ```
-hermes-lite/hermes/multiagent/
+teage-liu/teage_liu/multiagent/
 ├── __init__.py
 ├── blackboard.py              # 黑板目录读写（atomic_write / 路径沙箱）
 ├── agent_registry.py          # Agent 注册 + 心跳
@@ -2333,10 +2333,10 @@ hermes-lite/hermes/multiagent/
 multiagent:
   enabled: false                           # 总开关
   role: "worker"                          # director | worker | both
-  blackboard_dir: "${HERMES_BB_DIR}"      # 环境变量占位符（无默认值语法，未设置则启动失败并提示）
+  blackboard_dir: "${TEAGE_BB_DIR}"      # 环境变量占位符（无默认值语法，未设置则启动失败并提示）
   default_session_id: "default"
   worker:
-    agent_id: "hermes_default"
+    agent_id: "teage-liu_default"
     heartbeat_interval_seconds: 10
     watchdog_backend: "watchdog"          # watchdog | polling
     capabilities: ["file_read", "file_write", "web_search", "execute_command"]
@@ -2368,22 +2368,22 @@ multiagent:
 
 | 环境变量 | 用途 | 必填 | 示例 |
 |---------|------|------|------|
-| `HERMES_BB_DIR` | 黑板目录绝对路径 | ✅（multiagent.enabled=true 时） | `/var/lib/hermes/blackboard` |
-| `HERMES_DIRECTOR_PRIVATE_KEY` | Director 签名私钥路径 | L3 必填 | `/etc/hermes/keys/director.pem` |
-| `HERMES_DIRECTOR_PUBLIC_KEY` | Director 公钥路径 | L3 必填 | `/etc/hermes/keys/director.pub` |
+| `TEAGE_BB_DIR` | 黑板目录绝对路径 | ✅（multiagent.enabled=true 时） | `/var/lib/teage_liu/blackboard` |
+| `TEAGE_DIRECTOR_PRIVATE_KEY` | Director 签名私钥路径 | L3 必填 | `/etc/teage_liu/keys/director.pem` |
+| `TEAGE_DIRECTOR_PUBLIC_KEY` | Director 公钥路径 | L3 必填 | `/etc/teage_liu/keys/director.pub` |
 
-未设置 `HERMES_BB_DIR` 且 `multiagent.enabled=true` 时，启动失败并提示：
+未设置 `TEAGE_BB_DIR` 且 `multiagent.enabled=true` 时，启动失败并提示：
 
 ```
-ERROR: multiagent.enabled=true but HERMES_BB_DIR is not set.
-Please set HERMES_BB_DIR to the blackboard directory path, e.g.:
-  export HERMES_BB_DIR=/path/to/blackboard
+ERROR: multiagent.enabled=true but TEAGE_BB_DIR is not set.
+Please set TEAGE_BB_DIR to the blackboard directory path, e.g.:
+  export TEAGE_BB_DIR=/path/to/blackboard
 Or disable multiagent: multiagent.enabled=false
 ```
 
 **config_helpers 校验**（v1.0.3 新增，P2-11）：
 
-修改 `hermes/config_helpers.py:118`，将 `'multiagent'` 加入 `_validate_config_schema` 段类型校验元组；新增 `multiagent.enabled` / `role` / `a2a_gateway.enabled` 等关键字段类型与枚举值校验。
+修改 `teage_liu/config_helpers.py:118`，将 `'multiagent'` 加入 `_validate_config_schema` 段类型校验元组；新增 `multiagent.enabled` / `role` / `a2a_gateway.enabled` 等关键字段类型与枚举值校验。
 
 ### 10.3 配置热更新边界（v1.0.1 修订：对齐 _RESTART_REQUIRED_KEYS 约定）
 
@@ -2410,7 +2410,7 @@ Or disable multiagent: multiagent.enabled=false
 
 **`_RESTART_REQUIRED_KEYS` 扩展**（v1.0.3 修订：仅新增 1 项）：
 
-在 `hermes/config_helpers.py` 的 `_RESTART_REQUIRED_KEYS` set 中仅新增 `multiagent.blackboard_dir`（a2a_gateway.listen_port / auth_schemes 改热重载，gateway 重建即可）：
+在 `teage_liu/config_helpers.py` 的 `_RESTART_REQUIRED_KEYS` set 中仅新增 `multiagent.blackboard_dir`（a2a_gateway.listen_port / auth_schemes 改热重载，gateway 重建即可）：
 
 ```python
 _RESTART_REQUIRED_KEYS = {
@@ -2419,14 +2419,14 @@ _RESTART_REQUIRED_KEYS = {
 }
 ```
 
-**注**（v1.0.3 P0-12）：`_RESTART_REQUIRED_KEYS` 由 7 项变 8 项，文档明确说明"`multiagent.blackboard_dir` 是第 8 项，原因是 `bb_root` 运行时不可迁移；如需严格保持 7 项，可改为环境变量 `HERMES_BB_DIR` 注入"。
+**注**（v1.0.3 P0-12）：`_RESTART_REQUIRED_KEYS` 由 7 项变 8 项，文档明确说明"`multiagent.blackboard_dir` 是第 8 项，原因是 `bb_root` 运行时不可迁移；如需严格保持 7 项，可改为环境变量 `TEAGE_BB_DIR` 注入"。
 
 ### 10.4 容器注册映射（v1.0.1 修订：对齐 CONFIG_TO_COMPONENTS 段映射约定）
 
-遵循 `hermes/container.py` 的 `CONFIG_TO_COMPONENTS` 约定，新增 `multiagent` 段映射：
+遵循 `teage_liu/container.py` 的 `CONFIG_TO_COMPONENTS` 约定，新增 `multiagent` 段映射：
 
 ```python
-# hermes/container.py CONFIG_TO_COMPONENTS 新增条目
+# teage_liu/container.py CONFIG_TO_COMPONENTS 新增条目
 CONFIG_TO_COMPONENTS = {
     # ... 现有映射 ...
     "llm": ["orchestrator"],
@@ -2439,7 +2439,7 @@ CONFIG_TO_COMPONENTS = {
         "worker_adapter",       # Worker 模式适配（role=worker/both 时）
         "watchdog_watcher",     # 文件监听
         "lock_manager",         # CAS + fencing_token 锁管理
-        "multiagent_audit_logger",  # 审计日志（v1.0.3 修订：与注册键一致，注意与现有 hermes/agent/audit.py 命名隔离）
+        "multiagent_audit_logger",  # 审计日志（v1.0.3 修订：与注册键一致，注意与现有 teage_liu/agent/audit.py 命名隔离）
         "schema_validator",     # JSON Schema 校验
         "recovery_manager",     # 崩溃恢复
         "a2a_gateway",          # A2A 适配（multiagent.a2a_gateway.enabled=true 时）
@@ -2450,10 +2450,10 @@ CONFIG_TO_COMPONENTS = {
 
 **命名冲突处理**（v1.0.1 新增）：
 
-现有 `hermes/agent/audit.py` 已有 `AuditLogger` 类，新增模块为 `hermes/multiagent/audit_logger.py`，二者命名空间隔离：
+现有 `teage_liu/agent/audit.py` 已有 `AuditLogger` 类，新增模块为 `teage_liu/multiagent/audit_logger.py`，二者命名空间隔离：
 
-- 现有 `hermes.agent.audit.AuditLogger`：单体 agent 行为审计（写入 SQLite）
-- 新增 `hermes.multiagent.audit_logger.MultiAgentAuditLogger`：黑板协议审计（写入 `audit/audit.jsonl`）
+- 现有 `teage_liu.agent.audit.AuditLogger`：单体 agent 行为审计（写入 SQLite）
+- 新增 `teage_liu.multiagent.audit_logger.MultiAgentAuditLogger`：黑板协议审计（写入 `audit/audit.jsonl`）
 
 容器注册时使用全限定名区分：
 
@@ -2469,7 +2469,7 @@ container.register("multiagent_audit_logger", MultiAgentAuditLogger)
 **容器注册位置 + hot_reloadable 标志**（v1.0.3 新增，P2-12 + O10 默认值）：
 
 ```
-注册位置：hermes/lifespan.py（仅 multiagent.enabled=true 时注册）
+注册位置：teage_liu/lifespan.py（仅 multiagent.enabled=true 时注册）
 注册顺序：blackboard → schema_validator → file_lock → multiagent_audit_logger → agent_registry → director_engine / worker_adapter → watchdog_watcher → recovery_manager → a2a_gateway
 hot_reloadable 标志：
   - blackboard: False（bb_root 不可迁移）
@@ -2498,9 +2498,9 @@ HTTP 端点主要用于远程 agent 通过 A2A Gateway 接入；本地 agent 优
 **认证机制**（v1.0.3 新增，P1-6 实施）：
 
 ```
-/blackboard/* 端点默认通过 security.api_key 认证（复用现有 HERMES_API_KEY，不新增环境变量）
+/blackboard/* 端点默认通过 security.api_key 认证（复用现有 TEAGE_API_KEY，不新增环境变量）
 multiagent.a2a_gateway.enabled=true 时，gateway 层叠加 auth_schemes（oauth2/mtls）做二次认证
-路由注册位置：hermes/app.py 现有 12 个 router 之后新增 app.include_router(blackboard_router)
+路由注册位置：teage_liu/app.py 现有 12 个 router 之后新增 app.include_router(blackboard_router)
 ```
 
 ### 10.6 与现有 ReactLoop 集成（v1.0.1 修订：细化集成点）
@@ -2510,7 +2510,7 @@ multiagent.a2a_gateway.enabled=true 时，gateway 层叠加 auth_schemes（oauth
 ReactLoop 启动时（`multiagent.enabled=true` 且 `role` 包含 `worker`），将以下内容注入 system prompt：
 
 ```python
-# hermes/agent/react_loop.py 修改建议（v1.0.1）
+# teage_liu/agent/react_loop.py 修改建议（v1.0.1）
 async def _build_system_prompt(self, ctx) -> str:
     base_prompt = await self._build_base_system_prompt(ctx)
     if not self._multiagent_enabled:
@@ -2528,7 +2528,7 @@ async def _build_multiagent_prompt(self, ctx) -> str:
     
     return f"""# Multi-Agent Collaboration Context
 
-You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
+You are participating in a Teage Multi-Agent Protocol v1.0 blackboard.
 
 ## Active Agents
 {format_agents(active_agents)}
@@ -2554,7 +2554,7 @@ You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
 > v1.0.3 修订（P1-23 + O7 默认值）：原 ReactLoop._execute_tool 的 capabilities 校验下沉到 ToolExecutor.evaluate_policy，ReactLoop._execute_tool 不再校验 capabilities。
 
 ```python
-# hermes/agent/tool_executor.py 新增
+# teage_liu/agent/tool_executor.py 新增
 def evaluate_policy(self, tool_name, tool_input, session_id, ...):
     # 新增：multiagent capabilities 校验（在 policy_engine 之前）
     if self._multiagent_state and tool_name not in self._multiagent_state.worker_capabilities:
@@ -2576,7 +2576,7 @@ def __init__(self, ..., multiagent_state: MultiAgentState | None = None):
 > v1.0.3 修订（P1-24 + O8 默认值）：原 ReactLoop._on_session_start / _on_session_end 改为 SessionManager._multiagent_hooks 机制，由 SessionManager 在 create_session / destroy_session 时遍历调用钩子。
 
 ```python
-# hermes/agent/session_manager.py 新增
+# teage_liu/agent/session_manager.py 新增
 class SessionManager:
     def __init__(self, ...):
         self._multiagent_hooks: list[tuple[Callable, Callable]] = []
@@ -2607,7 +2607,7 @@ session_manager.add_multiagent_hook(
 > v1.0.3 新增（P0-14 + O4 默认值）：ReactLoop._before_speak 方法。freeform 模式不阻断；非 freeform 模式非本机轮次写 pending 队列并抛 NotMyTurnError。
 
 ```python
-# hermes/agent/react_loop.py 新增方法
+# teage_liu/agent/react_loop.py 新增方法
 async def _before_speak(self, agent_id: str, message: dict):
     """发言前轮次校验。freeform 模式不阻断；非 freeform 模式非本机轮次写 pending 队列。"""
     if not self._multiagent_enabled:
@@ -2631,7 +2631,7 @@ async def _before_speak(self, agent_id: str, message: dict):
 > v1.0.3 新增（P0-15 + O4 默认值）：ReactLoop._start_director_heartbeat_monitor 方法。会话启动时启动后台任务，周期检查 director.md.last_director_tick，超时进入自治模式并抛 DirectorUnavailableError（PROTOCOL 阶段错误，不走 tool_result 链路）。
 
 ```python
-# hermes/agent/react_loop.py 会话启动时启动后台任务
+# teage_liu/agent/react_loop.py 会话启动时启动后台任务
 async def _start_director_heartbeat_monitor(self, session_ctx):
     """周期检查 director.md.last_director_tick，超时触发 DirectorUnavailableError。"""
     while True:
@@ -2651,7 +2651,7 @@ async def _start_director_heartbeat_monitor(self, session_ctx):
 > v1.0.3 新增（P1-25 + O4 默认值）：ReactLoop._build_chat_messages 方法 + __init__ 注入 InjectionIsolator。multiagent 启用时用 InjectionIsolator 包裹原始消息构造隔离上下文。
 
 ```python
-# hermes/agent/react_loop.py 新增方法
+# teage_liu/agent/react_loop.py 新增方法
 async def _build_chat_messages(self, ctx) -> list[dict]:
     raw = await self._read_new_messages_since_last_seq(ctx)
     if self._multiagent_enabled:
@@ -2668,7 +2668,7 @@ def __init__(self, ..., injection_isolator: InjectionIsolator | None = None):
 
 ### 11.1 异常分类（v1.0.1 修订：对齐 tool_error.py `@dataclass(kw_only=True)` 风格）
 
-遵循现有 `hermes/agent/tool_error.py` 的 dataclass 风格，所有新增异常类必须：
+遵循现有 `teage_liu/agent/tool_error.py` 的 dataclass 风格，所有新增异常类必须：
 
 1. 继承 `ToolError` 基类
 2. 使用 `@dataclass(kw_only=True)` 装饰器
@@ -2679,7 +2679,7 @@ def __init__(self, ..., injection_isolator: InjectionIsolator | None = None):
 **新增 category 值**（v1.0.1 新增，需同步到 `_CATEGORY_ZH`）：
 
 ```python
-# hermes/agent/tool_error.py _CATEGORY_ZH 扩展
+# teage_liu/agent/tool_error.py _CATEGORY_ZH 扩展
 _CATEGORY_ZH = {
     # ... 现有 category ...
     # multiagent 段
@@ -2722,7 +2722,7 @@ _CATEGORY_ZH = {
 ```python
 from dataclasses import dataclass, field
 from typing import Literal
-from hermes.agent.tool_error import ToolError, ErrorStage
+from teage_liu.agent.tool_error import ToolError, ErrorStage
 
 
 # =============================================================================
@@ -3285,7 +3285,7 @@ class A2ATaskStateTransitionError(MultiAgentError):
 
 | 测试用例 | 验证点 |
 |---------|--------|
-| `test_e2e_two_hermes_instances_collaborate` | 两个 hermes-lite 进程直播场景协作 |
+| `test_e2e_two_teage-liu_instances_collaborate` | 两个 teage-liu 进程直播场景协作 |
 | `test_e2e_director_crash_worker_autonomous` | Director 崩溃后 Worker 自治 + 恢复 |
 | `test_e2e_audit_replay_recovery` | audit 重放后状态一致 |
 | `test_e2e_cross_platform_bb_tar` | Linux/Windows/macOS 黑板目录互拷 |
@@ -3331,7 +3331,7 @@ class A2ATaskStateTransitionError(MultiAgentError):
 | 阶段 | 范围 | 验证点 | 退出条件 |
 |------|------|--------|---------|
 | **Phase 1** | 单实例本地黑板（self-talk 测试） | atomic_write / watchdog / 锁 / audit 链 | 见下方详细退出条件 |
-| Phase 2 | 双实例本地协作（两个 hermes-lite 进程） | 轮次/心跳/冲突仲裁/自治模式 | 双实例协作 30 分钟无 audit 损坏 |
+| Phase 2 | 双实例本地协作（两个 teage-liu 进程） | 轮次/心跳/冲突仲裁/自治模式 | 双实例协作 30 分钟无 audit 损坏 |
 | Phase 3 | 跨设备 NFS 共享黑板（实验性） | 路径可移植性 / NFS 兼容性 | 仅 NFSv4 严格 mount 下通过 |
 | Phase 4 | A2A Gateway 启用 + 远程 agent 接入 | 标准化互操作 / OAuth/mTLS | 远程 agent 接入并完成 1 轮协作 |
 | Phase 5 | 直播/多 agent 协作复杂场景 | 实际场景验证 / 性能基准 | 直播场景下 10+ agent 协作稳定 |
@@ -3342,13 +3342,13 @@ class A2ATaskStateTransitionError(MultiAgentError):
 
 **包含模块**：
 
-- `hermes/multiagent/blackboard.py`：atomic_write / 路径沙箱 / YAML safe_load
-- `hermes/multiagent/schema_validator.py`：7 个 JSON Schema 校验
-- `hermes/multiagent/file_lock.py`：CAS + fencing_token + grace_period
-- `hermes/multiagent/audit_logger.py`：append 串行化 + hash 链 + 损坏降级
-- `hermes/multiagent/agent_registry.py`：基础注册（不含 Director 仲裁）
-- `hermes/multiagent/watchdog.py`：文件监听 + 自检
-- `hermes/multiagent/recovery.py`：崩溃恢复 + audit 重放
+- `teage_liu/multiagent/blackboard.py`：atomic_write / 路径沙箱 / YAML safe_load
+- `teage_liu/multiagent/schema_validator.py`：7 个 JSON Schema 校验
+- `teage_liu/multiagent/file_lock.py`：CAS + fencing_token + grace_period
+- `teage_liu/multiagent/audit_logger.py`：append 串行化 + hash 链 + 损坏降级
+- `teage_liu/multiagent/agent_registry.py`：基础注册（不含 Director 仲裁）
+- `teage_liu/multiagent/watchdog.py`：文件监听 + 自检
+- `teage_liu/multiagent/recovery.py`：崩溃恢复 + audit 重放
 
 **不包含**（推迟到 Phase 2+）：
 
@@ -3392,7 +3392,7 @@ pytest tests/multiagent/test_e2e_self_talk.py -v
 **本 spec 覆盖（Phase 1-2）**：
 
 - ✅ 协议规范（黑板目录结构、协议文件格式、外部 agent 接入最小集）
-- ✅ hermes-lite 适配（multiagent 模块 + 配置段 + REST 端点）
+- ✅ teage-liu 适配（multiagent 模块 + 配置段 + REST 端点）
 - ✅ 可靠性保障（原子写入/审计/快照/WAL/崩溃恢复）
 - ✅ Director 引擎与规则执行
 - ✅ 错误处理与测试策略

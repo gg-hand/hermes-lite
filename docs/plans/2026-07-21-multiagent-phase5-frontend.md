@@ -43,7 +43,7 @@ web/
 │   └── multiagent.css           # 新增：multiagent UI 样式
 └── chat.html                    # 修改：引入新文件 + 添加状态指示器 DOM
 
-hermes/
+teage_liu/
 ├── api/
 │   └── multiagent_routes.py     # 新增：multiagent 状态查询 REST 端点
 └── app.py                       # 修改：注册 multiagent 路由 + SSE 通道
@@ -73,7 +73,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 async def bb_root(tmp_path: Path) -> Path:
-    from hermes.multiagent.blackboard import Blackboard
+    from teage_liu.multiagent.blackboard import Blackboard
     bb = Blackboard(tmp_path)
     await bb.init_blackboard()
     return tmp_path
@@ -82,8 +82,8 @@ async def bb_root(tmp_path: Path) -> Path:
 @pytest.fixture
 def app_with_multiagent(bb_root: Path):
     from fastapi import FastAPI
-    from hermes.api.multiagent_routes import create_multiagent_router
-    from hermes.container import Container
+    from teage_liu.api.multiagent_routes import create_multiagent_router
+    from teage_liu.container import Container
 
     config = {
         "multiagent": {
@@ -114,7 +114,7 @@ class TestMultiagentRoutes:
 
     async def test_get_agents_list(self, app_with_multiagent, bb_root: Path):
         """GET /api/multiagent/agents 返回 agent 列表。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -126,7 +126,7 @@ class TestMultiagentRoutes:
 
     async def test_get_messages(self, app_with_multiagent, bb_root: Path):
         """GET /api/multiagent/messages 返回消息列表。"""
-        from hermes.multiagent.blackboard import append_message
+        from teage_liu.multiagent.blackboard import append_message
         await append_message(bb_root, {
             "seq": 1, "from": "worker_001", "to": "*",
             "timestamp": "2026-07-21T00:00:00Z",
@@ -141,7 +141,7 @@ class TestMultiagentRoutes:
 
     async def test_get_audit_records(self, app_with_multiagent, bb_root: Path):
         """GET /api/multiagent/audit 返回审计记录。"""
-        from hermes.multiagent.blackboard import append_audit
+        from teage_liu.multiagent.blackboard import append_audit
         await append_audit(bb_root, {
             "ts": "2026-07-21T00:00:00Z",
             "actor": "director", "action": "election",
@@ -165,8 +165,8 @@ class TestMultiagentRoutes:
     async def test_disabled_returns_404(self, tmp_path: Path):
         """multiagent.enabled=False 时返回 404。"""
         from fastapi import FastAPI
-        from hermes.api.multiagent_routes import create_multiagent_router
-        from hermes.container import Container
+        from teage_liu.api.multiagent_routes import create_multiagent_router
+        from teage_liu.container import Container
 
         config = {"multiagent": {"enabled": False}}
         container = Container(config)
@@ -181,14 +181,14 @@ class TestMultiagentRoutes:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/api/test_multiagent_routes.py -v
 # 预期：全部失败（multiagent_routes 模块不存在）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/api/multiagent_routes.py`：
+创建 `teage_liu/api/multiagent_routes.py`：
 
 ```python
 """multiagent REST 端点：状态查询 + 消息/审计读取 + Director 信息。
@@ -234,8 +234,8 @@ def create_multiagent_router(container) -> APIRouter:
     @router.get("/status")
     async def get_status() -> dict:
         """获取协作总览状态。"""
-        from hermes.multiagent.blackboard import read_json, read_director_md
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.blackboard import read_json, read_director_md
+        from teage_liu.multiagent.agent_registry import AgentRegistry
 
         status = await read_json(bb_root / "status.json") or {}
         director_md = await read_director_md(bb_root) or {}
@@ -261,7 +261,7 @@ def create_multiagent_router(container) -> APIRouter:
     @router.get("/agents")
     async def get_agents() -> dict:
         """获取 agent 列表。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         agents = await registry.list_active_agents()
         return {"agents": agents}
@@ -269,21 +269,21 @@ def create_multiagent_router(container) -> APIRouter:
     @router.get("/messages")
     async def get_messages(limit: int = 100) -> dict:
         """获取消息列表。"""
-        from hermes.multiagent.blackboard import read_messages
+        from teage_liu.multiagent.blackboard import read_messages
         messages = await read_messages(bb_root)
         return {"messages": messages[-limit:]}
 
     @router.get("/audit")
     async def get_audit(limit: int = 100) -> dict:
         """获取审计记录。"""
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         return {"records": records[-limit:]}
 
     @router.get("/director")
     async def get_director() -> dict:
         """获取 director.md 内容。"""
-        from hermes.multiagent.blackboard import read_director_md
+        from teage_liu.multiagent.blackboard import read_director_md
         data = await read_director_md(bb_root)
         return data or {}
 
@@ -374,7 +374,7 @@ def _detect_event_type(old: dict | None, new: dict) -> str | None:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/api/test_multiagent_routes.py -v
 # 预期：全部通过
 ```
@@ -382,7 +382,7 @@ python -m pytest tests/api/test_multiagent_routes.py -v
 ### commit
 
 ```bash
-git add hermes/api/multiagent_routes.py tests/api/test_multiagent_routes.py
+git add teage_liu/api/multiagent_routes.py tests/api/test_multiagent_routes.py
 git commit -m "feat(multiagent): Plan 4 Task 1 后端状态查询端点（status/agents/messages/audit/sse）"
 ```
 
@@ -402,24 +402,24 @@ from playwright.sync_api import Page, expect
 
 
 @pytest.fixture
-def hermes_app_url():
+def teage-liu_app_url():
     return "http://127.0.0.1:18394"
 
 
 class TestMultiagentSettingsUI:
     """multiagent 设置 UI 测试。"""
 
-    def test_settings_modal_has_multiagent_section(self, page: Page, hermes_app_url):
+    def test_settings_modal_has_multiagent_section(self, page: Page, teage-liu_app_url):
         """设置模态框包含 multiagent 段。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         # 点击齿轮图标打开设置
         page.click("[data-action='open-settings']")
         # 验证 multiagent 段存在
         expect(page.locator("#multiagent-section")).to_be_visible()
 
-    def test_enable_multiagent_toggle(self, page: Page, hermes_app_url):
+    def test_enable_multiagent_toggle(self, page: Page, teage-liu_app_url):
         """启用 multiagent 开关。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         # 勾选启用
         page.check("#multiagent-enabled")
@@ -427,9 +427,9 @@ class TestMultiagentSettingsUI:
         expect(page.locator("#multiagent-role")).to_be_visible()
         expect(page.locator("#multiagent-blackboard-dir")).to_be_visible()
 
-    def test_role_selector_has_director_and_worker(self, page: Page, hermes_app_url):
+    def test_role_selector_has_director_and_worker(self, page: Page, teage-liu_app_url):
         """角色选择器包含 Director 和 Worker。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         # 验证角色选项
@@ -437,9 +437,9 @@ class TestMultiagentSettingsUI:
         expect(options.nth(0)).to_have_text("Worker")
         expect(options.nth(1)).to_have_text("Director")
 
-    def test_save_multiagent_config_calls_api(self, page: Page, hermes_app_url):
+    def test_save_multiagent_config_calls_api(self, page: Page, teage-liu_app_url):
         """保存配置调用 PUT /config API。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.select_option("#multiagent-role", "worker")
@@ -454,9 +454,9 @@ class TestMultiagentSettingsUI:
         assert "multiagent" in post_data
         assert "worker" in post_data
 
-    def test_disabled_hides_multiagent_section(self, page: Page, hermes_app_url):
+    def test_disabled_hides_multiagent_section(self, page: Page, teage-liu_app_url):
         """multiagent 关闭时隐藏相关 UI。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         # 取消勾选启用
         page.uncheck("#multiagent-enabled")
@@ -467,7 +467,7 @@ class TestMultiagentSettingsUI:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py -v
 # 预期：失败（前端无 multiagent UI）
 ```
@@ -723,9 +723,9 @@ async function saveSettings() {
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py -v
-# 预期：全部通过（需启动 hermes-lite 服务）
+# 预期：全部通过（需启动 teage-liu 服务）
 ```
 
 ### commit
@@ -747,22 +747,22 @@ git commit -m "feat(multiagent): Plan 4 Task 2 前端配置 UI（settings 模态
 class TestMultiagentSSE:
     """multiagent SSE 通道测试。"""
 
-    def test_sse_indicator_present(self, page: Page, hermes_app_url):
+    def test_sse_indicator_present(self, page: Page, teage-liu_app_url):
         """页面包含 multiagent 状态指示器。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         # 验证状态指示器 DOM 存在
         expect(page.locator("#multiagent-indicator")).to_be_visible()
 
-    def test_sse_indicator_shows_disabled_state(self, page: Page, hermes_app_url):
+    def test_sse_indicator_shows_disabled_state(self, page: Page, teage-liu_app_url):
         """multiagent 未启用时指示器显示禁用状态。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         indicator = page.locator("#multiagent-indicator")
         # 应显示"未启用"或类似文本
         expect(indicator).to_contain_text("未启用")
 
-    def test_sse_indicator_shows_director_state(self, page: Page, hermes_app_url):
+    def test_sse_indicator_shows_director_state(self, page: Page, teage-liu_app_url):
         """启用后指示器显示 Director 状态。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         # 启用 multiagent（通过设置模态框）
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
@@ -778,9 +778,9 @@ class TestMultiagentSSE:
             "state-healthy", "state-degraded", "state-autonomous", "state-fault"
         ])
 
-    def test_sse_agent_panel_shows_list(self, page: Page, hermes_app_url):
+    def test_sse_agent_panel_shows_list(self, page: Page, teage-liu_app_url):
         """Agent 列表面板显示活跃 agents。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -790,9 +790,9 @@ class TestMultiagentSSE:
         agents = page.locator("#multiagent-agents-panel .agent-card")
         expect(agents.first).to_be_visible()
 
-    def test_sse_autonomous_alert(self, page: Page, hermes_app_url):
+    def test_sse_autonomous_alert(self, page: Page, teage-liu_app_url):
         """自治模式触发时显示告警。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -810,7 +810,7 @@ class TestMultiagentSSE:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentSSE -v
 # 预期：失败（SSE 模块未实现）
 ```
@@ -953,7 +953,7 @@ python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentSSE -v
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentSSE -v
 # 预期：全部通过
 ```
@@ -977,9 +977,9 @@ git commit -m "feat(multiagent): Plan 4 Task 3 SSE 订阅（multiagent_alert 通
 class TestMultiagentRender:
     """multiagent 渲染测试。"""
 
-    def test_director_state_color_coding(self, page: Page, hermes_app_url):
+    def test_director_state_color_coding(self, page: Page, teage-liu_app_url):
         """Director 状态颜色编码（绿/黄/橙/红）。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -992,9 +992,9 @@ class TestMultiagentRender:
         state = indicator.get_attribute("data-state")
         assert state in ["healthy", "degraded", "autonomous", "fault", "unknown"]
 
-    def test_agent_card_renders_correctly(self, page: Page, hermes_app_url):
+    def test_agent_card_renders_correctly(self, page: Page, teage-liu_app_url):
         """Agent 卡片正确渲染。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -1006,9 +1006,9 @@ class TestMultiagentRender:
         expect(card.locator(".agent-role")).to_be_visible()
         expect(card.locator(".agent-status")).to_be_visible()
 
-    def test_trust_score_progress_bar(self, page: Page, hermes_app_url):
+    def test_trust_score_progress_bar(self, page: Page, teage-liu_app_url):
         """信任分进度条渲染。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -1023,9 +1023,9 @@ class TestMultiagentRender:
             )
             assert "%" in width or "px" in width
 
-    def test_alert_banner_appears_and_disappears(self, page: Page, hermes_app_url):
+    def test_alert_banner_appears_and_disappears(self, page: Page, teage-liu_app_url):
         """告警横幅出现并自动消失。"""
-        page.goto(hermes_app_url)
+        page.goto(teage-liu_app_url)
         page.click("[data-action='open-settings']")
         page.check("#multiagent-enabled")
         page.click("[data-action='save-settings']")
@@ -1044,7 +1044,7 @@ class TestMultiagentRender:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentRender -v
 # 预期：失败（render 模块未实现）
 ```
@@ -1549,7 +1549,7 @@ python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentRender -v
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/e2e/test_multiagent_ui.py::TestMultiagentRender -v
 # 预期：全部通过
 ```
@@ -1581,7 +1581,7 @@ class TestRouteIntegration:
 
     def test_multiagent_routes_registered_when_enabled(self, tmp_path: Path):
         """multiagent.enabled=True 时路由注册到 FastAPI app。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
         from fastapi import FastAPI
 
         config = {
@@ -1597,7 +1597,7 @@ class TestRouteIntegration:
 
         app = FastAPI()
         # 注册 multiagent 路由
-        from hermes.api.multiagent_routes import create_multiagent_router
+        from teage_liu.api.multiagent_routes import create_multiagent_router
         app.include_router(create_multiagent_router(container))
 
         with TestClient(app) as client:
@@ -1606,7 +1606,7 @@ class TestRouteIntegration:
 
     def test_multiagent_routes_not_registered_when_disabled(self, tmp_path: Path):
         """multiagent.enabled=False 时路由返回 404。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
         from fastapi import FastAPI
 
         config = {"multiagent": {"enabled": False}}
@@ -1615,7 +1615,7 @@ class TestRouteIntegration:
         register_components(container)
 
         app = FastAPI()
-        from hermes.api.multiagent_routes import create_multiagent_router
+        from teage_liu.api.multiagent_routes import create_multiagent_router
         app.include_router(create_multiagent_router(container))
 
         with TestClient(app) as client:
@@ -1626,14 +1626,14 @@ class TestRouteIntegration:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/api/test_multiagent_route_integration.py -v
-# 预期：失败（hermes/app.py 未注册 multiagent_routes）
+# 预期：失败（teage_liu/app.py 未注册 multiagent_routes）
 ```
 
 ### GREEN：最小实现
 
-修改 `hermes/app.py`（在 register_components 中注册 multiagent 路由）：
+修改 `teage_liu/app.py`（在 register_components 中注册 multiagent 路由）：
 
 ```python
 def register_components(container: Container) -> None:
@@ -1642,7 +1642,7 @@ def register_components(container: Container) -> None:
     # multiagent 路由（条件注册）
     multiagent_cfg = container.config.get("multiagent", {}) or {}
     if multiagent_cfg.get("enabled"):
-        from hermes.api.multiagent_routes import create_multiagent_router
+        from teage_liu.api.multiagent_routes import create_multiagent_router
         # 路由注册延迟到 FastAPI app 创建时（lifespan 中执行）
         # 这里仅标记需要注册
         container.register(
@@ -1653,7 +1653,7 @@ def register_components(container: Container) -> None:
         )
 ```
 
-修改 `hermes/lifespan.py`（在启动阶段注册 multiagent 路由）：
+修改 `teage_liu/lifespan.py`（在启动阶段注册 multiagent 路由）：
 
 ```python
 # 在 multiagent_adapter 启动后新增
@@ -1671,7 +1671,7 @@ if multiagent_cfg.get("enabled"):
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/api/test_multiagent_route_integration.py -v
 # 预期：全部通过
 ```
@@ -1679,7 +1679,7 @@ python -m pytest tests/api/test_multiagent_route_integration.py -v
 ### commit
 
 ```bash
-git add hermes/app.py hermes/lifespan.py tests/api/test_multiagent_route_integration.py
+git add teage_liu/app.py teage_liu/lifespan.py tests/api/test_multiagent_route_integration.py
 git commit -m "feat(multiagent): Plan 4 Task 5 路由集成（multiagent_routes 注册到 FastAPI app）"
 ```
 
@@ -1703,7 +1703,7 @@ git commit -m "feat(multiagent): Plan 4 Task 5 路由集成（multiagent_routes 
 #### 2. Placeholder Scan
 
 ```bash
-grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" web/js/multiagent-settings.js web/js/multiagent-sse.js web/js/multiagent-render.js hermes/api/multiagent_routes.py
+grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" web/js/multiagent-settings.js web/js/multiagent-sse.js web/js/multiagent-render.js teage_liu/api/multiagent_routes.py
 # 预期：无输出
 ```
 
@@ -1717,11 +1717,11 @@ grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" web/js/multiagent-settings.js web/js/mu
 #### 4. 测试覆盖率
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/api/test_multiagent_routes.py tests/api/test_multiagent_route_integration.py -v
 # 预期：全部通过
 python -m pytest tests/e2e/test_multiagent_ui.py -v
-# 预期：全部通过（需启动 hermes-lite 服务 + Playwright）
+# 预期：全部通过（需启动 teage-liu 服务 + Playwright）
 ```
 
 #### 5. Global Constraints 对齐

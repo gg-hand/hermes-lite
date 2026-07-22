@@ -13,7 +13,7 @@ revision: v1.0.3
 
 # Multi-Agent 改造总览
 
-本文档是 Hermes Multi-Agent Protocol v1.0.3 实施的**顶层规划入口**，统一管理 4 个分阶段 Plan 的依赖关系、产出边界、统一验收方案与子智能体委派策略。任何子智能体执行单个 Plan 前**必须先阅读本文档**确认依赖就绪。
+本文档是 Teage Multi-Agent Protocol v1.0.3 实施的**顶层规划入口**，统一管理 4 个分阶段 Plan 的依赖关系、产出边界、统一验收方案与子智能体委派策略。任何子智能体执行单个 Plan 前**必须先阅读本文档**确认依赖就绪。
 
 ---
 
@@ -21,10 +21,10 @@ revision: v1.0.3
 
 ### 1.1 改造目标
 
-将 Hermes 从单 agent 架构升级为多 agent 协作架构，支持：
+将 Teage 从单 agent 架构升级为多 agent 协作架构，支持：
 
 - **Phase 1（基础层）**：单实例本地黑板 self-talk（一个进程扮演 Director + Worker）
-- **Phase 2（协作层）**：双实例本地协作（两个 hermes-lite 进程通过文件黑板协作）
+- **Phase 2（协作层）**：双实例本地协作（两个 teage-liu 进程通过文件黑板协作）
 - **Phase 3-4（跨设备层）**：多设备跨网络协作（A2A Gateway + httpx + JSON-RPC）
 - **Phase 5（前端层）**：用户可视化配置与状态监控（SSE + 状态指示器）
 
@@ -32,7 +32,7 @@ revision: v1.0.3
 
 | 原则 | 实施体现 |
 |------|----------|
-| 文件优先（File-First） | 所有协议文件存放 `${HERMES_BB_DIR}`，本地协作零外部依赖 |
+| 文件优先（File-First） | 所有协议文件存放 `${TEAGE_BB_DIR}`，本地协作零外部依赖 |
 | 全链路异步 | 所有 I/O 使用 async/await，禁止阻塞调用 |
 | 路径沙箱 | 协议文件禁绝绝对路径，相对 `bb_root` + 正斜杠分隔 |
 | 配置热更新 | `multiagent.enabled/role` 可热更新；`blackboard_dir` 需重启 |
@@ -119,18 +119,18 @@ revision: v1.0.3
 
 | 接口 | 提供方 | 消费方 | 契约文件 |
 |------|--------|--------|----------|
-| `Blackboard` 类 | Plan 1 Task 2 | Plan 2 Task 1-10 / Plan 3 Task 1-7 / Plan 4 Task 1 | `hermes/multiagent/blackboard.py` |
-| `LockManager` 单例 | Plan 1 Task 4 | Plan 2 Task 2 / Plan 3 Task 1-4 | `hermes/multiagent/file_lock.py` |
-| `MultiAgentAuditLogger` | Plan 1 Task 5 | Plan 2 Task 3-6 / Plan 3 Task 1-4 | `hermes/multiagent/audit_logger.py` |
-| `AgentRegistry` | Plan 1 Task 6 | Plan 2 Task 2 / Plan 3 Task 3 / Plan 4 Task 1 | `hermes/multiagent/agent_registry.py` |
-| `RecoveryCoordinator` | Plan 1 Task 8 | Plan 2 Task 5 / Plan 3 Task 4 | `hermes/multiagent/recovery.py` |
-| 异常类（8 个） | Plan 1 Task 1 | Plan 2 / Plan 3 / Plan 4 全部 Task | `hermes/multiagent/exceptions.py` |
-| `DirectorEngine` | Plan 2 Task 1 | Plan 3 Task 4 / Plan 4 Task 1 | `hermes/multiagent/director_engine.py` |
-| `WorkerAdapter` | Plan 2 Task 2 | Plan 3 Task 3 / Plan 4 Task 1 | `hermes/multiagent/worker_adapter.py` |
-| `SignatureVerifier` | Plan 2 Task 5 | Plan 3 Task 2-4 | `hermes/multiagent/signature.py` |
-| `AutonomousModeController` | Plan 2 Task 7 | Plan 4 Task 1（状态查询） | `hermes/multiagent/autonomous.py` |
-| `A2AGateway` | Plan 3 Task 1 | Plan 4 Task 1（状态聚合） | `hermes/multiagent/a2a_gateway.py` |
-| `RemoteAgentAdapter` | Plan 3 Task 3 | Plan 4 Task 1（远程 agent 显示） | `hermes/multiagent/remote_agent_adapter.py` |
+| `Blackboard` 类 | Plan 1 Task 2 | Plan 2 Task 1-10 / Plan 3 Task 1-7 / Plan 4 Task 1 | `teage_liu/multiagent/blackboard.py` |
+| `LockManager` 单例 | Plan 1 Task 4 | Plan 2 Task 2 / Plan 3 Task 1-4 | `teage_liu/multiagent/file_lock.py` |
+| `MultiAgentAuditLogger` | Plan 1 Task 5 | Plan 2 Task 3-6 / Plan 3 Task 1-4 | `teage_liu/multiagent/audit_logger.py` |
+| `AgentRegistry` | Plan 1 Task 6 | Plan 2 Task 2 / Plan 3 Task 3 / Plan 4 Task 1 | `teage_liu/multiagent/agent_registry.py` |
+| `RecoveryCoordinator` | Plan 1 Task 8 | Plan 2 Task 5 / Plan 3 Task 4 | `teage_liu/multiagent/recovery.py` |
+| 异常类（8 个） | Plan 1 Task 1 | Plan 2 / Plan 3 / Plan 4 全部 Task | `teage_liu/multiagent/exceptions.py` |
+| `DirectorEngine` | Plan 2 Task 1 | Plan 3 Task 4 / Plan 4 Task 1 | `teage_liu/multiagent/director_engine.py` |
+| `WorkerAdapter` | Plan 2 Task 2 | Plan 3 Task 3 / Plan 4 Task 1 | `teage_liu/multiagent/worker_adapter.py` |
+| `SignatureVerifier` | Plan 2 Task 5 | Plan 3 Task 2-4 | `teage_liu/multiagent/signature.py` |
+| `AutonomousModeController` | Plan 2 Task 7 | Plan 4 Task 1（状态查询） | `teage_liu/multiagent/autonomous.py` |
+| `A2AGateway` | Plan 3 Task 1 | Plan 4 Task 1（状态聚合） | `teage_liu/multiagent/a2a_gateway.py` |
+| `RemoteAgentAdapter` | Plan 3 Task 3 | Plan 4 Task 1（远程 agent 显示） | `teage_liu/multiagent/remote_agent_adapter.py` |
 
 ---
 
@@ -221,29 +221,29 @@ revision: v1.0.3
 
 ```bash
 # 验收：所有新增模块文件存在
-test -f hermes/multiagent/__init__.py
-test -f hermes/multiagent/blackboard.py
-test -f hermes/multiagent/schema_validator.py
-test -f hermes/multiagent/file_lock.py
-test -f hermes/multiagent/audit_logger.py
-test -f hermes/multiagent/agent_registry.py
-test -f hermes/multiagent/watchdog_watcher.py
-test -f hermes/multiagent/recovery.py
-test -f hermes/multiagent/exceptions.py
-test -f hermes/multiagent/director_engine.py
-test -f hermes/multiagent/worker_adapter.py
-test -f hermes/multiagent/signature.py
-test -f hermes/multiagent/injection_isolator.py
-test -f hermes/multiagent/autonomous.py
-test -f hermes/multiagent/director_cli.py
-test -f hermes/multiagent/worker_cli.py
-test -f hermes/multiagent/a2a_gateway.py
-test -f hermes/multiagent/a2a_client.py
-test -f hermes/multiagent/remote_agent_adapter.py
-test -f hermes/multiagent/election.py
-test -f hermes/multiagent/path_sandbox.py
-test -f hermes/multiagent/rate_limiter.py
-test -f hermes/api/multiagent_routes.py
+test -f teage_liu/multiagent/__init__.py
+test -f teage_liu/multiagent/blackboard.py
+test -f teage_liu/multiagent/schema_validator.py
+test -f teage_liu/multiagent/file_lock.py
+test -f teage_liu/multiagent/audit_logger.py
+test -f teage_liu/multiagent/agent_registry.py
+test -f teage_liu/multiagent/watchdog_watcher.py
+test -f teage_liu/multiagent/recovery.py
+test -f teage_liu/multiagent/exceptions.py
+test -f teage_liu/multiagent/director_engine.py
+test -f teage_liu/multiagent/worker_adapter.py
+test -f teage_liu/multiagent/signature.py
+test -f teage_liu/multiagent/injection_isolator.py
+test -f teage_liu/multiagent/autonomous.py
+test -f teage_liu/multiagent/director_cli.py
+test -f teage_liu/multiagent/worker_cli.py
+test -f teage_liu/multiagent/a2a_gateway.py
+test -f teage_liu/multiagent/a2a_client.py
+test -f teage_liu/multiagent/remote_agent_adapter.py
+test -f teage_liu/multiagent/election.py
+test -f teage_liu/multiagent/path_sandbox.py
+test -f teage_liu/multiagent/rate_limiter.py
+test -f teage_liu/api/multiagent_routes.py
 test -f web/js/multiagent-settings.js
 test -f web/js/multiagent-sse.js
 test -f web/js/multiagent-render.js
@@ -265,7 +265,7 @@ test -f data/schemas/multiagent/audit_record.schema.json
 #### 4.2.3 测试套件全量通过
 
 ```bash
-# 在 hermes-lite 目录执行
+# 在 teage-liu 目录执行
 pytest tests/multiagent/ -v --tb=short
 pytest tests/api/test_multiagent_routes.py -v
 pytest tests/e2e/test_multiagent_ui.py -v
@@ -281,77 +281,77 @@ pytest tests/e2e/test_multiagent_ui.py -v
 # === Plan 1 范围（spec §4.1-§4.4） ===
 
 # §4.1 异常类完整（8 个）
-grep -E "class (CASConflictError|CASVersionMismatchError|FencingTokenMismatchError|LockAcquisitionError|NotMyTurnError|DirectorUnavailableError|GhostWriteAttemptError|CapabilityNotInCardError|A2AGatewayError)" hermes/multiagent/exceptions.py
+grep -E "class (CASConflictError|CASVersionMismatchError|FencingTokenMismatchError|LockAcquisitionError|NotMyTurnError|DirectorUnavailableError|GhostWriteAttemptError|CapabilityNotInCardError|A2AGatewayError)" teage_liu/multiagent/exceptions.py
 
 # §4.2 schema 文件（7 个）
 grep -l "schema" data/schemas/multiagent/*.yaml data/schemas/multiagent/*.json
 
 # §4.3 blackboard 路径沙箱（绝对路径拒绝）
-grep -E "(is_absolute|sanitize_path|to_absolute)" hermes/multiagent/blackboard.py
+grep -E "(is_absolute|sanitize_path|to_absolute)" teage_liu/multiagent/blackboard.py
 
 # §4.4 file_lock CAS + fencing_token + grace_period
-grep -E "(fencing_token|grace_period|acquire|release)" hermes/multiagent/file_lock.py
+grep -E "(fencing_token|grace_period|acquire|release)" teage_liu/multiagent/file_lock.py
 
 # === Plan 2 范围（spec §4.5-§4.11） ===
 
 # §4.5 flush 流程（messages.pending.md 幂等）
-grep -E "(messages\.pending\.md|flush|op_id)" hermes/multiagent/director_engine.py
+grep -E "(messages\.pending\.md|flush|op_id)" teage_liu/multiagent/director_engine.py
 
 # §4.6 append_audit append-only 语义（无 .tmp + os.replace）
-grep -v "os.replace" hermes/multiagent/audit_logger.py
-grep -E "(append_only|open.*mode.*a)" hermes/multiagent/audit_logger.py
+grep -v "os.replace" teage_liu/multiagent/audit_logger.py
+grep -E "(append_only|open.*mode.*a)" teage_liu/multiagent/audit_logger.py
 
 # §4.7 Director 双形态（agent / script）
-grep -E "(director_implementation|agent|script)" hermes/multiagent/director_engine.py
+grep -E "(director_implementation|agent|script)" teage_liu/multiagent/director_engine.py
 
 # §4.8 Epoch 机制
-grep -E "(current_epoch|epoch)" hermes/multiagent/director_engine.py
+grep -E "(current_epoch|epoch)" teage_liu/multiagent/director_engine.py
 
 # §4.9 启动互斥锁 + 硬超时强抢
-grep -E "(director\.lock|emergency_release|F_SETLK|LockFileEx)" hermes/multiagent/director_engine.py
+grep -E "(director\.lock|emergency_release|F_SETLK|LockFileEx)" teage_liu/multiagent/director_engine.py
 
 # §4.10 ed25519 签名
-grep -E "(ed25519|director_signature|SignatureVerifier|VerifyResult)" hermes/multiagent/signature.py
+grep -E "(ed25519|director_signature|SignatureVerifier|VerifyResult)" teage_liu/multiagent/signature.py
 
 # §4.11 自治模式 + 二次确认退出
-grep -E "(autonomous|confirm_exit|rollback_exit|AutonomousModeController)" hermes/multiagent/autonomous.py
+grep -E "(autonomous|confirm_exit|rollback_exit|AutonomousModeController)" teage_liu/multiagent/autonomous.py
 
 # 信任分管理
-grep -E "(trust_score|degraded_threshold|rejected_threshold|force_offline_threshold)" hermes/multiagent/director_engine.py
+grep -E "(trust_score|degraded_threshold|rejected_threshold|force_offline_threshold)" teage_liu/multiagent/director_engine.py
 
 # InjectionIsolator 全链路异步
-grep -E "(async def scan_and_tag|async def build_llm_context)" hermes/multiagent/injection_isolator.py
+grep -E "(async def scan_and_tag|async def build_llm_context)" teage_liu/multiagent/injection_isolator.py
 
 # ReactLoop 7 集成点
-grep -E "(_build_multiagent_prompt|_check_capabilities|_session_hook|_check_turn|_heartbeat|InjectionIsolator)" hermes/orchestrator.py
+grep -E "(_build_multiagent_prompt|_check_capabilities|_session_hook|_check_turn|_heartbeat|InjectionIsolator)" teage_liu/orchestrator.py
 
 # === Plan 3 范围（spec §4.12-§4.18） ===
 
 # §4.12 A2A Gateway JSON-RPC 2.0
-grep -E "(jsonrpc.*2\.0|method|params|id)" hermes/multiagent/a2a_gateway.py
+grep -E "(jsonrpc.*2\.0|method|params|id)" teage_liu/multiagent/a2a_gateway.py
 
 # §4.13 httpx 异步客户端
-grep -E "(httpx\.AsyncClient|async with)" hermes/multiagent/a2a_client.py
+grep -E "(httpx\.AsyncClient|async with)" teage_liu/multiagent/a2a_client.py
 
 # §4.14 远程 agent 适配器
-grep -E "(RemoteAgentAdapter|register_remote)" hermes/multiagent/remote_agent_adapter.py
+grep -E "(RemoteAgentAdapter|register_remote)" teage_liu/multiagent/remote_agent_adapter.py
 
 # §4.15 Director 跨设备选举
-grep -E "(Election|ElectionResult|epoch|lexicographic)" hermes/multiagent/election.py
+grep -E "(Election|ElectionResult|epoch|lexicographic)" teage_liu/multiagent/election.py
 
 # §4.16 路径沙箱（sanitize_path + sanitize_dict_paths）
-grep -E "(sanitize_path|to_absolute|sanitize_dict_paths)" hermes/multiagent/path_sandbox.py
+grep -E "(sanitize_path|to_absolute|sanitize_dict_paths)" teage_liu/multiagent/path_sandbox.py
 
 # §4.17 限流器（滑动窗口）
-grep -E "(RateLimiter|sliding_window|100)" hermes/multiagent/rate_limiter.py
+grep -E "(RateLimiter|sliding_window|100)" teage_liu/multiagent/rate_limiter.py
 
 # §4.18 JSON-RPC 错误码（10 个）
-grep -E "(-32700|-32600|-32601|-32602|-32603|-32001|-32002|-32003|-32004|-32005)" hermes/multiagent/a2a_gateway.py
+grep -E "(-32700|-32600|-32601|-32602|-32603|-32001|-32002|-32003|-32004|-32005)" teage_liu/multiagent/a2a_gateway.py
 
 # === Plan 4 范围（spec §4.19-§4.23） ===
 
 # §4.19 multiagent_alert SSE 通道
-grep -E "(multiagent_alert|text/event-stream)" hermes/api/multiagent_routes.py
+grep -E "(multiagent_alert|text/event-stream)" teage_liu/api/multiagent_routes.py
 
 # §4.20 前端配置 UI
 grep -E "(multiagent-settings|multiagent\.enabled|multiagent\.role)" web/js/multiagent-settings.js
@@ -363,20 +363,20 @@ grep -E "(multiagent-sse|EventSource|multiagent_alert)" web/js/multiagent-sse.js
 grep -E "(healthy|degraded|autonomous|fault)" web/js/multiagent-render.js
 
 # §4.23 容器映射 + 热更新边界
-grep -E "(multiagent.*:.*\[|_RESTART_REQUIRED_KEYS)" hermes/container.py hermes/config_helpers.py
+grep -E "(multiagent.*:.*\[|_RESTART_REQUIRED_KEYS)" teage_liu/container.py teage_liu/config_helpers.py
 ```
 
 #### 4.2.5 容器注册与热更新验收
 
 ```bash
 # CONFIG_TO_COMPONENTS 新增 multiagent 段
-grep -E '"multiagent":' hermes/container.py
+grep -E '"multiagent":' teage_liu/container.py
 
 # _RESTART_REQUIRED_KEYS 包含 multiagent.blackboard_dir
-grep -E "multiagent\.blackboard_dir" hermes/config_helpers.py
+grep -E "multiagent\.blackboard_dir" teage_liu/config_helpers.py
 
 # lifespan 注册 multiagent 组件
-grep -E "multiagent" hermes/lifespan.py
+grep -E "multiagent" teage_liu/lifespan.py
 ```
 
 #### 4.2.6 路径规范验收（project_memory 硬约束）
@@ -405,8 +405,8 @@ pytest tests/multiagent/test_path_sandbox.py -v
 ### 4.3 验收执行流程
 
 ```bash
-# 1. 在 hermes-lite 目录执行全量测试
-cd hermes-lite
+# 1. 在 teage-liu 目录执行全量测试
+cd teage-liu
 pytest tests/ -v --tb=short 2>&1 | tee test_output.log
 
 # 2. 执行 spec coverage 检查（Python 脚本，封装 §4.2.4 的 36 项 Grep）
@@ -447,8 +447,8 @@ python scripts/verify_multiagent_spec_coverage.py --all --format json > verifica
 ```
 任务：执行 Plan N: <Plan 标题>
 
-Plan 文档：e:\Java\webser\web_app\webme\hermes-lite\docs\plans\<plan-file>.md
-工作目录：e:\Java\webser\web_app\webme\hermes-lite
+Plan 文档：e:\Java\webser\web_app\webme\teage-liu\docs\plans\<plan-file>.md
+工作目录：e:\Java\webser\web_app\webme\teage-liu
 
 执行要求：
 1. 严格遵循 TDD 流程：每个 Task 先写失败测试（RED），验证失败后再写最小实现（GREEN），通过后重构（REFACTOR），最后 git commit
@@ -636,7 +636,7 @@ Plan 4 子智能体: 执行 6 Task + 端到端验收
 
 | 术语 | 含义 |
 |------|------|
-| BB_ROOT | Blackboard 根目录（环境变量 `HERMES_BB_DIR`） |
+| BB_ROOT | Blackboard 根目录（环境变量 `TEAGE_BB_DIR`） |
 | Director | 协调者角色，负责轮次推进与冲突仲裁 |
 | Worker | 工作者角色，执行具体任务 |
 | Epoch | Director 任期编号，单调递增 |
@@ -648,12 +648,12 @@ Plan 4 子智能体: 执行 6 Task + 端到端验收
 
 ### 10.2 相关文档索引
 
-- [设计文档 v1.0.3](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/superpowers/specs/2026-07-20-多agent协作机制-design.md)
-- [修订 spec v1.0.3](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/superpowers/specs/2026-07-21-多agent协作机制-v1.0.3修订-spec.md)
-- [Plan 1: Phase 1 基础层](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/plans/2026-07-21-multiagent-phase1-foundation.md)
-- [Plan 2: Phase 2 协作层](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/plans/2026-07-21-multiagent-phase2-collaboration.md)
-- [Plan 3: Phase 3-4 跨设备层](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/plans/2026-07-21-multiagent-phase3-4-cross-device.md)
-- [Plan 4: Phase 5 前端适配](file:///e:/Java/webser/web_app/webme/hermes-lite/docs/plans/2026-07-21-multiagent-phase5-frontend.md)
+- [设计文档 v1.0.3](file:///e:/Java/webser/web_app/webme/teage-liu/docs/superpowers/specs/2026-07-20-多agent协作机制-design.md)
+- [修订 spec v1.0.3](file:///e:/Java/webser/web_app/webme/teage-liu/docs/superpowers/specs/2026-07-21-多agent协作机制-v1.0.3修订-spec.md)
+- [Plan 1: Phase 1 基础层](file:///e:/Java/webser/web_app/webme/teage-liu/docs/plans/2026-07-21-multiagent-phase1-foundation.md)
+- [Plan 2: Phase 2 协作层](file:///e:/Java/webser/web_app/webme/teage-liu/docs/plans/2026-07-21-multiagent-phase2-collaboration.md)
+- [Plan 3: Phase 3-4 跨设备层](file:///e:/Java/webser/web_app/webme/teage-liu/docs/plans/2026-07-21-multiagent-phase3-4-cross-device.md)
+- [Plan 4: Phase 5 前端适配](file:///e:/Java/webser/web_app/webme/teage-liu/docs/plans/2026-07-21-multiagent-phase5-frontend.md)
 
 ### 10.3 project_memory 硬约束对齐
 
@@ -662,7 +662,7 @@ Plan 4 子智能体: 执行 6 Task + 端到端验收
 | 硬约束 | 实施位置 |
 |--------|----------|
 | 协议文件禁绝绝对路径 | Plan 1 Task 2 blackboard.py + Plan 3 Task 5 path_sandbox.py |
-| 路径运行时动态获取 | Plan 1 Task 9 配置容器集成（`HERMES_BB_DIR` 环境变量） |
+| 路径运行时动态获取 | Plan 1 Task 9 配置容器集成（`TEAGE_BB_DIR` 环境变量） |
 | 全链路异步 | 所有 Plan 的 Global Constraints |
 | 配置热更新 | Plan 1 Task 9 + Plan 2 Task 9 + Plan 3 Task 8 + Plan 4 Task 5 |
 | LLM 客户端异步 SDK | Plan 2 Task 1 DirectorEngine 复用 Orchestrator 的 AsyncOpenAI/AsyncAnthropic |

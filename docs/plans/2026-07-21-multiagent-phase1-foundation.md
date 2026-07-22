@@ -5,7 +5,7 @@
 
 **Goal:** 实现 multiagent 协作 Phase 1 基础层（7 个模块 + self-talk 端到端测试），支持单实例本地黑板 self-talk 场景。
 
-**Architecture:** 文件优先（File-First）的共享黑板协作。所有协议文件（status.json / agents/{id}.md / messages.md / audit/audit.jsonl）存放在 `${HERMES_BB_DIR}` 目录。本地协作通过文件 + portalocker 文件锁实现，不依赖外部服务。Phase 1 不涉及 Director 引擎和跨设备通信。
+**Architecture:** 文件优先（File-First）的共享黑板协作。所有协议文件（status.json / agents/{id}.md / messages.md / audit/audit.jsonl）存放在 `${TEAGE_BB_DIR}` 目录。本地协作通过文件 + portalocker 文件锁实现，不依赖外部服务。Phase 1 不涉及 Director 引擎和跨设备通信。
 
 **Tech Stack:** Python 3.11+ / asyncio / aiofiles（异步文件 I/O）/ portalocker（跨平台文件锁）/ jsonschema（协议校验）/ watchdog（文件监听）/ pytest（TDD）
 
@@ -17,17 +17,17 @@
 - 路径沙箱：协议文件禁止绝对路径，所有路径相对于 `bb_root`，使用正斜杠分隔
 - YAML 安全：必须 `yaml.safe_load`，禁用 `yaml.load`
 - 配置热更新：`multiagent.enabled` / `multiagent.role` 等可热更新；`multiagent.blackboard_dir` 需重启
-- 环境变量：`HERMES_BB_DIR` 必填（multiagent.enabled=true 时），无默认值语法
+- 环境变量：`TEAGE_BB_DIR` 必填（multiagent.enabled=true 时），无默认值语法
 - TDD 流程：先写失败测试 → 验证 RED → 最小实现 → 验证 GREEN → 重构 → commit
 - CAS 重试上限：2 次（第 3 次相同失败终止），对齐 project_memory 硬约束
 - 危险工具清单：`execute_command / write_file / call_tool`（project_memory 权威来源）
-- 命名隔离：新增 `hermes.multiagent.audit_logger.MultiAgentAuditLogger` 与现有 `hermes.agent.audit.AuditLogger` 命名空间隔离
+- 命名隔离：新增 `teage_liu.multiagent.audit_logger.MultiAgentAuditLogger` 与现有 `teage_liu.agent.audit.AuditLogger` 命名空间隔离
 - 容器注册键：`multiagent_audit_logger`（非 `audit_logger`，避免冲突）
-- 异常类风格：`@dataclass(kw_only=True)` + ErrorStage enum + _CATEGORY_ZH dict（对齐 hermes/agent/tool_error.py）
+- 异常类风格：`@dataclass(kw_only=True)` + ErrorStage enum + _CATEGORY_ZH dict（对齐 teage_liu/agent/tool_error.py）
 
 ## File Structure
 
-**新建文件**（hermes/multiagent/）：
+**新建文件**（teage_liu/multiagent/）：
 - `__init__.py` — 模块导出
 - `blackboard.py` — 黑板目录读写（atomic_write / 路径沙箱 / YAML safe_load）
 - `schema_validator.py` — 7 个 JSON Schema 校验（protocol.md / director.md / status.json / agent_card / messages.md / tasks/{id}.md / audit.jsonl）
@@ -52,11 +52,11 @@
 
 **修改现有文件**：
 - `requirements.txt` — 升级 jsonschema>=4.20，新增 watchdog/aiofiles/portalocker/cryptography
-- `hermes/config.py` — 新增 multiagent 配置段解析
-- `hermes/config_helpers.py` — `_validate_config_schema` 元组新增 'multiagent'；`_RESTART_REQUIRED_KEYS` 新增 'multiagent.blackboard_dir'
-- `hermes/container.py` — `CONFIG_TO_COMPONENTS` 新增 'multiagent' 映射
-- `hermes/lifespan.py` — multiagent.enabled=true 时注册 7 个组件
-- `hermes/agent/tool_error.py` — `_CATEGORY_ZH` 补 multiagent category（P1-22）
+- `teage_liu/config.py` — 新增 multiagent 配置段解析
+- `teage_liu/config_helpers.py` — `_validate_config_schema` 元组新增 'multiagent'；`_RESTART_REQUIRED_KEYS` 新增 'multiagent.blackboard_dir'
+- `teage_liu/container.py` — `CONFIG_TO_COMPONENTS` 新增 'multiagent' 映射
+- `teage_liu/lifespan.py` — multiagent.enabled=true 时注册 7 个组件
+- `teage_liu/agent/tool_error.py` — `_CATEGORY_ZH` 补 multiagent category（P1-22）
 
 **新建 schema 文件**（data/schemas/multiagent/）：
 - `protocol_md.schema.yaml`
@@ -73,14 +73,14 @@
 
 **Files:**
 - Modify: `requirements.txt`
-- Create: `hermes/multiagent/__init__.py`
-- Create: `hermes/multiagent/exceptions.py`
+- Create: `teage_liu/multiagent/__init__.py`
+- Create: `teage_liu/multiagent/exceptions.py`
 - Create: `tests/multiagent/__init__.py`
 - Create: `tests/multiagent/conftest.py`
-- Modify: `hermes/agent/tool_error.py`（补 _CATEGORY_ZH multiagent category）
+- Modify: `teage_liu/agent/tool_error.py`（补 _CATEGORY_ZH multiagent category）
 
 **Interfaces:**
-- Produces: `hermes.multiagent.exceptions` 模块（8 个异常类），供后续所有 task 使用
+- Produces: `teage_liu.multiagent.exceptions` 模块（8 个异常类），供后续所有 task 使用
 - Produces: `tests/multiagent/conftest.py:bb_root` fixture，供后续所有测试使用
 
 - [ ] **Step 1: Write the failing test**
@@ -90,8 +90,8 @@ Create `tests/multiagent/test_exceptions.py`:
 ```python
 """multiagent 异常类基础测试。"""
 import pytest
-from hermes.agent.tool_error import ToolError, ErrorStage
-from hermes.multiagent.exceptions import (
+from teage_liu.agent.tool_error import ToolError, ErrorStage
+from teage_liu.multiagent.exceptions import (
     CASConflictError,
     CASVersionMismatchError,
     FencingTokenMismatchError,
@@ -187,23 +187,23 @@ def test_a2a_gateway_error_fields():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_exceptions.py -v`
-Expected: FAIL (ModuleNotFoundError: No module named 'hermes.multiagent')
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_exceptions.py -v`
+Expected: FAIL (ModuleNotFoundError: No module named 'teage_liu.multiagent')
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/__init__.py` (空文件):
+Create `teage_liu/multiagent/__init__.py` (空文件):
 
 ```python
-"""hermes multiagent 协作模块。"""
+"""teage-liu multiagent 协作模块。"""
 ```
 
-Create `hermes/multiagent/exceptions.py`:
+Create `teage_liu/multiagent/exceptions.py`:
 
 ```python
 """multiagent 协作异常类。
 
-对齐 hermes/agent/tool_error.py 的 @dataclass(kw_only=True) 风格。
+对齐 teage_liu/agent/tool_error.py 的 @dataclass(kw_only=True) 风格。
 所有异常继承 ToolError，stage=PROTOCOL（不走 tool_result 链路）。
 """
 from __future__ import annotations
@@ -211,7 +211,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from hermes.agent.tool_error import ToolError, ErrorStage
+from teage_liu.agent.tool_error import ToolError, ErrorStage
 
 
 @dataclass(kw_only=True)
@@ -403,7 +403,7 @@ class A2AGatewayError(ToolError):
         super().__post_init__()
 ```
 
-Modify `hermes/agent/tool_error.py` — 在 `_CATEGORY_ZH` dict 末尾（line 58 `"success": "成功"` 之前）追加：
+Modify `teage_liu/agent/tool_error.py` — 在 `_CATEGORY_ZH` dict 末尾（line 58 `"success": "成功"` 之前）追加：
 
 ```python
     # multiagent 协作（v1.0.3 新增）
@@ -498,14 +498,14 @@ cryptography>=42.0
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_exceptions.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_exceptions.py -v`
 Expected: PASS (8 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/__init__.py hermes/multiagent/exceptions.py tests/multiagent/__init__.py tests/multiagent/conftest.py tests/multiagent/test_exceptions.py hermes/agent/tool_error.py requirements.txt
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/__init__.py teage_liu/multiagent/exceptions.py tests/multiagent/__init__.py tests/multiagent/conftest.py tests/multiagent/test_exceptions.py teage_liu/agent/tool_error.py requirements.txt
 git commit -m "feat(multiagent): 添加异常类与脚手架（Phase 1 Task 1）"
 ```
 
@@ -514,7 +514,7 @@ git commit -m "feat(multiagent): 添加异常类与脚手架（Phase 1 Task 1）
 ## Task 2: blackboard.py — 原子写入与路径沙箱
 
 **Files:**
-- Create: `hermes/multiagent/blackboard.py`
+- Create: `teage_liu/multiagent/blackboard.py`
 - Test: `tests/multiagent/test_blackboard.py`
 
 **Interfaces:**
@@ -539,14 +539,14 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     atomic_write,
     validate_path_safety,
     read_json,
     read_yaml_frontmatter,
     append_jsonl,
 )
-from hermes.multiagent.exceptions import PathSafetyError
+from teage_liu.multiagent.exceptions import PathSafetyError
 
 
 @pytest.mark.asyncio
@@ -660,12 +660,12 @@ async def test_append_jsonl_no_tmp_residue(bb_root: Path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_blackboard.py -v`
-Expected: FAIL (ImportError: cannot import name 'atomic_write' from 'hermes.multiagent.blackboard')
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_blackboard.py -v`
+Expected: FAIL (ImportError: cannot import name 'atomic_write' from 'teage_liu.multiagent.blackboard')
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/blackboard.py`:
+Create `teage_liu/multiagent/blackboard.py`:
 
 ```python
 """黑板目录读写：原子写入 / 路径沙箱 / YAML safe_load / JSONL append。
@@ -687,7 +687,7 @@ from typing import Any, Tuple
 import aiofiles
 import yaml
 
-from hermes.multiagent.exceptions import PathSafetyError
+from teage_liu.multiagent.exceptions import PathSafetyError
 
 
 class PathSafetyError(Exception):
@@ -811,7 +811,7 @@ async def append_jsonl(path: Path, record: dict) -> None:
         os.fsync(f.fileno())
 ```
 
-Add `PathSafetyError` to `hermes/multiagent/exceptions.py` (在 A2AGatewayError 之后):
+Add `PathSafetyError` to `teage_liu/multiagent/exceptions.py` (在 A2AGatewayError 之后):
 
 ```python
 class PathSafetyError(Exception):
@@ -820,14 +820,14 @@ class PathSafetyError(Exception):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_blackboard.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_blackboard.py -v`
 Expected: PASS (13 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/blackboard.py hermes/multiagent/exceptions.py tests/multiagent/test_blackboard.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/blackboard.py teage_liu/multiagent/exceptions.py tests/multiagent/test_blackboard.py
 git commit -m "feat(multiagent): blackboard 原子写入与路径沙箱（Phase 1 Task 2）"
 ```
 
@@ -839,7 +839,7 @@ git commit -m "feat(multiagent): blackboard 原子写入与路径沙箱（Phase 
 - Create: `data/schemas/multiagent/status_json.schema.json`
 - Create: `data/schemas/multiagent/agent_card.schema.yaml`
 - Create: `data/schemas/multiagent/messages_md.schema.yaml`
-- Create: `hermes/multiagent/schema_validator.py`
+- Create: `teage_liu/multiagent/schema_validator.py`
 - Test: `tests/multiagent/test_schema_validator.py`
 
 **Interfaces:**
@@ -863,7 +863,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.schema_validator import SchemaValidator
 
 
 @pytest.fixture
@@ -1010,7 +1010,7 @@ def test_validate_audit_record_invalid_action(validator: SchemaValidator):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_schema_validator.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_schema_validator.py -v`
 Expected: FAIL (ImportError: cannot import name 'SchemaValidator')
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1184,7 +1184,7 @@ Create `data/schemas/multiagent/audit_record.schema.json`:
 }
 ```
 
-Create `hermes/multiagent/schema_validator.py`:
+Create `teage_liu/multiagent/schema_validator.py`:
 
 ```python
 """协议文件 JSON Schema 校验。
@@ -1201,7 +1201,7 @@ from typing import Any
 import yaml
 from jsonschema import validate as jsonschema_validate, ValidationError
 
-from hermes.logging_setup import logger
+from teage_liu.logging_setup import logger
 
 # schema 文件目录（运行时动态获取，避免硬编码）
 _SCHEMA_DIR = Path(__file__).parent.parent.parent / "data" / "schemas" / "multiagent"
@@ -1272,14 +1272,14 @@ class SchemaValidator:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_schema_validator.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_schema_validator.py -v`
 Expected: PASS (12 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add data/schemas/multiagent/ hermes/multiagent/schema_validator.py tests/multiagent/test_schema_validator.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add data/schemas/multiagent/ teage_liu/multiagent/schema_validator.py tests/multiagent/test_schema_validator.py
 git commit -m "feat(multiagent): schema_validator 7 协议文件校验（Phase 1 Task 3）"
 ```
 
@@ -1288,11 +1288,11 @@ git commit -m "feat(multiagent): schema_validator 7 协议文件校验（Phase 1
 ## Task 4: file_lock.py — CAS + fencing_token + grace_period
 
 **Files:**
-- Create: `hermes/multiagent/file_lock.py`
+- Create: `teage_liu/multiagent/file_lock.py`
 - Test: `tests/multiagent/test_file_lock.py`
 
 **Interfaces:**
-- Consumes: `hermes.multiagent.blackboard.atomic_write` / `read_json` / `hermes.multiagent.exceptions`
+- Consumes: `teage_liu.multiagent.blackboard.atomic_write` / `read_json` / `teage_liu.multiagent.exceptions`
 - Produces:
   - `class LockManager` — Worker 进程内单例
   - `LockManager.acquire(lock_name, holder, ttl_seconds) -> int` — 返回 fencing_token
@@ -1314,8 +1314,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.file_lock import LockManager
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.file_lock import LockManager
+from teage_liu.multiagent.exceptions import (
     FencingTokenMismatchError,
     LockAcquisitionError,
     CASVersionMismatchError,
@@ -1449,12 +1449,12 @@ async def test_is_locked(bb_root: Path, lock_manager: LockManager):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_file_lock.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_file_lock.py -v`
 Expected: FAIL (ImportError: cannot import name 'LockManager')
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/file_lock.py`:
+Create `teage_liu/multiagent/file_lock.py`:
 
 ```python
 """CAS + fencing_token + grace_period 锁管理。
@@ -1475,9 +1475,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes.logging_setup import logger
-from hermes.multiagent.blackboard import atomic_write, read_json
-from hermes.multiagent.exceptions import (
+from teage_liu.logging_setup import logger
+from teage_liu.multiagent.blackboard import atomic_write, read_json
+from teage_liu.multiagent.exceptions import (
     CASVersionMismatchError,
     FencingTokenMismatchError,
     LockAcquisitionError,
@@ -1693,14 +1693,14 @@ class LockManager:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_file_lock.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_file_lock.py -v`
 Expected: PASS (10 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/file_lock.py tests/multiagent/test_file_lock.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/file_lock.py tests/multiagent/test_file_lock.py
 git commit -m "feat(multiagent): file_lock CAS+fencing_token+grace_period（Phase 1 Task 4）"
 ```
 
@@ -1709,11 +1709,11 @@ git commit -m "feat(multiagent): file_lock CAS+fencing_token+grace_period（Phas
 ## Task 5: audit_logger.py — append 串行化 + hash 链
 
 **Files:**
-- Create: `hermes/multiagent/audit_logger.py`
+- Create: `teage_liu/multiagent/audit_logger.py`
 - Test: `tests/multiagent/test_audit_logger.py`
 
 **Interfaces:**
-- Consumes: `portalocker` / `hermes.multiagent.blackboard.append_jsonl` / `hermes.agent.tool_error`
+- Consumes: `portalocker` / `teage_liu.multiagent.blackboard.append_jsonl` / `teage_liu.agent.tool_error`
 - Produces:
   - `class MultiAgentAuditLogger`
   - `async def append_audit(record: dict) -> None` — portalocker 串行化 + hash 链
@@ -1734,7 +1734,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
 
 
 @pytest.fixture
@@ -1853,12 +1853,12 @@ async def test_read_last_hash_after_append(bb_root: Path, audit_logger: MultiAge
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_audit_logger.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_audit_logger.py -v`
 Expected: FAIL (ImportError: cannot import name 'MultiAgentAuditLogger')
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/audit_logger.py`:
+Create `teage_liu/multiagent/audit_logger.py`:
 
 ```python
 """multiagent 审计日志：append 串行化 + hash 链 + 损坏降级。
@@ -1881,12 +1881,12 @@ from typing import Optional
 
 import portalocker
 
-from hermes.logging_setup import logger
-from hermes.multiagent.blackboard import append_jsonl
+from teage_liu.logging_setup import logger
+from teage_liu.multiagent.blackboard import append_jsonl
 
 
 class MultiAgentAuditLogger:
-    """multiagent 审计日志（与现有 hermes.agent.audit.AuditLogger 命名空间隔离）。
+    """multiagent 审计日志（与现有 teage_liu.agent.audit.AuditLogger 命名空间隔离）。
 
     容器注册键：multiagent_audit_logger（非 audit_logger）
     """
@@ -2012,14 +2012,14 @@ class MultiAgentAuditLogger:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_audit_logger.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_audit_logger.py -v`
 Expected: PASS (7 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/audit_logger.py tests/multiagent/test_audit_logger.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/audit_logger.py tests/multiagent/test_audit_logger.py
 git commit -m "feat(multiagent): audit_logger append+hash链+损坏降级（Phase 1 Task 5）"
 ```
 
@@ -2028,11 +2028,11 @@ git commit -m "feat(multiagent): audit_logger append+hash链+损坏降级（Phas
 ## Task 6: agent_registry.py — Agent 注册与心跳
 
 **Files:**
-- Create: `hermes/multiagent/agent_registry.py`
+- Create: `teage_liu/multiagent/agent_registry.py`
 - Test: `tests/multiagent/test_agent_registry.py`
 
 **Interfaces:**
-- Consumes: `hermes.multiagent.blackboard` / `hermes.multiagent.schema_validator`
+- Consumes: `teage_liu.multiagent.blackboard` / `teage_liu.multiagent.schema_validator`
 - Produces:
   - `class AgentRegistry`
   - `async def register(agent_card: dict) -> None` — 写入 agents/{id}.md
@@ -2054,12 +2054,12 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.agent_registry import AgentRegistry
 
 
 @pytest.fixture
 def registry(bb_root: Path) -> AgentRegistry:
-    from hermes.multiagent.schema_validator import SchemaValidator
+    from teage_liu.multiagent.schema_validator import SchemaValidator
     return AgentRegistry(bb_root, SchemaValidator(enabled=False))
 
 
@@ -2173,12 +2173,12 @@ async def test_observer_requires_heartbeat_fields(registry: AgentRegistry):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_agent_registry.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_agent_registry.py -v`
 Expected: FAIL (ImportError)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/agent_registry.py`:
+Create `teage_liu/multiagent/agent_registry.py`:
 
 ```python
 """Agent 注册 + 心跳。
@@ -2197,9 +2197,9 @@ from typing import Optional
 
 import yaml
 
-from hermes.logging_setup import logger
-from hermes.multiagent.blackboard import atomic_write
-from hermes.multiagent.schema_validator import SchemaValidator
+from teage_liu.logging_setup import logger
+from teage_liu.multiagent.blackboard import atomic_write
+from teage_liu.multiagent.schema_validator import SchemaValidator
 
 
 def _now_iso() -> str:
@@ -2298,14 +2298,14 @@ class AgentRegistry:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_agent_registry.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_agent_registry.py -v`
 Expected: PASS (9 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/agent_registry.py tests/multiagent/test_agent_registry.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/agent_registry.py tests/multiagent/test_agent_registry.py
 git commit -m "feat(multiagent): agent_registry 基础注册与心跳（Phase 1 Task 6）"
 ```
 
@@ -2314,7 +2314,7 @@ git commit -m "feat(multiagent): agent_registry 基础注册与心跳（Phase 1 
 ## Task 7: watchdog_watcher.py — 文件监听 + 自检
 
 **Files:**
-- Create: `hermes/multiagent/watchdog_watcher.py`
+- Create: `teage_liu/multiagent/watchdog_watcher.py`
 - Test: `tests/multiagent/test_watchdog.py`
 
 **Interfaces:**
@@ -2339,7 +2339,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.watchdog_watcher import WatchdogWatcher
+from teage_liu.multiagent.watchdog_watcher import WatchdogWatcher
 
 
 @pytest.fixture
@@ -2393,12 +2393,12 @@ async def test_degrade_to_polling_on_failure(bb_root: Path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_watchdog.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_watchdog.py -v`
 Expected: FAIL (ImportError)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/watchdog_watcher.py`:
+Create `teage_liu/multiagent/watchdog_watcher.py`:
 
 ```python
 """文件监听 + 自检。
@@ -2570,14 +2570,14 @@ class WatchdogWatcher:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_watchdog.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_watchdog.py -v`
 Expected: PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/watchdog_watcher.py tests/multiagent/test_watchdog.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/watchdog_watcher.py tests/multiagent/test_watchdog.py
 git commit -m "feat(multiagent): watchdog_watcher 文件监听+自检+降级（Phase 1 Task 7）"
 ```
 
@@ -2586,11 +2586,11 @@ git commit -m "feat(multiagent): watchdog_watcher 文件监听+自检+降级（P
 ## Task 8: recovery.py — 崩溃恢复 + audit 重放
 
 **Files:**
-- Create: `hermes/multiagent/recovery.py`
+- Create: `teage_liu/multiagent/recovery.py`
 - Test: `tests/multiagent/test_recovery.py`
 
 **Interfaces:**
-- Consumes: `hermes.multiagent.audit_logger.MultiAgentAuditLogger` / `hermes.multiagent.blackboard`
+- Consumes: `teage_liu.multiagent.audit_logger.MultiAgentAuditLogger` / `teage_liu.multiagent.blackboard`
 - Produces:
   - `class RecoveryCoordinator`
   - `async def rebuild_state_from_audit() -> dict` — 从 audit 重建 status.json
@@ -2609,8 +2609,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-from hermes.multiagent.recovery import RecoveryCoordinator
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.recovery import RecoveryCoordinator
 
 
 @pytest.fixture
@@ -2699,12 +2699,12 @@ async def test_check_and_recover_rebuilds_missing_status(bb_root: Path, recovery
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_recovery.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_recovery.py -v`
 Expected: FAIL (ImportError)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `hermes/multiagent/recovery.py`:
+Create `teage_liu/multiagent/recovery.py`:
 
 ```python
 """崩溃恢复 + audit 重放。
@@ -2722,10 +2722,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes.logging_setup import logger
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-from hermes.multiagent.blackboard import atomic_write, read_json
-from hermes.multiagent.exceptions import PathSafetyError
+from teage_liu.logging_setup import logger
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.blackboard import atomic_write, read_json
+from teage_liu.multiagent.exceptions import PathSafetyError
 
 
 class RecoveryFenceError(Exception):
@@ -2842,14 +2842,14 @@ class RecoveryCoordinator:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_recovery.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_recovery.py -v`
 Expected: PASS (5 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/multiagent/recovery.py tests/multiagent/test_recovery.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/multiagent/recovery.py tests/multiagent/test_recovery.py
 git commit -m "feat(multiagent): recovery 崩溃恢复+audit重放（Phase 1 Task 8）"
 ```
 
@@ -2858,10 +2858,10 @@ git commit -m "feat(multiagent): recovery 崩溃恢复+audit重放（Phase 1 Tas
 ## Task 9: 配置与容器集成
 
 **Files:**
-- Modify: `hermes/config.py` — 新增 multiagent 配置段解析
-- Modify: `hermes/config_helpers.py` — _validate_config_schema + _RESTART_REQUIRED_KEYS
-- Modify: `hermes/container.py` — CONFIG_TO_COMPONENTS 新增 multiagent
-- Modify: `hermes/lifespan.py` — multiagent.enabled=true 时注册 7 个组件
+- Modify: `teage_liu/config.py` — 新增 multiagent 配置段解析
+- Modify: `teage_liu/config_helpers.py` — _validate_config_schema + _RESTART_REQUIRED_KEYS
+- Modify: `teage_liu/container.py` — CONFIG_TO_COMPONENTS 新增 multiagent
+- Modify: `teage_liu/lifespan.py` — multiagent.enabled=true 时注册 7 个组件
 - Test: `tests/multiagent/test_config_integration.py`
 
 **Interfaces:**
@@ -2881,9 +2881,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes.config import load_config
-from hermes.container import Container, CONFIG_TO_COMPONENTS
-from hermes.config_helpers import _RESTART_REQUIRED_KEYS, _validate_config_schema
+from teage_liu.config import load_config
+from teage_liu.container import Container, CONFIG_TO_COMPONENTS
+from teage_liu.config_helpers import _RESTART_REQUIRED_KEYS, _validate_config_schema
 
 
 def test_config_multiagent_section_parsed(tmp_path: Path):
@@ -2894,10 +2894,10 @@ def test_config_multiagent_section_parsed(tmp_path: Path):
 multiagent:
   enabled: true
   role: worker
-  blackboard_dir: "${HERMES_BB_DIR}"
+  blackboard_dir: "${TEAGE_BB_DIR}"
   default_session_id: default
   worker:
-    agent_id: hermes_default
+    agent_id: teage-liu_default
     heartbeat_interval_seconds: 10
     watchdog_backend: watchdog
     capabilities: [file_read, file_write]
@@ -2926,7 +2926,7 @@ multiagent:
 """,
         encoding="utf-8",
     )
-    os.environ["HERMES_BB_DIR"] = str(tmp_path / "blackboard")
+    os.environ["TEAGE_BB_DIR"] = str(tmp_path / "blackboard")
     config = load_config(str(config_path))
     assert config["multiagent"]["enabled"] is True
     assert config["multiagent"]["role"] == "worker"
@@ -2980,7 +2980,7 @@ def test_config_to_components_includes_multiagent():
 
 def test_container_registers_multiagent_components(tmp_path: Path):
     """Container 应能注册 multiagent 组件。"""
-    os.environ["HERMES_BB_DIR"] = str(tmp_path / "blackboard")
+    os.environ["TEAGE_BB_DIR"] = str(tmp_path / "blackboard")
     config = {
         "multiagent": {
             "enabled": True,
@@ -2993,13 +2993,13 @@ def test_container_registers_multiagent_components(tmp_path: Path):
     }
     container = Container(config)
     # 注册 multiagent 组件
-    from hermes.multiagent.blackboard import atomic_write, validate_path_safety
-    from hermes.multiagent.schema_validator import SchemaValidator
-    from hermes.multiagent.file_lock import LockManager
-    from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-    from hermes.multiagent.agent_registry import AgentRegistry
-    from hermes.multiagent.watchdog_watcher import WatchdogWatcher
-    from hermes.multiagent.recovery import RecoveryCoordinator
+    from teage_liu.multiagent.blackboard import atomic_write, validate_path_safety
+    from teage_liu.multiagent.schema_validator import SchemaValidator
+    from teage_liu.multiagent.file_lock import LockManager
+    from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+    from teage_liu.multiagent.agent_registry import AgentRegistry
+    from teage_liu.multiagent.watchdog_watcher import WatchdogWatcher
+    from teage_liu.multiagent.recovery import RecoveryCoordinator
 
     bb_root = Path(config["multiagent"]["blackboard_dir"])
     bb_root.mkdir(parents=True, exist_ok=True)
@@ -3024,14 +3024,14 @@ def test_container_registers_multiagent_components(tmp_path: Path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_config_integration.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_config_integration.py -v`
 Expected: FAIL (multiagent 段未在 CONFIG_TO_COMPONENTS)
 
 - [ ] **Step 3: Write minimal implementation**
 
-Modify `hermes/config_helpers.py` — 在 `_validate_config_schema` 函数的段类型校验元组中新增 'multiagent'（查找现有元组并追加）。在 `_RESTART_REQUIRED_KEYS` set 中新增 `"multiagent.blackboard_dir"`。
+Modify `teage_liu/config_helpers.py` — 在 `_validate_config_schema` 函数的段类型校验元组中新增 'multiagent'（查找现有元组并追加）。在 `_RESTART_REQUIRED_KEYS` set 中新增 `"multiagent.blackboard_dir"`。
 
-Modify `hermes/container.py` — 在 `CONFIG_TO_COMPONENTS` dict 中新增：
+Modify `teage_liu/container.py` — 在 `CONFIG_TO_COMPONENTS` dict 中新增：
 
 ```python
     "multiagent": [
@@ -3046,18 +3046,18 @@ Modify `hermes/container.py` — 在 `CONFIG_TO_COMPONENTS` dict 中新增：
     ],
 ```
 
-Modify `hermes/lifespan.py` — 在 `register_components` 后、触发工厂创建前，添加 multiagent 注册逻辑（仅 multiagent.enabled=true 时）：
+Modify `teage_liu/lifespan.py` — 在 `register_components` 后、触发工厂创建前，添加 multiagent 注册逻辑（仅 multiagent.enabled=true 时）：
 
 ```python
 # multiagent 组件注册（仅 enabled=true 时）
 if config.get("multiagent", {}).get("enabled", False):
     from pathlib import Path as _Path
-    from hermes.multiagent.schema_validator import SchemaValidator
-    from hermes.multiagent.file_lock import LockManager
-    from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-    from hermes.multiagent.agent_registry import AgentRegistry
-    from hermes.multiagent.watchdog_watcher import WatchdogWatcher
-    from hermes.multiagent.recovery import RecoveryCoordinator
+    from teage_liu.multiagent.schema_validator import SchemaValidator
+    from teage_liu.multiagent.file_lock import LockManager
+    from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+    from teage_liu.multiagent.agent_registry import AgentRegistry
+    from teage_liu.multiagent.watchdog_watcher import WatchdogWatcher
+    from teage_liu.multiagent.recovery import RecoveryCoordinator
 
     bb_root_str = config["multiagent"]["blackboard_dir"]
     # 解析环境变量占位符
@@ -3114,14 +3114,14 @@ if config.get("multiagent", {}).get("enabled", False):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_config_integration.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_config_integration.py -v`
 Expected: PASS (7 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
-git add hermes/config.py hermes/config_helpers.py hermes/container.py hermes/lifespan.py tests/multiagent/test_config_integration.py
+cd e:\Java\webser\web_app\webme\teage-liu
+git add teage_liu/config.py teage_liu/config_helpers.py teage_liu/container.py teage_liu/lifespan.py tests/multiagent/test_config_integration.py
 git commit -m "feat(multiagent): 配置与容器集成（Phase 1 Task 9）"
 ```
 
@@ -3150,12 +3150,12 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-from hermes.multiagent.blackboard import atomic_write
-from hermes.multiagent.file_lock import LockManager
-from hermes.multiagent.recovery import RecoveryCoordinator
-from hermes.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.blackboard import atomic_write
+from teage_liu.multiagent.file_lock import LockManager
+from teage_liu.multiagent.recovery import RecoveryCoordinator
+from teage_liu.multiagent.schema_validator import SchemaValidator
 
 
 @pytest.fixture
@@ -3321,8 +3321,8 @@ async def test_e2e_audit_corruption_recovery(e2e_setup):
 @pytest.mark.asyncio
 async def test_e2e_path_sandbox_all_rejected(e2e_setup):
     """路径沙箱测试：绝对路径 / .. 穿越 / symlink 全部拒绝。"""
-    from hermes.multiagent.blackboard import validate_path_safety
-    from hermes.multiagent.exceptions import PathSafetyError
+    from teage_liu.multiagent.blackboard import validate_path_safety
+    from teage_liu.multiagent.exceptions import PathSafetyError
 
     bb_root = e2e_setup["bb_root"]
 
@@ -3356,18 +3356,18 @@ async def aiofiles_open(path, mode):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/test_e2e_self_talk.py -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/test_e2e_self_talk.py -v`
 Expected: 部分测试可能因 fixture 问题失败，需调整
 
 - [ ] **Step 3: Fix any fixture issues and run all Phase 1 tests**
 
-Run: `cd e:\Java\webser\web_app\webme\hermes-lite && python -m pytest tests/multiagent/ -v`
+Run: `cd e:\Java\webser\web_app\webme\teage-liu && python -m pytest tests/multiagent/ -v`
 Expected: ALL PASS
 
 - [ ] **Step 4: Run Phase 1 验收脚本**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_blackboard.py -v
 python -m pytest tests/multiagent/test_schema_validator.py -v
 python -m pytest tests/multiagent/test_file_lock.py -v
@@ -3383,7 +3383,7 @@ Expected: 全部通过（100+ 测试用例）
 - [ ] **Step 5: Commit**
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 git add tests/multiagent/test_e2e_self_talk.py
 git commit -m "test(multiagent): Phase 1 端到端 self-talk 验收（Phase 1 Task 10）"
 ```

@@ -1,7 +1,7 @@
 # Plan 2: Phase 2 协作层（Director + Worker + ReactLoop 集成）
 
 > **依赖**：Plan 1 (Phase 1 基础层) Task 1-9 全部完成
-> **范围**：双实例本地协作（两个 hermes-lite 进程）+ 轮次/心跳/冲突仲裁/自治模式
+> **范围**：双实例本地协作（两个 teage-liu 进程）+ 轮次/心跳/冲突仲裁/自治模式
 > **退出条件**：双实例协作 30 分钟无 audit 损坏
 > **TDD 流程**：RED（pytest 失败）→ 验证失败 → GREEN（最小实现）→ 验证通过 → commit
 
@@ -11,7 +11,7 @@
 
 ### Goal
 
-在 Phase 1 基础层之上，实现 Director 引擎 + Worker 适配器 + ReactLoop 7 集成点 + 自治模式 + 信任分机制，使两个 hermes-lite 进程能在本地黑板目录上完成协作（轮次切换、心跳监测、冲突仲裁、Director 崩溃后 Worker 自治、Director 恢复后退出自治）。
+在 Phase 1 基础层之上，实现 Director 引擎 + Worker 适配器 + ReactLoop 7 集成点 + 自治模式 + 信任分机制，使两个 teage-liu 进程能在本地黑板目录上完成协作（轮次切换、心跳监测、冲突仲裁、Director 崩溃后 Worker 自治、Director 恢复后退出自治）。
 
 ### Architecture
 
@@ -47,8 +47,8 @@
 ### Tech Stack
 
 - **运行时**：Python 3.11+ + asyncio（全链路异步，对齐项目硬约束）
-- **DI 容器**：复用 `hermes/container.py`（CONFIG_TO_COMPONENTS 新增 multiagent 段映射）
-- **异常基类**：复用 `hermes/agent/tool_error.py` 的 `@dataclass(kw_only=True)` 风格
+- **DI 容器**：复用 `teage_liu/container.py`（CONFIG_TO_COMPONENTS 新增 multiagent 段映射）
+- **异常基类**：复用 `teage_liu/agent/tool_error.py` 的 `@dataclass(kw_only=True)` 风格
 - **文件锁**：portalocker（Plan 1 Task 4 已引入）
 - **文件监听**：watchdog（Plan 1 Task 7 已引入）
 - **签名验证**：cryptography（Plan 1 Task 1 已引入，ed25519 算法）
@@ -81,14 +81,14 @@
 ### 新建文件（5 个）
 
 ```
-hermes-lite/
-├── hermes/multiagent/
+teage-liu/
+├── teage_liu/multiagent/
 │   ├── director.py                    # Director 引擎（DirectorEngine + DirectorHealthMonitor + SignatureVerifier）
 │   ├── worker_adapter.py              # Worker 适配器（WorkerAdapter + AutonomousModeController）
 │   ├── injection_isolator.py          # LLM 注入隔离（InjectionIsolator）
 │   ├── turn_manager.py                # 轮次管理（TurnManager + 派生文件 flush）
 │   └── trust_score.py                 # 信任分管理（TrustScoreManager）
-├── hermes/multiagent/schemas/
+├── teage_liu/multiagent/schemas/
 │   ├── messages-pending-v1.json       # messages.pending.md schema
 │   └── messages-replay-candidates-v1.json  # messages.replay_candidates.md schema
 ├── tests/multiagent/
@@ -105,16 +105,16 @@ hermes-lite/
 ### 修改文件（7 个）
 
 ```
-hermes-lite/
-├── hermes/agent/react_loop.py         # 新增 7 集成点方法
-├── hermes/agent/tool_executor.py      # 新增 evaluate_policy（capabilities 校验下沉）
-├── hermes/agent/session_manager.py    # 新增 _multiagent_hooks 机制
-├── hermes/multiagent/exceptions.py    # 新增 DirectorSignatureError + VerifyResult
-├── hermes/multiagent/blackboard.py    # 新增 read_director_md / append_pending_message / append_replay_candidate
-├── hermes/multiagent/agent_registry.py  # 扩展 register/unregister 支持信任分
-├── hermes/container.py                # CONFIG_TO_COMPONENTS 新增 director_engine/worker_adapter/turn_manager/trust_score/injection_isolator
-├── hermes/lifespan.py                 # 注册 Director/Worker 组件 + 启动后台任务
-└── hermes/multiagent/schemas/director-v1.json  # 新增 trust_policy / fallback_strategy / degraded_threshold 字段
+teage-liu/
+├── teage_liu/agent/react_loop.py         # 新增 7 集成点方法
+├── teage_liu/agent/tool_executor.py      # 新增 evaluate_policy（capabilities 校验下沉）
+├── teage_liu/agent/session_manager.py    # 新增 _multiagent_hooks 机制
+├── teage_liu/multiagent/exceptions.py    # 新增 DirectorSignatureError + VerifyResult
+├── teage_liu/multiagent/blackboard.py    # 新增 read_director_md / append_pending_message / append_replay_candidate
+├── teage_liu/multiagent/agent_registry.py  # 扩展 register/unregister 支持信任分
+├── teage_liu/container.py                # CONFIG_TO_COMPONENTS 新增 director_engine/worker_adapter/turn_manager/trust_score/injection_isolator
+├── teage_liu/lifespan.py                 # 注册 Director/Worker 组件 + 启动后台任务
+└── teage_liu/multiagent/schemas/director-v1.json  # 新增 trust_policy / fallback_strategy / degraded_threshold 字段
 ```
 
 ---
@@ -132,9 +132,9 @@ import pytest
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from hermes.multiagent.director import DirectorEngine, DirectorHealthState
-from hermes.multiagent.blackboard import Blackboard
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.director import DirectorEngine, DirectorHealthState
+from teage_liu.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.exceptions import (
     DirectorSignatureError,
     VerifyResult,
     LockAcquisitionError,
@@ -224,7 +224,7 @@ class TestDirectorEngineStartup:
     async def test_director_hard_timeout_preempt(self, bb_root: Path, director_config):
         """硬超时强抢：fcntl 失败 + tick age > 2×timeout 时强制接管。"""
         # 模拟原 Director 已死（写入过期的 last_director_tick）
-        from hermes.multiagent.blackboard import atomic_write
+        from teage_liu.multiagent.blackboard import atomic_write
         director_md_path = bb_root / "director.md"
         stale_tick = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
         content = f"""---
@@ -305,7 +305,7 @@ class TestDirectorWorkerHeartbeatCheck:
         await engine.start()
 
         # 注册一个 Worker，心跳延迟
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register(
             agent_id="worker_001",
@@ -328,8 +328,8 @@ class TestDirectorWorkerHeartbeatCheck:
         engine = DirectorEngine(bb_root, director_config, agent_id="director_001")
         await engine.start()
 
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.file_lock import LockManager
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.file_lock import LockManager
         registry = AgentRegistry(bb_root)
         await registry.register(
             agent_id="worker_001",
@@ -366,7 +366,7 @@ class TestDirectorTurnManagement:
         await engine.start()
 
         # 注册两个 Worker
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_a", "worker", ["file_read"], 10)
         await registry.register("worker_b", "worker", ["file_read"], 10)
@@ -387,7 +387,7 @@ class TestDirectorTurnManagement:
         engine = DirectorEngine(bb_root, director_config, agent_id="director_001")
         await engine.start()
 
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_a", "worker", ["file_read"], 10)
         await registry.register("worker_b", "worker", ["file_read"], 10)
@@ -413,7 +413,7 @@ class TestDirectorSignatureVerifier:
 
     async def test_signature_verify_ok(self, bb_root: Path, director_config, tmp_path):
         """签名验证通过 → VerifyResult.ok。"""
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.director import SignatureVerifier
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives import serialization
 
@@ -449,7 +449,7 @@ class TestDirectorSignatureVerifier:
 
     async def test_signature_verify_failed_single_degraded(self, bb_root: Path, director_config):
         """签名验证失败（单次）→ degraded。"""
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.director import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="invalid_key")
 
@@ -461,7 +461,7 @@ class TestDirectorSignatureVerifier:
 
     async def test_signature_verify_failed_3_times_distrust(self, bb_root: Path, director_config):
         """连续 3 次失败 → distrust。"""
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.director import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="invalid_key")
 
@@ -475,7 +475,7 @@ class TestDirectorSignatureVerifier:
 
     async def test_signature_missing_soft_constraint(self, bb_root: Path, director_config):
         """无签名字段 → degraded（软约束，兼容未实现签名的 Director）。"""
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.director import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="some_key")
         status = {"epoch": 1}  # 无 director_signature 字段
@@ -486,7 +486,7 @@ class TestDirectorSignatureVerifier:
 
     async def test_signature_failure_count_reset_on_success(self, bb_root: Path, director_config, tmp_path):
         """验证通过后重置失败计数。"""
-        from hermes.multiagent.director import SignatureVerifier
+        from teage_liu.multiagent.director import SignatureVerifier
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives import serialization
 
@@ -522,14 +522,14 @@ class TestDirectorSignatureVerifier:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_director.py -v
 # 预期：全部失败（DirectorEngine / SignatureVerifier 未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/director.py`：
+创建 `teage_liu/multiagent/director.py`：
 
 ```python
 """Director 引擎：协议执行者 + 心跳监督 + 轮次推进 + LLM 仲裁 + 信任分管理。
@@ -555,7 +555,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidSignature
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     atomic_write,
     read_json,
@@ -564,7 +564,7 @@ from hermes.multiagent.blackboard import (
     read_director_md,
     append_message,
 )
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.exceptions import (
     LockAcquisitionError,
     DirectorSignatureError,
     VerifyResult,
@@ -923,7 +923,7 @@ class DirectorEngine:
 
     async def _check_worker_heartbeats(self) -> None:
         """监督 Worker 心跳，标记 degraded/offline + 强制释放锁。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(self._bb_root)
         agents = await registry.list_active_agents()
 
@@ -973,7 +973,7 @@ class DirectorEngine:
 
     async def _force_release_locks_for(self, agent_id: str) -> None:
         """强制释放 agent 持有的所有锁。"""
-        from hermes.multiagent.file_lock import LockManager
+        from teage_liu.multiagent.file_lock import LockManager
         lock_manager = LockManager(self._bb_root, agent_id=self._agent_id)
         status = await read_json(self._bb_root / "status.json")
         locks = status.get("locks", {})
@@ -1100,7 +1100,7 @@ def _parse_iso(iso_str: str) -> datetime:
     return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
 ```
 
-更新 `hermes/multiagent/exceptions.py`（追加到 Plan 1 已有的文件末尾）：
+更新 `teage_liu/multiagent/exceptions.py`（追加到 Plan 1 已有的文件末尾）：
 
 ```python
 # =============================================================================
@@ -1137,7 +1137,7 @@ class DirectorSignatureError(MultiAgentError):
         super().__post_init__()
 ```
 
-更新 `hermes/multiagent/blackboard.py`（新增 read_director_md / append_message 函数）：
+更新 `teage_liu/multiagent/blackboard.py`（新增 read_director_md / append_message 函数）：
 
 ```python
 async def read_director_md(bb_root: Path) -> dict | None:
@@ -1162,7 +1162,7 @@ async def append_message(bb_root: Path, message: dict) -> None:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_director.py -v
 # 预期：全部通过
 ```
@@ -1170,7 +1170,7 @@ python -m pytest tests/multiagent/test_director.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/director.py hermes/multiagent/exceptions.py hermes/multiagent/blackboard.py tests/multiagent/test_director.py
+git add teage_liu/multiagent/director.py teage_liu/multiagent/exceptions.py teage_liu/multiagent/blackboard.py tests/multiagent/test_director.py
 git commit -m "feat(multiagent): Task 1 Director 引擎核心（启动互斥锁+Epoch+心跳监督+轮次推进+签名验证）"
 ```
 
@@ -1189,9 +1189,9 @@ import pytest
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from hermes.multiagent.worker_adapter import WorkerAdapter, AutonomousModeController
-from hermes.multiagent.blackboard import Blackboard, atomic_write
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.worker_adapter import WorkerAdapter, AutonomousModeController
+from teage_liu.multiagent.blackboard import Blackboard, atomic_write
+from teage_liu.multiagent.exceptions import (
     DirectorUnavailableError,
     NotMyTurnError,
 )
@@ -1236,7 +1236,7 @@ class TestWorkerRegistration:
         card_path = bb_root / "agents" / "worker_001.md"
         assert card_path.exists()
 
-        from hermes.multiagent.blackboard import read_yaml_frontmatter
+        from teage_liu.multiagent.blackboard import read_yaml_frontmatter
         card = await read_yaml_frontmatter(card_path)
         assert card["agent_id"] == "worker_001"
         assert card["role"] == "worker"
@@ -1250,7 +1250,7 @@ class TestWorkerRegistration:
         adapter = WorkerAdapter(bb_root, worker_config, agent_id="worker_001")
         await adapter.start()
 
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         register_audits = [r for r in records if r.get("action") == "register"]
         assert len(register_audits) >= 1
@@ -1267,7 +1267,7 @@ class TestWorkerRegistration:
         # 等待 2 次心跳
         await asyncio.sleep(0.25)
 
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         agents = await registry.list_active_agents()
         worker = next(a for a in agents if a["agent_id"] == "worker_001")
@@ -1283,25 +1283,25 @@ class TestWorkerRegistration:
         await adapter.start()
 
         # 获取一个锁
-        from hermes.multiagent.file_lock import LockManager
+        from teage_liu.multiagent.file_lock import LockManager
         lock_manager = LockManager(bb_root, agent_id="worker_001")
         await lock_manager.acquire("messages", holder="worker_001", ttl_seconds=30)
 
         await adapter.stop()  # 优雅退出
 
         # 锁应已释放
-        from hermes.multiagent.blackboard import read_json
+        from teage_liu.multiagent.blackboard import read_json
         status = await read_json(bb_root / "status.json")
         assert "messages" not in status.get("locks", {}) or \
                status["locks"]["messages"].get("holder") != "worker_001"
 
         # agent_card.status 应为 offline
-        from hermes.multiagent.blackboard import read_yaml_frontmatter
+        from teage_liu.multiagent.blackboard import read_yaml_frontmatter
         card = await read_yaml_frontmatter(bb_root / "agents" / "worker_001.md")
         assert card["status"] == "offline"
 
         # audit 应有 leave 记录
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         leave_audits = [r for r in records if r.get("action") == "leave"]
         assert len(leave_audits) >= 1
@@ -1349,7 +1349,7 @@ heartbeat:
         adapter._autonomous_epoch = 1
 
         # 模拟 Director 写入（epoch=1，与自治期相同）
-        from hermes.multiagent.blackboard import cas_write_status
+        from teage_liu.multiagent.blackboard import cas_write_status
         status = await adapter._read_status()
         status["current_turn"] = {"agent_id": "worker_002", "epoch": 1}
 
@@ -1439,7 +1439,7 @@ heartbeat:
         await adapter.start()
 
         # 注册多个 Worker
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
         await registry.register("worker_002", "worker", ["file_read"], 10)
@@ -1464,7 +1464,7 @@ class TestWorkerTurnCheck:
         await adapter.start()
 
         # 设置 freeform 模式
-        from hermes.multiagent.blackboard import atomic_write
+        from teage_liu.multiagent.blackboard import atomic_write
         director_md_path = bb_root / "director.md"
         content = """---
 director_id: director_001
@@ -1491,7 +1491,7 @@ heartbeat:
         await adapter.start()
 
         # 设置 round_robin 模式，当前轮次是 worker_002
-        from hermes.multiagent.blackboard import atomic_write, cas_write_status, read_json
+        from teage_liu.multiagent.blackboard import atomic_write, cas_write_status, read_json
         director_md_path = bb_root / "director.md"
         content = """---
 director_id: director_001
@@ -1532,7 +1532,7 @@ heartbeat:
         adapter = WorkerAdapter(bb_root, worker_config, agent_id="worker_001")
         await adapter.start()
 
-        from hermes.multiagent.blackboard import atomic_write, cas_write_status, read_json
+        from teage_liu.multiagent.blackboard import atomic_write, cas_write_status, read_json
         director_md_path = bb_root / "director.md"
         content = """---
 director_id: director_001
@@ -1565,14 +1565,14 @@ heartbeat:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_worker_adapter.py -v
 # 预期：全部失败（WorkerAdapter 未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/worker_adapter.py`：
+创建 `teage_liu/multiagent/worker_adapter.py`：
 
 ```python
 """Worker 适配器：注册流程 + 心跳上报 + 优雅退出 + 自治模式。
@@ -1592,7 +1592,7 @@ from typing import Any
 
 import yaml
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     atomic_write,
     read_json,
@@ -1601,7 +1601,7 @@ from hermes.multiagent.blackboard import (
     append_audit,
     append_message,
 )
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.exceptions import (
     DirectorUnavailableError,
     NotMyTurnError,
     LockAcquisitionError,
@@ -2015,7 +2015,7 @@ class WorkerAdapter:
 
     async def _get_autonomous_current_turn(self) -> str:
         """获取自治模式当前轮次（时间片轮转）。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(self._bb_root)
         agents = await registry.list_active_agents()
         active_agent_ids = sorted([a["agent_id"] for a in agents if a["status"] == "active"])
@@ -2030,7 +2030,7 @@ class WorkerAdapter:
 
     async def _release_my_locks(self) -> None:
         """释放所有持有的锁。"""
-        from hermes.multiagent.file_lock import LockManager
+        from teage_liu.multiagent.file_lock import LockManager
         lock_manager = LockManager(self._bb_root, agent_id=self._agent_id)
         status = await read_json(self._bb_root / "status.json")
         locks = status.get("locks", {})
@@ -2099,7 +2099,7 @@ def _parse_iso(iso_str: str) -> datetime:
     return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
 ```
 
-更新 `hermes/multiagent/blackboard.py`（新增 read_audit_records 函数）：
+更新 `teage_liu/multiagent/blackboard.py`（新增 read_audit_records 函数）：
 
 ```python
 async def read_audit_records(bb_root: Path) -> list[dict]:
@@ -2125,7 +2125,7 @@ async def read_audit_records(bb_root: Path) -> list[dict]:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_worker_adapter.py -v
 # 预期：全部通过
 ```
@@ -2133,7 +2133,7 @@ python -m pytest tests/multiagent/test_worker_adapter.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/worker_adapter.py hermes/multiagent/blackboard.py tests/multiagent/test_worker_adapter.py
+git add teage_liu/multiagent/worker_adapter.py teage_liu/multiagent/blackboard.py tests/multiagent/test_worker_adapter.py
 git commit -m "feat(multiagent): Task 2 Worker 适配器（注册+心跳+优雅退出+自治模式+轮次校验）"
 ```
 
@@ -2150,8 +2150,8 @@ git commit -m "feat(multiagent): Task 2 Worker 适配器（注册+心跳+优雅�
 import pytest
 from pathlib import Path
 
-from hermes.multiagent.injection_isolator import InjectionIsolator
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.injection_isolator import InjectionIsolator
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest.fixture
@@ -2256,7 +2256,7 @@ class TestInjectionIsolator:
 
         await isolator.scan_and_tag(message)
 
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         injection_audits = [
             r for r in records
@@ -2275,7 +2275,7 @@ class TestInjectionIsolator:
 
         await isolator.scan_and_tag(message)
 
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         truncation_audits = [
             r for r in records
@@ -2335,14 +2335,14 @@ class TestInjectionIsolator:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_injection_isolator.py -v
 # 预期：全部失败（InjectionIsolator 未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/injection_isolator.py`：
+创建 `teage_liu/multiagent/injection_isolator.py`：
 
 ```python
 """LLM 注入隔离：标记 + 分级响应，不拒绝写入。
@@ -2364,7 +2364,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from hermes.multiagent.blackboard import append_audit
+from teage_liu.multiagent.blackboard import append_audit
 
 logger = logging.getLogger(__name__)
 
@@ -2475,7 +2475,7 @@ def _now_iso() -> str:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_injection_isolator.py -v
 # 预期：全部通过
 ```
@@ -2483,7 +2483,7 @@ python -m pytest tests/multiagent/test_injection_isolator.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/injection_isolator.py tests/multiagent/test_injection_isolator.py
+git add teage_liu/multiagent/injection_isolator.py tests/multiagent/test_injection_isolator.py
 git commit -m "feat(multiagent): Task 3 LLM 注入隔离（InjectionIsolator 软约束+分级响应）"
 ```
 
@@ -2500,8 +2500,8 @@ git commit -m "feat(multiagent): Task 3 LLM 注入隔离（InjectionIsolator 软
 import pytest
 from pathlib import Path
 
-from hermes.multiagent.turn_manager import TurnManager
-from hermes.multiagent.blackboard import Blackboard, atomic_write
+from teage_liu.multiagent.turn_manager import TurnManager
+from teage_liu.multiagent.blackboard import Blackboard, atomic_write
 
 
 @pytest.fixture
@@ -2604,7 +2604,7 @@ hello
         manager = TurnManager(bb_root, agent_id="director_001", epoch=1)
         await manager.flush_pending_messages(target_agent_id="worker_001")
 
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         flush_audits = [
             r for r in records
@@ -2712,14 +2712,14 @@ spam message
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_turn_manager.py -v
 # 预期：全部失败（TurnManager 未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/turn_manager.py`：
+创建 `teage_liu/multiagent/turn_manager.py`：
 
 ```python
 """轮次管理 + 派生文件 flush。
@@ -2744,7 +2744,7 @@ from typing import Any
 import aiofiles
 import yaml
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     atomic_write,
     read_yaml_frontmatter,
     append_audit,
@@ -2996,7 +2996,7 @@ def _now_iso() -> str:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_turn_manager.py -v
 # 预期：全部通过
 ```
@@ -3004,7 +3004,7 @@ python -m pytest tests/multiagent/test_turn_manager.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/turn_manager.py tests/multiagent/test_turn_manager.py
+git add teage_liu/multiagent/turn_manager.py tests/multiagent/test_turn_manager.py
 git commit -m "feat(multiagent): Task 4 轮次管理+派生文件 flush（pending/replay_candidates）"
 ```
 
@@ -3021,8 +3021,8 @@ git commit -m "feat(multiagent): Task 4 轮次管理+派生文件 flush（pendin
 import pytest
 from pathlib import Path
 
-from hermes.multiagent.trust_score import TrustScoreManager
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.trust_score import TrustScoreManager
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest.fixture
@@ -3048,7 +3048,7 @@ class TestTrustScoreManager:
 
     async def test_initial_score_100(self, bb_root: Path, trust_config):
         """新 agent 初始信任分 100。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3058,7 +3058,7 @@ class TestTrustScoreManager:
 
     async def test_apply_delta_positive(self, bb_root: Path, trust_config):
         """正向调整（信任分增加）。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3068,7 +3068,7 @@ class TestTrustScoreManager:
 
     async def test_apply_delta_negative(self, bb_root: Path, trust_config):
         """负向调整（信任分减少）。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3078,7 +3078,7 @@ class TestTrustScoreManager:
 
     async def test_apply_delta_max_single_delta_limit(self, bb_root: Path, trust_config):
         """单次裁定最大扣分限制（max_single_delta=5）。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3089,7 +3089,7 @@ class TestTrustScoreManager:
 
     async def test_apply_delta_clamp_to_0_100(self, bb_root: Path, trust_config):
         """信任分范围 [0, 100]。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3123,7 +3123,7 @@ class TestTrustScoreManager:
 
     async def test_degraded_threshold_triggers_status_change(self, bb_root: Path, trust_config):
         """信任分低于 degraded_threshold → 标记 agent degraded。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3139,7 +3139,7 @@ class TestTrustScoreManager:
 
     async def test_rejected_threshold_triggers_status_change(self, bb_root: Path, trust_config):
         """信任分低于 rejected_threshold → 标记 agent rejected。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3155,7 +3155,7 @@ class TestTrustScoreManager:
 
     async def test_force_offline_threshold_triggers_offline(self, bb_root: Path, trust_config):
         """信任分低于 force_offline_threshold → 强制下线。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
@@ -3171,14 +3171,14 @@ class TestTrustScoreManager:
 
     async def test_apply_delta_writes_audit(self, bb_root: Path, trust_config):
         """信任分调整时写 audit。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_001", "worker", ["file_read"], 10)
 
         manager = TrustScoreManager(bb_root, trust_config)
         await manager.apply_delta("worker_001", delta=-3, reason="minor_violation")
 
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.blackboard import read_audit_records
         records = await read_audit_records(bb_root)
         trust_audits = [
             r for r in records
@@ -3193,14 +3193,14 @@ class TestTrustScoreManager:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_trust_score.py -v
 # 预期：全部失败（TrustScoreManager 未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/trust_score.py`：
+创建 `teage_liu/multiagent/trust_score.py`：
 
 ```python
 """信任分管理：初始 100，单次裁定最大扣分 5，阈值触发状态降级。
@@ -3222,7 +3222,7 @@ from pathlib import Path
 
 import yaml
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     atomic_write,
     read_yaml_frontmatter,
     append_audit,
@@ -3343,7 +3343,7 @@ def _now_iso() -> str:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_trust_score.py -v
 # 预期：全部通过
 ```
@@ -3351,7 +3351,7 @@ python -m pytest tests/multiagent/test_trust_score.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/trust_score.py tests/multiagent/test_trust_score.py
+git add teage_liu/multiagent/trust_score.py tests/multiagent/test_trust_score.py
 git commit -m "feat(multiagent): Task 5 信任分管理（TrustScoreManager 阈值降级+单次扣分限制）"
 ```
 
@@ -3369,8 +3369,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from hermes.multiagent.injection_isolator import InjectionIsolator
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.injection_isolator import InjectionIsolator
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest.fixture
@@ -3405,12 +3405,12 @@ class TestIntegration1SystemPrompt:
 
     async def test_build_multiagent_prompt_includes_active_agents(self, bb_root: Path, multiagent_config):
         """system prompt 包含 active_agents 列表。"""
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
         adapter = WorkerAdapter(bb_root, multiagent_config, agent_id="worker_001")
         await adapter.start()
 
         # 注册另一个 agent
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         await registry.register("worker_002", "worker", ["file_read"], 10)
 
@@ -3423,7 +3423,7 @@ class TestIntegration1SystemPrompt:
 
     async def test_build_multiagent_prompt_includes_director_rules(self, bb_root: Path, multiagent_config):
         """system prompt 包含 director.md 规则段。"""
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
         adapter = WorkerAdapter(bb_root, multiagent_config, agent_id="worker_001")
         await adapter.start()
 
@@ -3434,7 +3434,7 @@ class TestIntegration1SystemPrompt:
 
     async def test_build_multiagent_prompt_includes_current_turn(self, bb_root: Path, multiagent_config):
         """system prompt 包含当前轮次。"""
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
         adapter = WorkerAdapter(bb_root, multiagent_config, agent_id="worker_001")
         await adapter.start()
 
@@ -3446,7 +3446,7 @@ class TestIntegration1SystemPrompt:
 
     async def test_build_multiagent_prompt_includes_protocol_constraints(self, bb_root: Path, multiagent_config):
         """system prompt 包含协议约束（锁/audit/路径沙箱/注入隔离）。"""
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
         adapter = WorkerAdapter(bb_root, multiagent_config, agent_id="worker_001")
         await adapter.start()
 
@@ -3464,7 +3464,7 @@ class TestIntegration2CapabilitiesCheck:
 
     async def test_evaluate_policy_rejects_undeclared_tool(self, bb_root: Path, multiagent_config):
         """调用未声明的工具 → CapabilityNotInCardError。"""
-        from hermes.multiagent.exceptions import CapabilityNotInCardError
+        from teage_liu.multiagent.exceptions import CapabilityNotInCardError
 
         # 模拟 ToolExecutor
         class MockToolExecutor:
@@ -3487,7 +3487,7 @@ class TestIntegration2CapabilitiesCheck:
 
     async def test_evaluate_policy_allows_declared_tool(self, bb_root: Path, multiagent_config):
         """调用已声明的工具 → 通过。"""
-        from hermes.multiagent.exceptions import CapabilityNotInCardError
+        from teage_liu.multiagent.exceptions import CapabilityNotInCardError
 
         class MockToolExecutor:
             def __init__(self):
@@ -3513,7 +3513,7 @@ class TestIntegration3_4SessionHooks:
 
     async def test_session_manager_add_multiagent_hook(self, bb_root: Path, multiagent_config):
         """SessionManager.add_multiagent_hook 注册钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
         sm = SessionManager(MagicMock())
 
         on_start = AsyncMock()
@@ -3525,7 +3525,7 @@ class TestIntegration3_4SessionHooks:
 
     async def test_session_create_calls_on_start_hooks(self, bb_root: Path, multiagent_config):
         """create_session 时调用 on_start 钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
         sm = SessionManager(MagicMock())
 
         on_start = AsyncMock()
@@ -3540,7 +3540,7 @@ class TestIntegration3_4SessionHooks:
 
     async def test_session_destroy_calls_on_end_hooks(self, bb_root: Path, multiagent_config):
         """destroy_session 时调用 on_end 钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
         sm = SessionManager(MagicMock())
 
         on_start = AsyncMock()
@@ -3601,14 +3601,14 @@ class TestIntegration7InjectionIsolation:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_react_loop_integration.py -v
 # 预期：部分失败（SessionManager._multiagent_hooks 未实现）
 ```
 
 ### GREEN：最小实现
 
-修改 `hermes/agent/session_manager.py`（新增 `_multiagent_hooks` 机制）：
+修改 `teage_liu/agent/session_manager.py`（新增 `_multiagent_hooks` 机制）：
 
 ```python
 # 在 SessionManager.__init__ 中新增
@@ -3639,7 +3639,7 @@ class SessionManager:
         await self._destroy_session_internal(session_id, ...)
 ```
 
-修改 `hermes/agent/tool_executor.py`（新增 evaluate_policy 方法）：
+修改 `teage_liu/agent/tool_executor.py`（新增 evaluate_policy 方法）：
 
 ```python
 class ToolExecutor:
@@ -3651,7 +3651,7 @@ class ToolExecutor:
         """评估工具调用策略（multiagent capabilities 校验 + policy_engine）。"""
         # multiagent capabilities 校验（在 policy_engine 之前）
         if self._multiagent_state and tool_name not in self._multiagent_state.worker_capabilities:
-            from hermes.multiagent.exceptions import CapabilityNotInCardError
+            from teage_liu.multiagent.exceptions import CapabilityNotInCardError
             raise CapabilityNotInCardError(
                 tool_name=tool_name,
                 agent_id=self._multiagent_state.agent_id,
@@ -3661,13 +3661,13 @@ class ToolExecutor:
         # ...
 ```
 
-在 `hermes/multiagent/worker_adapter.py` 中新增 `_build_multiagent_prompt` 方法：
+在 `teage_liu/multiagent/worker_adapter.py` 中新增 `_build_multiagent_prompt` 方法：
 
 ```python
 async def _build_multiagent_prompt(self) -> str:
     """构建多 agent 协作 system prompt 段。"""
-    from hermes.multiagent.agent_registry import AgentRegistry
-    from hermes.multiagent.blackboard import read_director_md, read_json
+    from teage_liu.multiagent.agent_registry import AgentRegistry
+    from teage_liu.multiagent.blackboard import read_director_md, read_json
 
     registry = AgentRegistry(self._bb_root)
     active_agents = await registry.list_active_agents()
@@ -3684,7 +3684,7 @@ async def _build_multiagent_prompt(self) -> str:
 
     return f"""# Multi-Agent Collaboration Context
 
-You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
+You are participating in a Teage Multi-Agent Protocol v1.0 blackboard.
 
 ## Active Agents
 {agents_str}
@@ -3708,7 +3708,7 @@ You are participating in a Hermes Multi-Agent Protocol v1.0 blackboard.
 """
 ```
 
-修改 `hermes/agent/react_loop.py`（在 ReactLoop 中调用 `_build_multiagent_prompt` 和 InjectionIsolator）：
+修改 `teage_liu/agent/react_loop.py`（在 ReactLoop 中调用 `_build_multiagent_prompt` 和 InjectionIsolator）：
 
 ```python
 class ReactLoop:
@@ -3716,7 +3716,7 @@ class ReactLoop:
         # ... 现有初始化 ...
         self._multiagent_state = multiagent_state
         if multiagent_state:
-            from hermes.multiagent.injection_isolator import InjectionIsolator
+            from teage_liu.multiagent.injection_isolator import InjectionIsolator
             self._injection_isolator = InjectionIsolator(multiagent_state.bb_root)
         else:
             self._injection_isolator = None
@@ -3737,7 +3737,7 @@ class ReactLoop:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_react_loop_integration.py -v
 # 预期：全部通过
 ```
@@ -3745,7 +3745,7 @@ python -m pytest tests/multiagent/test_react_loop_integration.py -v
 ### commit
 
 ```bash
-git add hermes/agent/session_manager.py hermes/agent/tool_executor.py hermes/agent/react_loop.py hermes/multiagent/worker_adapter.py tests/multiagent/test_react_loop_integration.py
+git add teage_liu/agent/session_manager.py teage_liu/agent/tool_executor.py teage_liu/agent/react_loop.py teage_liu/multiagent/worker_adapter.py tests/multiagent/test_react_loop_integration.py
 git commit -m "feat(multiagent): Task 6 ReactLoop 7 集成点（system prompt/capabilities/session hook/turn check/heartbeat/injection）"
 ```
 
@@ -3764,10 +3764,10 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from hermes.multiagent.blackboard import Blackboard
-from hermes.multiagent.worker_adapter import WorkerAdapter
-from hermes.multiagent.director import DirectorEngine
-from hermes.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.worker_adapter import WorkerAdapter
+from teage_liu.multiagent.director import DirectorEngine
+from teage_liu.multiagent.agent_registry import AgentRegistry
 
 
 @pytest.fixture
@@ -3846,7 +3846,7 @@ class TestAutonomousEntry:
         await adapter.start()
 
         # 模拟多个 pending 消息
-        from hermes.multiagent.blackboard import atomic_write
+        from teage_liu.multiagent.blackboard import atomic_write
         import yaml
         pending_path = bb_root / "messages.pending.md"
         records = [
@@ -3864,7 +3864,7 @@ class TestAutonomousEntry:
         await adapter._autonomous_controller.flush_all_pending(bb_root)
 
         # 验证 messages.md 按 FIFO 顺序
-        from hermes.multiagent.blackboard import read_messages
+        from teage_liu.multiagent.blackboard import read_messages
         msgs = await read_messages(bb_root)
         assert len(msgs) >= 2
         assert msgs[0]["from"] == "worker_001"
@@ -3959,14 +3959,14 @@ class TestAutonomousTurnPolicy:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_autonomous_integration.py -v
 # 预期：全部失败（AutonomousModeController 未实现 advance_turn / flush_all_pending）
 ```
 
 ### GREEN：最小实现
 
-在 `hermes/multiagent/worker_adapter.py` 中扩展 `AutonomousModeController`：
+在 `teage_liu/multiagent/worker_adapter.py` 中扩展 `AutonomousModeController`：
 
 ```python
 class AutonomousModeController:
@@ -3982,7 +3982,7 @@ class AutonomousModeController:
 
     async def get_current_turn(self) -> str:
         """获取当前轮到的 agent（时间片轮转）。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(self._bb_root)
         agents = await registry.list_active_agents()
         if not agents:
@@ -3992,7 +3992,7 @@ class AutonomousModeController:
 
     async def advance_turn(self, bb_root: Path) -> None:
         """推进轮次到下一个 agent。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         agents = await registry.list_active_agents()
         if agents:
@@ -4002,11 +4002,11 @@ class AutonomousModeController:
 
     async def flush_all_pending(self, bb_root: Path) -> int:
         """自治模式下 flush 所有 pending 消息（FIFO 顺序）。"""
-        from hermes.multiagent.turn_manager import TurnManager
+        from teage_liu.multiagent.turn_manager import TurnManager
         tm = TurnManager(bb_root, epoch=0, agent_id=self._agent_id)
         # flush 所有 agent 的 pending（不限定 target）
         total = 0
-        from hermes.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.agent_registry import AgentRegistry
         registry = AgentRegistry(bb_root)
         agents = await registry.list_active_agents()
         for a in agents:
@@ -4068,7 +4068,7 @@ async def _check_director_recovery(self) -> None:
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_autonomous_integration.py -v
 # 预期：全部通过
 ```
@@ -4076,20 +4076,20 @@ python -m pytest tests/multiagent/test_autonomous_integration.py -v
 ### commit
 
 ```bash
-git add hermes/multiagent/worker_adapter.py tests/multiagent/test_autonomous_integration.py
+git add teage_liu/multiagent/worker_adapter.py tests/multiagent/test_autonomous_integration.py
 git commit -m "feat(multiagent): Task 7 自治模式集成（时间片轮转+FIFO+二次确认退出+回滚）"
 ```
 
 ---
 
-## Task 8: 端到端双实例测试（两个 hermes-lite 进程协作 30 分钟）
+## Task 8: 端到端双实例测试（两个 teage-liu 进程协作 30 分钟）
 
 ### RED：编写失败测试
 
 创建 `tests/multiagent/test_e2e_dual_instance.py`：
 
 ```python
-"""端到端双实例测试：两个 hermes-lite 进程通过 blackboard 协作。
+"""端到端双实例测试：两个 teage-liu 进程通过 blackboard 协作。
 
 测试场景：
 1. Director 进程 + Worker 进程同时启动
@@ -4129,11 +4129,11 @@ class TestEndToEndDualInstance:
         # 启动 Director 进程
         director_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.director_cli",
+                sys.executable, "-m", "teage_liu.multiagent.director_cli",
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
-            env={**os.environ, "HERMES_ROLE": "director"},
+            env={**os.environ, "TEAGE_ROLE": "director"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -4141,11 +4141,11 @@ class TestEndToEndDualInstance:
         # 启动 Worker 进程
         worker_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.worker_cli",
+                sys.executable, "-m", "teage_liu.multiagent.worker_cli",
                 "--bb-root", str(bb_root),
                 "--agent-id", "worker_001",
             ],
-            env={**os.environ, "HERMES_ROLE": "worker"},
+            env={**os.environ, "TEAGE_ROLE": "worker"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -4193,21 +4193,21 @@ class TestEndToEndDualInstance:
         # 启动 Director
         director_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.director_cli",
+                sys.executable, "-m", "teage_liu.multiagent.director_cli",
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
-            env={**os.environ, "HERMES_ROLE": "director"},
+            env={**os.environ, "TEAGE_ROLE": "director"},
         )
 
         # 启动 Worker
         worker_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.worker_cli",
+                sys.executable, "-m", "teage_liu.multiagent.worker_cli",
                 "--bb-root", str(bb_root),
                 "--agent-id", "worker_001",
             ],
-            env={**os.environ, "HERMES_ROLE": "worker"},
+            env={**os.environ, "TEAGE_ROLE": "worker"},
         )
 
         try:
@@ -4242,14 +4242,14 @@ class TestEndToEndDualInstance:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_e2e_dual_instance.py -v -m e2e
 # 预期：失败（director_cli / worker_cli 入口未实现）
 ```
 
 ### GREEN：最小实现
 
-创建 `hermes/multiagent/director_cli.py`（Director 启动入口）：
+创建 `teage_liu/multiagent/director_cli.py`（Director 启动入口）：
 
 ```python
 """Director 启动入口：作为独立进程运行。"""
@@ -4259,8 +4259,8 @@ import logging
 import signal
 from pathlib import Path
 
-from hermes.multiagent.director import DirectorEngine
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.director import DirectorEngine
+from teage_liu.multiagent.blackboard import Blackboard
 
 logger = logging.getLogger(__name__)
 
@@ -4300,7 +4300,7 @@ async def main_async(bb_root: Path, mode: str = "script") -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Hermes Director")
+    parser = argparse.ArgumentParser(description="Teage Director")
     parser.add_argument("--bb-root", required=True, help="Blackboard 根目录")
     parser.add_argument("--mode", default="script", choices=["agent", "script"])
     args = parser.parse_args()
@@ -4313,7 +4313,7 @@ if __name__ == "__main__":
     main()
 ```
 
-创建 `hermes/multiagent/worker_cli.py`（Worker 启动入口）：
+创建 `teage_liu/multiagent/worker_cli.py`（Worker 启动入口）：
 
 ```python
 """Worker 启动入口：作为独立进程运行。"""
@@ -4323,8 +4323,8 @@ import logging
 import signal
 from pathlib import Path
 
-from hermes.multiagent.worker_adapter import WorkerAdapter
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.worker_adapter import WorkerAdapter
+from teage_liu.multiagent.blackboard import Blackboard
 
 logger = logging.getLogger(__name__)
 
@@ -4373,7 +4373,7 @@ async def main_async(bb_root: Path, agent_id: str, capabilities: list[str]) -> N
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Hermes Worker")
+    parser = argparse.ArgumentParser(description="Teage Worker")
     parser.add_argument("--bb-root", required=True, help="Blackboard 根目录")
     parser.add_argument("--agent-id", required=True, help="Agent ID")
     parser.add_argument(
@@ -4394,7 +4394,7 @@ if __name__ == "__main__":
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_e2e_dual_instance.py -v -m e2e
 # 预期：全部通过（耗时约 2 分钟）
 ```
@@ -4402,7 +4402,7 @@ python -m pytest tests/multiagent/test_e2e_dual_instance.py -v -m e2e
 ### commit
 
 ```bash
-git add hermes/multiagent/director_cli.py hermes/multiagent/worker_cli.py tests/multiagent/test_e2e_dual_instance.py
+git add teage_liu/multiagent/director_cli.py teage_liu/multiagent/worker_cli.py tests/multiagent/test_e2e_dual_instance.py
 git commit -m "feat(multiagent): Task 8 端到端双实例测试（Director+Worker CLI 入口+30 分钟协作）"
 ```
 
@@ -4419,7 +4419,7 @@ git commit -m "feat(multiagent): Task 8 端到端双实例测试（Director+Work
 import pytest
 from pathlib import Path
 
-from hermes.container import Container, CONFIG_TO_COMPONENTS
+from teage_liu.container import Container, CONFIG_TO_COMPONENTS
 
 
 class TestContainerIntegration:
@@ -4435,7 +4435,7 @@ class TestContainerIntegration:
 
     def test_multiagent_components_registered(self, tmp_path: Path):
         """multiagent 组件在容器中注册。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {
             "multiagent": {
@@ -4465,7 +4465,7 @@ class TestContainerIntegration:
 
     def test_multiagent_disabled_not_register(self, tmp_path: Path):
         """multiagent.enabled=False 时不注册组件。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {
             "multiagent": {
@@ -4483,7 +4483,7 @@ class TestContainerIntegration:
 
     def test_multiagent_in_restart_required_keys(self):
         """multiagent 段中的路径配置变更需重启。"""
-        from hermes.app import _RESTART_REQUIRED_KEYS
+        from teage_liu.app import _RESTART_REQUIRED_KEYS
 
         # blackboard_dir 变更需重启
         assert any(
@@ -4498,7 +4498,7 @@ class TestLifespanIntegration:
     async def test_lifespan_starts_worker_adapter(self, tmp_path: Path):
         """lifespan 启动时初始化 worker_adapter。"""
         # 模拟 lifespan 流程
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
 
         config = {
             "multiagent": {
@@ -4529,14 +4529,14 @@ class TestLifespanIntegration:
 ### 验证失败
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_container_integration.py -v
 # 预期：失败（CONFIG_TO_COMPONENTS 未包含 multiagent）
 ```
 
 ### GREEN：最小实现
 
-修改 `hermes/container.py`（CONFIG_TO_COMPONENTS 新增 multiagent 段）：
+修改 `teage_liu/container.py`（CONFIG_TO_COMPONENTS 新增 multiagent 段）：
 
 ```python
 CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
@@ -4558,7 +4558,7 @@ CONFIG_TO_COMPONENTS: dict[str, list[str]] = {
 }
 ```
 
-在 `hermes/app.py` 的 `register_components` 中新增 multiagent 注册（伪代码，按现有风格补充）：
+在 `teage_liu/app.py` 的 `register_components` 中新增 multiagent 注册（伪代码，按现有风格补充）：
 
 ```python
 def register_components(container: Container) -> None:
@@ -4572,7 +4572,7 @@ def register_components(container: Container) -> None:
 
         role = multiagent_cfg.get("role", "worker")
         if role == "director":
-            from hermes.multiagent.director import DirectorEngine
+            from teage_liu.multiagent.director import DirectorEngine
             container.register(
                 "multiagent_adapter",
                 lambda c: DirectorEngine(
@@ -4584,7 +4584,7 @@ def register_components(container: Container) -> None:
                 hot_reloadable=True,
             )
         else:
-            from hermes.multiagent.worker_adapter import WorkerAdapter
+            from teage_liu.multiagent.worker_adapter import WorkerAdapter
             worker_cfg = multiagent_cfg.get("worker", {})
             container.register(
                 "multiagent_adapter",
@@ -4598,7 +4598,7 @@ def register_components(container: Container) -> None:
             )
 ```
 
-修改 `hermes/app.py` 的 `_RESTART_REQUIRED_KEYS`（新增 multiagent.blackboard_dir）：
+修改 `teage_liu/app.py` 的 `_RESTART_REQUIRED_KEYS`（新增 multiagent.blackboard_dir）：
 
 ```python
 _RESTART_REQUIRED_KEYS = [
@@ -4614,7 +4614,7 @@ _RESTART_REQUIRED_KEYS = [
 ]
 ```
 
-修改 `hermes/lifespan.py`（启动 multiagent 组件）：
+修改 `teage_liu/lifespan.py`（启动 multiagent 组件）：
 
 ```python
 # 在第 8 步"注册异常处理器"之前新增
@@ -4642,7 +4642,7 @@ if multiagent_cfg.get("enabled"):
 ### 验证通过
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/test_container_integration.py -v
 # 预期：全部通过
 ```
@@ -4650,7 +4650,7 @@ python -m pytest tests/multiagent/test_container_integration.py -v
 ### commit
 
 ```bash
-git add hermes/container.py hermes/app.py hermes/lifespan.py tests/multiagent/test_container_integration.py
+git add teage_liu/container.py teage_liu/app.py teage_liu/lifespan.py tests/multiagent/test_container_integration.py
 git commit -m "feat(multiagent): Task 9 配置与容器集成（CONFIG_TO_COMPONENTS+lifespan+热重载边界）"
 ```
 
@@ -4665,7 +4665,7 @@ git commit -m "feat(multiagent): Task 9 配置与容器集成（CONFIG_TO_COMPON
 #### 1. Spec Coverage（设计文档覆盖）
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 # 验证 design.md 中 Phase 2 范围内的所有章节都有对应 Task 覆盖
 grep -n "§3.3.2\|§3.3.5\|§4\|§5\|§6\|§7.1\|§7.3\|§8.2\|§8.3\|§10.4\|§10.6\|§11.1" docs/superpowers/specs/2026-07-20-多agent协作机制-design.md | head -50
 ```
@@ -4689,7 +4689,7 @@ grep -n "§3.3.2\|§3.3.5\|§4\|§5\|§6\|§7.1\|§7.3\|§8.2\|§8.3\|§10.4\|§
 
 ```bash
 # 扫描 TODO/FIXME/XXX/PLACEHOLDER
-grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" hermes/multiagent/ tests/multiagent/ | grep -v test_e2e
+grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" teage_liu/multiagent/ tests/multiagent/ | grep -v test_e2e
 # 预期：无输出（或仅在测试 mock 中）
 ```
 
@@ -4698,11 +4698,11 @@ grep -rn "TODO\|FIXME\|XXX\|PLACEHOLDER" hermes/multiagent/ tests/multiagent/ | 
 ```bash
 # 验证所有新增文件的类型注解
 python -c "
-from hermes.multiagent.director import DirectorEngine, SignatureVerifier, DirectorHealthState
-from hermes.multiagent.worker_adapter import WorkerAdapter, AutonomousModeController
-from hermes.multiagent.injection_isolator import InjectionIsolator
-from hermes.multiagent.turn_manager import TurnManager
-from hermes.multiagent.trust_score import TrustScoreManager
+from teage_liu.multiagent.director import DirectorEngine, SignatureVerifier, DirectorHealthState
+from teage_liu.multiagent.worker_adapter import WorkerAdapter, AutonomousModeController
+from teage_liu.multiagent.injection_isolator import InjectionIsolator
+from teage_liu.multiagent.turn_manager import TurnManager
+from teage_liu.multiagent.trust_score import TrustScoreManager
 print('All imports OK')
 "
 ```
@@ -4710,7 +4710,7 @@ print('All imports OK')
 #### 4. 测试覆盖率
 
 ```bash
-cd e:\Java\webser\web_app\webme\hermes-lite
+cd e:\Java\webser\web_app\webme\teage-liu
 python -m pytest tests/multiagent/ -v --tb=short 2>&1 | tail -30
 # 预期：除 -m e2e 外全部通过
 python -m pytest tests/multiagent/ -v -m e2e --tb=short 2>&1 | tail -10
