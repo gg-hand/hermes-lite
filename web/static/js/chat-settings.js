@@ -760,7 +760,7 @@ function bindGuardrailToggles() {
 
 // ========== 思考模式开关（spec integrate-llm-reasoning-mode Task 18）==========
 
-const _REASONING_TOGGLE_KEY = 'hermes_reasoning_enabled';
+const _REASONING_TOGGLE_KEY = 'teage_reasoning_enabled';
 
 // SubTask 18.6：页面加载/设置弹窗打开时调 GET /reasoning/status 同步开关状态
 async function syncReasoningStatus() {
@@ -816,7 +816,7 @@ window.addEventListener('storage', (e) => {
 });
 
 // 暴露给其他模块
-window.HermesChatSettings = {
+window.TeageChatSettings = {
   openSettings,
   toggleSettingsFlyout,
   closeSettingsFlyout,

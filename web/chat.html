@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>hermes-lite · 对话</title>
+  <title>teage-liu · 对话</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
 
   <!-- CSS: tokens → base → components → chat layout -->
@@ -24,7 +24,7 @@
   <aside class="sidebar" id="sidebar">
     <!-- 头部：Logo + 新建会话 -->
     <div class="sidebar-header">
-      <h1>hermes<span>-lite</span></h1>
+      <h1>teage<span>-liu</span></h1>
       <button class="icon-btn" id="btnNewSession" title="新建会话">+</button>
     </div>
     <!-- 垂直导航 -->
@@ -133,7 +133,7 @@
       <!-- 主题切换器 -->
       <div class="topbar-actions">
         <a href="/monitor" class="icon-btn" title="监控面板">&#9678;</a>
-        <button class="theme-toggle icon-btn" id="themeToggleBtn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
+        <button class="theme-toggle icon-btn" id="themeToggleBtn" title="切换深色/浅色" onclick="TeageTheme.toggleTheme()">◐</button>
         <div class="accent-picker" id="accentPicker">
           <span class="accent-dot accent-violet" data-accent="violet" title="电光紫"></span>
           <span class="accent-dot accent-blue" data-accent="blue" title="电光蓝"></span>
@@ -153,7 +153,7 @@
     <div class="messages" id="messages">
       <div class="welcome-screen" id="welcomeScreen">
         <div class="logo">~$</div>
-        <div class="subtitle">Hermes Lite 个人 AI Agent</div>
+        <div class="subtitle">Teage Liu 个人 AI Agent</div>
         <div class="hints">输入消息开始对话 / 侧栏 + 新建会话</div>
       </div>
     </div>
@@ -176,7 +176,7 @@
 <div class="chat-footer">
   <a href="#" id="btnShowCheatsheet" class="cheatsheet-link">⌨ 快捷键</a>
   <span class="chat-footer-divider">·</span>
-  <span class="chat-footer-text">hermes-lite v0.1.0</span>
+  <span class="chat-footer-text">teage-liu v0.1.0</span>
 </div>
 
 <!-- 设置弹窗（高级设置） -->
@@ -251,7 +251,7 @@
 <script>
 // 强调色选择器绑定
 document.querySelectorAll('.accent-dot').forEach(dot => {
-  dot.addEventListener('click', () => HermesTheme.setAccent(dot.dataset.accent));
+  dot.addEventListener('click', () => TeageTheme.setAccent(dot.dataset.accent));
 });
 </script>
 

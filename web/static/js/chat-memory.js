@@ -114,7 +114,7 @@ async function loadUserProfile() {
   }
 }
 
-window.HermesChatMemory = {
+window.TeageChatMemory = {
   switchSidebarTab,
   loadMemories,
   renderMemoryList,

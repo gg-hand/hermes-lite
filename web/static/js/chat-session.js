@@ -67,7 +67,7 @@ function renderSessionList(sessions) {
     const cur = sessions.find(s => s.id === currentSessionId);
     if (cur) {
       // 存储当前会话数据，供标题退避轮询比较
-      if (window.HermesChatSession) window.HermesChatSession._currentSessionData = cur;
+      if (window.TeageChatSession) window.TeageChatSession._currentSessionData = cur;
       const _preview = (window._firstMessagePreview && window._firstMessagePreview[currentSessionId]) || '';
       const t = (cur.title && cur.title.trim()) ? cur.title.trim()
         : (_preview ? _preview : currentSessionId.slice(0, 20) + '...');
@@ -267,7 +267,7 @@ async function newSession() {
   showToast('已创建新会话，发送消息后自动保存');
 }
 
-window.HermesChatSession = {
+window.TeageChatSession = {
   persistCurrentSession,
   loadPersistedSession,
   loadSessions,

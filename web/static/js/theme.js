@@ -6,8 +6,8 @@
 (function () {
   'use strict';
 
-  const THEME_KEY = 'hermes_theme';        // 'dark' | 'light'
-  const ACCENT_KEY = 'hermes_accent';      // 'violet' | 'blue' | 'teal' | 'amber'
+  const THEME_KEY = 'teage_theme';        // 'dark' | 'light'
+  const ACCENT_KEY = 'teage_accent';      // 'violet' | 'blue' | 'teal' | 'amber'
   const ACCENTS = ['violet', 'blue', 'teal', 'amber'];
 
   const root = document.documentElement;
@@ -61,7 +61,7 @@
   });
 
   // 暴露 API（toggle 与 toggleTheme 同义，兼容 HTML onclick 两种写法）
-  window.HermesTheme = {
+  window.TeageTheme = {
     init: initTheme,
     toggle: toggleTheme,
     toggleTheme,

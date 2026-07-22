@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>hermes-lite · 个人 AI Agent</title>
+  <title>teage-liu · 个人 AI Agent</title>
   <meta name="description" content="轻量级个人 AI Agent — 长期记忆、知识库、ReAct 工具链、Cron 调度">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>~</text></svg>">
 
@@ -20,9 +20,9 @@
 
   <!-- 顶栏 -->
   <nav class="home-topbar">
-    <div class="home-topbar-brand">hermes<span>-lite</span></div>
+    <div class="home-topbar-brand">teage<span>-liu</span></div>
     <div class="home-topbar-actions">
-      <button class="theme-toggle icon-btn" title="切换深色/浅色" onclick="HermesTheme.toggleTheme()">◐</button>
+      <button class="theme-toggle icon-btn" title="切换深色/浅色" onclick="TeageTheme.toggleTheme()">◐</button>
       <div class="accent-picker">
         <span class="accent-dot accent-violet" data-accent="violet" title="电光紫"></span>
         <span class="accent-dot accent-blue" data-accent="blue" title="电光蓝"></span>
@@ -287,7 +287,7 @@
 
   <!-- 页脚 -->
   <footer class="home-footer">
-    <p>hermes-lite · 个人轻量 AI Agent</p>
+    <p>teage-liu · 个人轻量 AI Agent</p>
     <p>长期记忆 · 信号池画像 · AI 护栏 · Workflow · ReAct · Cron 调度 · 监控可观测</p>
     <p style="margin-top:8px"><a href="/chat">→ 进入对话</a> · <a href="/monitor">监控面板</a> · <a href="/scheduler">调度面板</a></p>
   </footer>
@@ -297,7 +297,7 @@
 <script>
 // 强调色选择器
 document.querySelectorAll('.accent-dot').forEach(dot => {
-  dot.addEventListener('click', () => HermesTheme.setAccent(dot.dataset.accent));
+  dot.addEventListener('click', () => TeageTheme.setAccent(dot.dataset.accent));
 });
 </script>
 

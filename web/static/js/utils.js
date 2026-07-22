@@ -14,7 +14,7 @@ const StreamState = {
   GRACEFUL: 'graceful',
 };
 
-const SESSION_STORAGE_KEY = 'hermes_lite_current_session';
+const SESSION_STORAGE_KEY = 'teage_liu_current_session';
 
 // ========== 全局状态（DOM 元素在 chat-main.js 初始化时赋值） ==========
 let currentSessionId = null;
@@ -247,7 +247,7 @@ function formatCronSlot(d) {
 }
 
 // 暴露给其他模块（ES module 模式不采用，保持全局函数风格与原代码一致）
-window.HermesUtils = {
+window.TeageUtils = {
   API_BASE,
   StreamState,
   SESSION_STORAGE_KEY,

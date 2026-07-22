@@ -97,11 +97,11 @@
   // 主题强调色选择器
   // ----------------------------------------------------------------
   function initAccentPicker() {
-    const currentAccent = HermesTheme.getAccent();
+    const currentAccent = TeageTheme.getAccent();
     document.querySelectorAll('.accent-dot').forEach((dot) => {
       dot.classList.toggle('is-active', dot.dataset.accent === currentAccent);
       dot.addEventListener('click', () => {
-        HermesTheme.setAccent(dot.dataset.accent);
+        TeageTheme.setAccent(dot.dataset.accent);
         document.querySelectorAll('.accent-dot').forEach((d) => {
           d.classList.toggle('is-active', d === dot);
         });

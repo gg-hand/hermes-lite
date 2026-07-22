@@ -1640,7 +1640,7 @@ function initScheduleModalNew() {
   const cronNext = document.getElementById('cronNextPreview');
   if (schedCron && cronNext) {
     const refreshPreview = () => {
-      const fn = (window.HermesUtils && window.HermesUtils.previewCronNext)
+      const fn = (window.TeageUtils && window.TeageUtils.previewCronNext)
         || (typeof previewCronNext === 'function' ? previewCronNext : null);
       cronNext.textContent = fn ? fn(schedCron.value, 5) : '—';
     };

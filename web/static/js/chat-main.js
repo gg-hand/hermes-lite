@@ -476,4 +476,4 @@ if (document.readyState === 'loading') {
   setupKeyboardShortcuts();
 }
 
-window.HermesChatMain = { start, initGlobals, bindEvents, autoResize, checkHealth, setupKeyboardShortcuts, toggleCheatsheet };
+window.TeageChatMain = { start, initGlobals, bindEvents, autoResize, checkHealth, setupKeyboardShortcuts, toggleCheatsheet };

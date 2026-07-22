@@ -510,7 +510,7 @@ function _pauseDots(rounds, roundIdx) {
 // spec integrate-llm-reasoning-mode Task 17：LLM 推理模式思考内容展示
 
 // localStorage 折叠状态 key（全局，非 per-session）
-const _REASONING_COLLAPSED_KEY = 'hermes_reasoning_collapsed';
+const _REASONING_COLLAPSED_KEY = 'teage_reasoning_collapsed';
 
 function _isReasoningCollapsed() {
   try {
@@ -1720,9 +1720,9 @@ async function sendMessage(textOverride) {
     function _pollTitle() {
       if (_titleAttempt >= _titleDelays.length) return;
       window._titlePollTimer = setTimeout(() => {
-        if (window.HermesChatSession && typeof window.HermesChatSession.loadSessions === 'function') {
-          window.HermesChatSession.loadSessions().then(() => {
-            const cur = window.HermesChatSession._currentSessionData;
+        if (window.TeageChatSession && typeof window.TeageChatSession.loadSessions === 'function') {
+          window.TeageChatSession.loadSessions().then(() => {
+            const cur = window.TeageChatSession._currentSessionData;
             if (cur && (!cur.title || !cur.title.trim()) && _titlePlaceholder &&
                 _titleAttempt + 1 < _titleDelays.length) {
               _titleAttempt++;
@@ -1736,7 +1736,7 @@ async function sendMessage(textOverride) {
       _pollTitle();
     } else {
       window._titlePollTimer = setTimeout(() => {
-        if (window.HermesChatSession) window.HermesChatSession.loadSessions();
+        if (window.TeageChatSession) window.TeageChatSession.loadSessions();
       }, 3000);
     }
   } catch (e) {
@@ -1771,7 +1771,7 @@ async function sendMessage(textOverride) {
 }
 
 // 暴露给其他模块
-window.HermesChatCore = {
+window.TeageChatCore = {
   appendMessage,
   describeToolAction,
   createStreamMessage,

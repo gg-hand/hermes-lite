@@ -434,7 +434,7 @@
     const cronInput = $('#miniSchedCron');
     const preview = $('#miniCronNextPreview');
     if (!cronInput || !preview) return;
-    const fn = (window.HermesUtils && window.HermesUtils.previewCronNext)
+    const fn = (window.TeageUtils && window.TeageUtils.previewCronNext)
       || (typeof previewCronNext === 'function' ? previewCronNext : null);
     preview.textContent = fn ? fn(cronInput.value, 5) : '—';
   }

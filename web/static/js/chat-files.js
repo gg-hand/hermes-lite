@@ -26,10 +26,10 @@ async function uploadFile(file) {
     showToast(data.is_dup ? '文件已在知识库中' : '上传成功: ' + file.name, data.is_dup ? '' : 'success');
 
     // 即时反馈：在聊天区插入上传消息气泡（纯前端 DOM，刷新后由后端消息/合成消息接管）
-    if (window.HermesChatCore && window.HermesChatCore.appendMessage) {
+    if (window.TeageChatCore && window.TeageChatCore.appendMessage) {
       const file_type = '.' + (file.name.split('.').pop() || '').toLowerCase();
       const is_image = ['.png', '.jpg', '.jpeg', '.gif'].includes(file_type);
-      window.HermesChatCore.appendMessage(
+      window.TeageChatCore.appendMessage(
         'user',
         data.is_dup ? `文件已在知识库中：${file.name}` : `已上传文件：${file.name}`,
         [{ file_id: data.file_id, name: file.name, type: file_type, size: file.size,
@@ -192,7 +192,7 @@ deleteSession = async function (sessionId) {
 };
 
 // 暴露给其他模块
-window.HermesChatFiles = {
+window.TeageChatFiles = {
   uploadFile,
   loadFiles,
   startFilePolling,
