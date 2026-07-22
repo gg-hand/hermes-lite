@@ -1,4 +1,4 @@
-﻿"""记忆 Dashboard API 端点单元测试（Phase 7 Task 4）。
+﻿﻿"""记忆 Dashboard API 端点单元测试（Phase 7 Task 4）。
 
 验证 ``src/server.py`` 新增的 4 个端点：
 - ``GET /memories``：关键词向量检索 + 可选 type 过滤

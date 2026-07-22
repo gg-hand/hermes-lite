@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 # 结果字符串截断阈值：超过此长度的 result 将被截断，避免单条日志过大
 _MAX_RESULT_LENGTH = 2000
 
+# 默认轮转阈值：audit.jsonl 行数超过此值时轮转
+# 可通过 AuditLogger(max_lines=...) 覆盖，或设为 0 禁用轮转
+_DEFAULT_MAX_LINES = 50000
+# 默认保留的轮转文件数（audit.{timestamp}.jsonl）
+_DEFAULT_MAX_FILES = 5
+# 触发轮转检查的频率（每 N 次写入检查一次，避免每次 IO 开销）
+_ROTATION_CHECK_INTERVAL = 100
+
 
 class AuditLogger:
     """工具调用审计日志记录器。
@@ -80,6 +88,8 @@ class AuditLogger:
         self,
         log_path: str = "data/audit.jsonl",
         buffer_size: int = 1000,
+        max_lines: int = _DEFAULT_MAX_LINES,
+        max_files: int = _DEFAULT_MAX_FILES,
     ) -> None:
         """初始化审计日志记录器。
 
@@ -87,6 +97,10 @@ class AuditLogger:
             log_path: JSONL 日志文件路径，默认 ``data/audit.jsonl``。
                 父目录不存在时会自动创建（dirname 为空时跳过）。
             buffer_size: 内存环形缓冲容量，保留最近 N 条记录，默认 1000。
+            max_lines: JSONL 文件行数轮转阈值，默认 50000。达到阈值时
+                当前文件重命名为 ``audit.{timestamp}.jsonl`` 并开新文件继续
+                写入。设为 0 禁用轮转（保持旧行为）。
+            max_files: 保留的轮转文件数，默认 5。超过时删除最旧的轮转文件。
         """
         # 确保日志文件父目录存在
         parent_dir = os.path.dirname(log_path)
@@ -101,6 +115,90 @@ class AuditLogger:
         self._lock = threading.Lock()
         # 存储日志文件路径
         self._log_path = log_path
+        # 轮转配置
+        self._max_lines = max_lines
+        self._max_files = max_files
+        # 写入计数器：每 _ROTATION_CHECK_INTERVAL 次写入触发一次轮转检查
+        self._write_count = 0
+
+    def _rotate_if_needed(self) -> None:
+        """检查当前 audit.jsonl 行数是否达到阈值，达到则轮转。
+
+        轮转策略：
+        1. 关闭当前文件句柄
+        2. 重命名为 ``audit.{timestamp}.jsonl``（timestamp 为 UTC 秒级时间戳）
+        3. 打开新的空文件继续写入
+        4. 清理超过 ``_max_files`` 数量的旧轮转文件
+
+        此方法在 ``self._lock`` 保护下调用，无需额外加锁。
+        """
+        if self._max_lines <= 0 or self._file is None:
+            return
+        try:
+            # 先 flush 确保所有数据落盘
+            self._file.flush()
+            # 统计当前文件行数
+            with open(self._log_path, "r", encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+            if line_count < self._max_lines:
+                return
+            # 触发轮转：关闭当前句柄
+            self._file.close()
+            # 重命名为带时间戳的归档文件
+            ts = int(datetime.now(timezone.utc).timestamp())
+            rotated_path = f"{self._log_path}.{ts}.rotated"
+            try:
+                os.replace(self._log_path, rotated_path)
+            except OSError as e:
+                logger.warning("audit 轮转重命名失败: %s", e)
+                # 回退：重新打开原文件继续追加
+                self._file = open(self._log_path, "a", encoding="utf-8")
+                return
+            # 打开新文件
+            self._file = open(self._log_path, "a", encoding="utf-8")
+            # 清理超量的旧轮转文件
+            self._cleanup_old_rotated_files()
+            logger.info(
+                "audit.jsonl 已轮转，归档至 %s（%d 行）",
+                os.path.basename(rotated_path), line_count,
+            )
+        except Exception as e:
+            logger.warning("audit 轮转检查失败: %s", e)
+            # 确保文件句柄可用
+            if self._file is None or self._file.closed:
+                try:
+                    self._file = open(self._log_path, "a", encoding="utf-8")
+                except Exception:
+                    pass
+
+    def _cleanup_old_rotated_files(self) -> None:
+        """清理超过 ``_max_files`` 数量的旧轮转文件。
+
+        按文件名中的时间戳排序，删除最旧的轮转文件。
+        文件名格式：``audit.jsonl.{timestamp}.rotated``
+        """
+        if self._max_files <= 0:
+            return
+        parent_dir = os.path.dirname(self._log_path) or "."
+        base_name = os.path.basename(self._log_path)
+        # 收集所有轮转文件
+        rotated_files = []
+        try:
+            for fname in os.listdir(parent_dir):
+                if fname.startswith(f"{base_name}.") and fname.endswith(".rotated"):
+                    rotated_files.append(os.path.join(parent_dir, fname))
+        except OSError:
+            return
+        # 按修改时间排序（最旧在前）
+        rotated_files.sort(key=lambda p: os.path.getmtime(p))
+        # 删除超量文件
+        excess = len(rotated_files) - self._max_files
+        for i in range(excess):
+            try:
+                os.remove(rotated_files[i])
+                logger.info("清理旧 audit 轮转文件: %s", rotated_files[i])
+            except OSError as e:
+                logger.warning("清理 audit 轮转文件失败: %s", e)
 
     def log_tool_call(
         self,
@@ -162,6 +260,10 @@ class AuditLogger:
             try:
                 self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._file.flush()
+                # 轮转检查：每 _ROTATION_CHECK_INTERVAL 次写入检查一次
+                self._write_count += 1
+                if self._write_count % _ROTATION_CHECK_INTERVAL == 0:
+                    self._rotate_if_needed()
             except Exception as e:
                 logger.warning("审计日志写入文件失败: %s", e)
 
@@ -215,6 +317,10 @@ class AuditLogger:
             try:
                 self._file.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._file.flush()
+                # 轮转检查：每 _ROTATION_CHECK_INTERVAL 次写入检查一次
+                self._write_count += 1
+                if self._write_count % _ROTATION_CHECK_INTERVAL == 0:
+                    self._rotate_if_needed()
             except Exception as e:
                 logger.warning("护栏审计日志写入文件失败: %s", e)
 
@@ -359,6 +465,139 @@ class AuditLogger:
         if "entry_type" not in copy:
             copy["entry_type"] = "tool_call"
         return copy
+
+    def _get_rotated_files(self) -> List[str]:
+        """返回所有 .rotated 文件路径列表，按文件名时间戳升序（旧在前）。
+
+        文件名格式：``audit.jsonl.{timestamp}.rotated``
+        """
+        parent_dir = os.path.dirname(self._log_path) or "."
+        base_name = os.path.basename(self._log_path)
+        rotated_files = []
+        try:
+            for fname in os.listdir(parent_dir):
+                if fname.startswith(f"{base_name}.") and fname.endswith(".rotated"):
+                    rotated_files.append(os.path.join(parent_dir, fname))
+        except OSError:
+            pass
+        # 按文件名中的时间戳排序（旧在前）
+        rotated_files.sort()
+        return rotated_files
+
+    def read_since(
+        self,
+        since: float,
+        limit: int = 1000,
+        entry_type: Optional[str] = None,
+        include_rotated: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """增量读取磁盘 audit.jsonl 中 ``timestamp >= since`` 的记录。
+
+        用于按游标（cursor）增量消费审计日志：调用方先通过 ``get_cursor``
+        拿到最新时间戳，下次调用 ``read_since(cursor)`` 仅获取新增条目。
+
+        线程安全设计选择：本方法不加 ``self._lock``，用独立的文件句柄读取。
+        原因：``log_tool_call`` 在 ``self._lock`` 内 write+flush，若本方法也
+        加锁，会导致写操作阻塞等待读完成。由于每行是完整 JSON + ``\\n``，
+        且 ``write`` 是单次原子调用，读取方最多读到半行 JSON，会被
+        ``json.loads`` 跳过。这是可接受的降级——下次调用会读到完整行。
+
+        参数:
+            since: unix epoch seconds（float），过滤 timestamp >= since。
+                传 0.0 表示读取全部。含等于以便幂等重试。
+            limit: 返回的最大条数，默认 1000。达到即停止扫描。
+            entry_type: 可选记录类型过滤（``"tool_call"`` / ``"guardrail"``）。
+                默认 ``None`` 不过滤。
+            include_rotated: 是否扫描 ``.rotated`` 轮转归档文件。``False``
+                （默认）只读当前 ``audit.jsonl``（增量场景）。``True`` 时先
+                扫描所有 ``.rotated`` 文件（旧在前），再扫描当前文件，合并
+                结果后按时间正序返回。用于全量读取 ``read_since(0)`` 场景。
+
+        返回:
+            按时间正序（最早在前）排列的记录列表，便于增量消费。
+            损坏的 JSON 行 / 缺失 timestamp 字段的行会被跳过（不抛异常）。
+            返回深拷贝，并通过 ``_normalize_entry`` 填充新字段默认值。
+        """
+        result: List[Dict[str, Any]] = []
+        # P1-1 修复：include_rotated=True 时先扫描 .rotated 文件
+        files_to_scan = []
+        if include_rotated:
+            files_to_scan.extend(self._get_rotated_files())
+        files_to_scan.append(self._log_path)
+
+        for file_path in files_to_scan:
+            if len(result) >= limit:
+                break
+            if not os.path.exists(file_path):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if len(result) >= limit:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        ts_str = entry.get("timestamp")
+                        if not ts_str:
+                            continue
+                        try:
+                            ts = datetime.fromisoformat(ts_str).timestamp()
+                        except (ValueError, TypeError):
+                            continue
+                        if ts < since:
+                            continue
+                        if entry_type is not None:
+                            if self._entry_type_of(entry) != entry_type:
+                                continue
+                        result.append(self._normalize_entry(entry))
+            except OSError as e:
+                logger.warning("read_since 读取 %s 失败: %s", file_path, e)
+
+        # include_rotated 时需要按 timestamp 排序（跨文件合并）
+        if include_rotated and len(result) > 1:
+            result.sort(key=lambda e: e.get("timestamp", ""))
+        return result
+
+    def get_cursor(self) -> float:
+        """返回 audit.jsonl 中最新记录的 unix epoch seconds，作为下次增量起点。
+
+        P1-1 修复：扫描当前文件 + 所有 ``.rotated`` 轮转归档文件取最大
+        timestamp，确保跨轮转文件也能正确返回最新游标。
+        空文件 / 文件不存在 / 无有效 timestamp 时返回 0.0。
+        """
+        max_ts = 0.0
+        # 扫描当前文件 + 所有 .rotated 文件
+        files_to_scan = self._get_rotated_files() + [self._log_path]
+        for file_path in files_to_scan:
+            if not os.path.exists(file_path):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        ts_str = entry.get("timestamp")
+                        if not ts_str:
+                            continue
+                        try:
+                            ts = datetime.fromisoformat(ts_str).timestamp()
+                        except (ValueError, TypeError):
+                            continue
+                        if ts > max_ts:
+                            max_ts = ts
+            except OSError as e:
+                logger.warning("get_cursor 读取 %s 失败: %s", file_path, e)
+        return max_ts
 
     def close(self) -> None:
         """关闭审计日志文件句柄。

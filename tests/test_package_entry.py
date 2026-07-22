@@ -1,4 +1,4 @@
-﻿# tests/test_package_entry.py
+﻿﻿# tests/test_package_entry.py
 """测试 hermes 包入口。"""
 from __future__ import annotations
 import sys

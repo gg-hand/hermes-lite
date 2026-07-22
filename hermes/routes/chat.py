@@ -242,8 +242,20 @@ def chat_stream(req: ChatRequest,
                 })
                 yield _sse_event({"type": "interrupt"})
             except Exception as e:
+                err_str = str(e)
+                err_type = type(e).__name__
+                if "401" in err_str or "Authentication" in err_type:
+                    friendly = "API Key 无效或已过期，请在设置中检查 LLM API Key 配置"
+                elif "429" in err_str:
+                    friendly = "请求频率过高，请稍后重试"
+                elif "529" in err_str or "overloaded" in err_str.lower():
+                    friendly = "LLM 服务过载，请稍后重试"
+                elif "timeout" in err_str.lower() or "Timeout" in err_type:
+                    friendly = "请求超时，请检查网络后重试"
+                else:
+                    friendly = err_str
                 logger.exception("流式对话失败: %s", e)
-                yield _sse_event({"type": "error", "message": str(e)})
+                yield _sse_event({"type": "error", "message": friendly, "reason": err_str})
         finally:
             if stream_manager is not None and cancel_event is not None:
                 stream_manager.unregister_event(session_id, cancel_event)

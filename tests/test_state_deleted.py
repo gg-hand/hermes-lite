@@ -1,4 +1,4 @@
-﻿# tests/test_state_deleted.py
+﻿﻿# tests/test_state_deleted.py
 """测试 state.py 已删除 + server.py 无全局组件变量。"""
 from __future__ import annotations
 import sys

@@ -34,6 +34,16 @@ class HistoryBuffer:
     token 控制由 Condenser 在 LLM 调用前单点负责，HistoryBuffer 不
     再承担 token 溢出降级职责。
 
+    角色定位（v1.0.4 澄清）：
+    - **内存工作集**：当前会话最近 N 条消息（FIFO 截断），供 LLM 上下文
+      构建快速访问，避免每次 LLM 调用都查 SQLite。
+    - **磁盘 JSONL**：会话完整历史（不截断），用于会话恢复和导出。
+    - **主存储**：``sessions.db`` 的 ``messages`` 表（含 FTS5 全文索引），
+      由 :class:`~hermes.storage.sqlite_log.SessionLogger` 写入。
+    - 本类是 ``messages`` 表的缓存层 + 会话级完整历史归档，两者写入相同
+      内容但职责不同：HistoryBuffer 服务 LLM 上下文，messages 表服务检索
+      与审计。这不是"重复存储"而是"读写分离"——内存快路径 + 磁盘全量归档。
+
     参数:
         max_turns: user 会话最大保留的消息条数。
         archive_callback: 可选的归档回调，签名 (session_id, evicted_message) -> None。

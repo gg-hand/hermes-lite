@@ -11,8 +11,8 @@ import logging
 import os
 import threading
 import uuid
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Any, Optional
 
 import numpy as np
 
@@ -134,7 +134,9 @@ def _normalize_metadata(metadata: Optional[dict]) -> Optional[dict]:
 class ChromaMemoryStore:
     """基于 ChromaDB 的长期记忆向量库。
 
-    集合名固定为 long_term_memory，使用 cosine 距离度量。
+    默认集合名为 ``long_term_memory``，使用 cosine 距离度量。
+    批次 2.6 起支持多 collection：通过 ``collection_name`` 参数写入指定
+    集合，通过 ``search_all_collections=True`` 跨集合检索。
     通过 chromadb 内置 ONNX embedding 函数在本地生成 embedding，
     无需调用外部 API，也不依赖 sentence-transformers / torch。
     """
@@ -155,14 +157,59 @@ class ChromaMemoryStore:
         # 创建 PersistentClient，数据落盘到 persist_path
         self.client = chromadb.PersistentClient(path=self.persist_path)
 
-        # 获取或创建集合，使用 cosine 距离度量
-        self.collection = self.client.get_or_create_collection(
-            name=self.COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+        # 批次 2.6: 多 collection 缓存，按 name 获取或创建
+        # 默认 collection 通过 get_collection 创建并缓存
+        self._collections: dict = {}
+        self.collection = self.get_collection(self.COLLECTION_NAME)
 
         # embedding 函数为懒加载：首次 add_memory / query_memory 时才创建，
         # 避免初始化阶段下载模型权重。
+
+        # add_memory 写入计数器：每 _PERSIST_INTERVAL 次调用一次 persist
+        self._write_count = 0
+
+        # 启动时尝试消费未完成的 embeddings_queue（chromadb < 0.5 兼容路径）
+        self._recover_pending_queue()
+
+    # 周期性 persist 频率：每 N 次 add_memory 调用一次 persist
+    _PERSIST_INTERVAL = 10
+
+    def get_collection(self, name: str):
+        """按名称获取或创建 collection（批次 2.6 多 collection 支持）。
+
+        首次请求时创建并缓存，后续直接返回缓存实例。
+        默认 collection 名为 ``long_term_memory``，可通过 ``COLLECTION_NAME``
+        常量访问。
+
+        Args:
+            name: collection 名称。
+
+        Returns:
+            chromadb Collection 实例。
+        """
+        if name not in self._collections:
+            self._collections[name] = self.client.get_or_create_collection(
+                name=name,
+                metadata={"hnsw:space": "cosine"},
+            )
+        return self._collections[name]
+
+    def _recover_pending_queue(self) -> None:
+        """启动时尝试消费未完成的 embeddings_queue。
+
+        chromadb 0.5+ 的 PersistentClient 已自动持久化（无 persist 方法），
+        本方法对旧版本（< 0.5）触发一次显式 persist，将异常退出遗留的
+        embeddings_queue 刷盘。新版本下此方法为 no-op。
+
+        失败时仅记录 warning，不抛异常，确保初始化不被阻塞。
+        """
+        try:
+            if hasattr(self.client, "persist"):
+                self.client.persist()
+            elif hasattr(self.collection, "persist"):
+                self.collection.persist()
+        except Exception as e:
+            logger.warning("chroma queue recovery failed: %s", e)
 
     # ------------------------------------------------------------------
     # 内部工具方法
@@ -203,6 +250,7 @@ class ChromaMemoryStore:
         memory_id: Optional[str] = None,
         namespace: str = "user",
         cron_id: Optional[str] = None,
+        collection_name: Optional[str] = None,
     ) -> str:
         """添加记忆到向量库。
 
@@ -221,6 +269,9 @@ class ChromaMemoryStore:
                 写入时注入 ``metadata.namespace`` 字段，便于检索时按命名空间过滤。
             cron_id: 当 ``namespace="cron"`` 时必填，标识具体调度项 ID。
                 写入时注入 ``metadata.cron_id`` 字段，使不同调度项之间记忆互不可见。
+            collection_name: 批次 2.6 多 collection 支持。``None``（默认）写入
+                默认 collection（``long_term_memory``），向后兼容。指定名称时
+                写入对应 collection，不存在则自动创建。
 
         Returns:
             memory_id: 添加的记忆 ID。
@@ -253,13 +304,33 @@ class ChromaMemoryStore:
         # 生成 embedding
         embedding = self._embed(content)
 
+        # 批次 2.6: 按 collection_name 选择目标 collection
+        # None 时用默认 self.collection（向后兼容）
+        target_collection = (
+            self.collection if collection_name is None
+            else self.get_collection(collection_name)
+        )
+
         # 写入集合
-        self.collection.add(
+        target_collection.add(
             ids=[memory_id],
             documents=[content],
             metadatas=[meta] if meta is not None else None,
             embeddings=[embedding],
         )
+
+        # 周期性 persist：每 _PERSIST_INTERVAL 次写入触发一次显式刷盘
+        # chromadb 0.5+ 自动持久化时此调用为 no-op，仅对旧版本生效
+        self._write_count += 1
+        if self._write_count % self._PERSIST_INTERVAL == 0:
+            try:
+                if hasattr(self.client, "persist"):
+                    self.client.persist()
+                elif hasattr(self.collection, "persist"):
+                    self.collection.persist()
+            except Exception as e:
+                logger.warning("chroma periodic persist failed: %s", e)
+
         return memory_id
 
     def query_memory(
@@ -269,6 +340,8 @@ class ChromaMemoryStore:
         reinforce: bool = True,
         namespace: Optional[str] = "user",
         cron_id: Optional[str] = None,
+        search_all_collections: bool = False,
+        _target_collection: Any = None,
     ) -> list:
         """向量检索相似记忆。
 
@@ -285,6 +358,12 @@ class ChromaMemoryStore:
                 过滤（管理员视图，跨命名空间检索）。
             cron_id: 当 ``namespace="cron"`` 时必填，用于匹配 ``metadata.cron_id``。
                 其他命名空间忽略此参数。
+            search_all_collections: 批次 2.6 多 collection 支持。``True`` 时跨
+                所有已创建的 collection 查询并合并结果（按 similarity 降序取 top_k）。
+                ``False``（默认）只搜默认 collection（向后兼容）。
+            _target_collection: 内部参数（下划线前缀），用于 ``search_all_collections``
+                遍历时传递目标 collection，避免修改 ``self.collection``（线程安全）。
+                外部调用方不应使用此参数。``None`` 时用 ``self.collection``。
 
         Returns:
             list of dict，每个元素形如：
@@ -294,14 +373,36 @@ class ChromaMemoryStore:
         if top_k <= 0:
             return []
 
+        # P1-2 修复：跨 collection 搜索时不修改 self.collection（线程安全）
+        # 通过 _target_collection 传递目标 collection
+        if search_all_collections:
+            all_results = []
+            for col_name in list(self._collections.keys()):
+                col_results = self.query_memory(
+                    query_text=query_text,
+                    top_k=top_k,
+                    reinforce=False,  # 跨 collection 时不逐个 reinforce
+                    namespace=namespace,
+                    cron_id=cron_id,
+                    search_all_collections=False,
+                    _target_collection=self._collections[col_name],
+                )
+                all_results.extend(col_results)
+            # 按 similarity 降序排序，取 top_k
+            all_results.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+            return all_results[:top_k]
+
+        # P1-2 修复：用局部变量代替 self.collection，避免线程安全问题
+        collection = _target_collection if _target_collection is not None else self.collection
+
         # 集合为空时直接返回，避免 ChromaDB 报错
-        if self.collection.count() == 0:
+        if collection.count() == 0:
             return []
 
         query_embedding = self._embed(query_text)
 
         # 实际可用条数受集合大小限制
-        n_results = min(top_k, self.collection.count())
+        n_results = min(top_k, collection.count())
 
         # Phase 8 Task 1: 按 namespace + cron_id 构造 where 子句
         # - namespace="user"：匹配 namespace="user" 或缺失 namespace 字段的旧数据
@@ -313,7 +414,7 @@ class ChromaMemoryStore:
         # user 命名空间需要兼容旧数据（缺失 namespace 字段视为 user），
         # 此处先用宽松 where 查询，再在 Python 侧做最终过滤；
         # cron / None 命名空间下 chromadb where 已精确过滤，无需 Python 二次过滤。
-        results = self.collection.query(
+        results = collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
             include=["documents", "metadatas", "distances"],
@@ -583,6 +684,99 @@ class ChromaMemoryStore:
             memory_id: 记忆 ID。
         """
         self.collection.delete(ids=[memory_id])
+
+    def delete_old_entries(
+        self, days: int = 90, all_collections: bool = False,
+        _target_collection: Any = None,
+    ) -> int:
+        """删除超过指定天数的记忆条目（TTL 清理）。
+
+        由于 chromadb metadata 的字符串时间戳不支持 ``$lt`` 比较，
+        采用 Python 侧全量扫描 + 批量删除方案。对几百到几千条目的
+        集合性能可接受。
+
+        策略：
+        - 读取所有条目的 metadata.timestamp（ISO 格式字符串）
+        - 在 Python 侧解析并比较时间戳
+        - 缺失 timestamp 字段的旧数据视为可清理（保守策略）
+        - 解析失败的 timestamp 视为可清理（保守策略）
+        - 批量调用 collection.delete(ids=...) 删除过期条目
+
+        Args:
+            days: 保留天数，超过此天数的条目将被删除。``days=0`` 表示
+                立即过期（所有条目都删除，因为 timestamp 写入到调用
+                之间有微秒级延迟）。默认 90。
+            all_collections: 批次 2.6 多 collection 支持。``True`` 时遍历所有
+                已创建的 collection 执行清理，返回删除总数。``False``（默认）
+                只清理默认 collection（向后兼容）。
+            _target_collection: 内部参数，用于 ``all_collections`` 遍历时
+                传递目标 collection，避免修改 ``self.collection``（线程安全）。
+
+        Returns:
+            实际删除的条目数。
+        """
+        # P1-2 修复：all_collections=True 时不修改 self.collection（线程安全）
+        if all_collections:
+            total_deleted = 0
+            for col_name in list(self._collections.keys()):
+                total_deleted += self.delete_old_entries(
+                    days=days, all_collections=False,
+                    _target_collection=self._collections[col_name],
+                )
+            return total_deleted
+
+        # P1-2 修复：用局部变量代替 self.collection
+        collection = _target_collection if _target_collection is not None else self.collection
+
+        if collection.count() == 0:
+            return 0
+
+        cutoff = datetime.now() - timedelta(days=days)
+        cutoff_ts = cutoff.timestamp()
+
+        # 读取所有条目
+        try:
+            results = collection.get(include=["metadatas"])
+        except Exception as e:
+            logger.warning("delete_old_entries 读取失败: %s", e)
+            return 0
+
+        ids = results.get("ids", [])
+        metadatas = results.get("metadatas", [])
+
+        expired_ids = []
+        for mid, meta in zip(ids, metadatas):
+            meta_dict = meta or {}
+            ts_str = meta_dict.get("timestamp")
+            if not ts_str:
+                # 缺失 timestamp 视为远古旧数据
+                expired_ids.append(mid)
+                continue
+            try:
+                # ISO 格式解析（兼容带/不带时区）
+                entry_dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                # 转换为时间戳比较（避免时区差异）
+                entry_ts = entry_dt.timestamp()
+                if entry_ts < cutoff_ts:
+                    expired_ids.append(mid)
+            except (ValueError, TypeError):
+                # 解析失败视为可清理
+                expired_ids.append(mid)
+
+        if not expired_ids:
+            return 0
+
+        # 批量删除
+        try:
+            collection.delete(ids=expired_ids)
+            logger.info(
+                "delete_old_entries(days=%d) 已删除 %d 条过期记忆",
+                days, len(expired_ids),
+            )
+            return len(expired_ids)
+        except Exception as e:
+            logger.warning("delete_old_entries 批量删除失败: %s", e)
+            return 0
 
     # ------------------------------------------------------------------
     # 去重检测

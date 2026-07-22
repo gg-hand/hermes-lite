@@ -132,6 +132,44 @@ def get_audit_logs(limit: int = Query(50, ge=1, le=1000),
     return JSONResponse({"logs": audit_logger.get_recent(limit)})
 
 
+@router.get("/audit/since")
+def get_audit_since(
+    cursor: float = Query(0.0, ge=0.0, description="unix epoch seconds, 返回 timestamp >= cursor 的记录"),
+    limit: int = Query(1000, ge=1, le=10000, description="返回的最大条数"),
+    entry_type: Optional[str] = Query(None, description="可选记录类型过滤: tool_call / guardrail"),
+    include_rotated: bool = Query(False, description="是否扫描 .rotated 轮转归档文件（全量读取场景）"),
+    audit_logger=Depends(get_audit_logger),
+):
+    """增量读取审计日志。
+
+    返回 audit.jsonl 中 timestamp >= cursor 的记录，按时间正序排列。
+    调用方应保存响应中的 cursor 字段，下次请求时作为参数传入以获取新增条目。
+
+    含等于语义：read_since(cursor) 会包含 timestamp == cursor 的记录，
+    便于幂等重试。调用方需自行去重。
+
+    include_rotated=True 时扫描所有 .rotated 轮转归档文件，用于全量
+    读取场景（如首次初始化、数据迁移）。默认 False 只读当前文件。
+    """
+    from hermes.config import load_config
+
+    config_path = os.environ.get("HERMES_CONFIG", "config.yaml")
+
+    if audit_logger is None:
+        return JSONResponse({"entries": [], "cursor": cursor})
+    try:
+        config = load_config(config_path)
+        if not config.get("monitoring", {}).get("enabled", True):
+            return JSONResponse({"entries": [], "cursor": cursor})
+    except Exception:
+        pass
+    entries = audit_logger.read_since(
+        cursor, limit=limit, entry_type=entry_type, include_rotated=include_rotated
+    )
+    new_cursor = audit_logger.get_cursor()
+    return JSONResponse({"entries": entries, "cursor": new_cursor})
+
+
 # ---------- reasoning 开关 ----------
 
 @router.post("/reasoning/toggle")

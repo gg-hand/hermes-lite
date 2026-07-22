@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 from hermes.agent.context_builder import ContextBuilder
 from hermes.agent.msg_persistence import MessagePersistence
 from hermes.agent.intent_classifier import IntentClassificationResult, classify_intent
+
+
+def _extract_token_count(usage: Any) -> int:
+    """从 LLM usage dict 提取 token 总数（input + output）。
+
+    批次 2.4: 用于回填 messages.token_count，之前所有调用方均未传入导致恒为 0。
+
+    参数:
+        usage: LLMResponse.usage 字段，通常为 ``{"input_tokens": N, "output_tokens": M}``。
+            None / 非 dict / 缺少字段时返回 0（容错）。
+
+    返回:
+        input_tokens + output_tokens，缺字段用 0 兜底。
+    """
+    if not isinstance(usage, dict):
+        return 0
+    return int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+
+
 class ChatHandler:
     """非流式对话处理器。
 
@@ -266,10 +285,16 @@ class ChatHandler:
                     role="user",
                     content=user_input,
                 )
+                # 批次 2.4: 从 react_loop.last_usage 提取 token 总数回填
+                # 之前所有调用方均未传入 token_count 导致恒为 0
+                _assistant_token_count = _extract_token_count(
+                    getattr(orch.react_loop, "last_usage", None)
+                )
                 orch.session_logger.log_message(
                     session_id=session_id,
                     role="assistant",
                     content=response_text,
+                    token_count=_assistant_token_count,
                 )
             except Exception as e:
                 logger.warning("记录会话日志失败: %s", e)
@@ -537,6 +562,8 @@ class ChatHandler:
 
         # 规范 2: 捕获 done 事件的 termination_reason，用于 finally 块计数
         stream_termination_reason: str = "normal"
+        # 批次 2.4: 捕获 done 事件的 usage，用于 finally 块回填 token_count
+        stream_done_usage: Optional[Dict[str, Any]] = None
         try:
             async for event in orch.react_loop.run_stream(
                 user_input=user_input,
@@ -660,6 +687,8 @@ class ChatHandler:
                         current_round_text = ""
                         current_round_reasoning = ""
                     response_text = event.get("response", "") or ""
+                    # 批次 2.4: 捕获 done 事件的 usage，用于 finally 块回填 token_count
+                    stream_done_usage = event.get("usage")
                     # 捕获完整 messages（含 history + 本轮新增），用于
                     # 在 finally 块中切出本轮新增部分持久化到 history_buffer
                     done_messages = event.get("messages")
@@ -768,16 +797,27 @@ class ChatHandler:
                         content=user_input,
                     )
                     # 按顺序记录所有收集的消息
-                    for msg in collected_messages:
-                        orch.session_logger.log_message(
-                            session_id=session_id,
-                            role=msg["role"],
-                            content=msg["content"],
-                            tool_name=msg.get("tool_name"),
-                            tool_call_id=msg.get("tool_call_id"),
-                            is_error=msg.get("is_error", False),
-                            reasoning=msg.get("reasoning"),
-                        )
+                    # P1-3 修复：找到最后一条 assistant 消息（无 tool_name），
+                    # 将 done 事件的 usage 分配给它（best-effort，多轮中间消息仍为 0）
+                    _last_assistant_idx = None
+                    for _i, _msg in enumerate(collected_messages):
+                        if _msg["role"] == "assistant" and not _msg.get("tool_name"):
+                            _last_assistant_idx = _i
+                    _stream_token_count = _extract_token_count(stream_done_usage)
+                    for _i, msg in enumerate(collected_messages):
+                        _msg_kwargs = {
+                            "session_id": session_id,
+                            "role": msg["role"],
+                            "content": msg["content"],
+                            "tool_name": msg.get("tool_name"),
+                            "tool_call_id": msg.get("tool_call_id"),
+                            "is_error": msg.get("is_error", False),
+                            "reasoning": msg.get("reasoning"),
+                        }
+                        # P1-3 修复：最后一条 assistant 消息回填 token_count
+                        if _i == _last_assistant_idx:
+                            _msg_kwargs["token_count"] = _stream_token_count
+                        orch.session_logger.log_message(**_msg_kwargs)
                     # 兜底：如果 collected_messages 为空，或最后一条不是纯文本
                     # assistant 消息（无 tool_name），且 response_text 非空，补记一条
                     # （单轮无 round_start 场景，response_text 是唯一 assistant 文本）
@@ -792,6 +832,8 @@ class ChatHandler:
                             role="assistant",
                             content=response_text,
                             reasoning=current_round_reasoning or None,
+                            # 批次 2.4: 从 done 事件的 usage 回填 token_count
+                            token_count=_extract_token_count(stream_done_usage),
                         )
                 except Exception as e:
                     logger.warning("记录会话日志失败: %s", e)

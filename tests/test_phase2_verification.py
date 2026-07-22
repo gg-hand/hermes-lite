@@ -1,4 +1,4 @@
-﻿"""阶段 2 最终验证：热重载 + 软重启 + 后台 task 重启。"""
+﻿﻿"""阶段 2 最终验证：热重载 + 软重启 + 后台 task 重启。"""
 from __future__ import annotations
 import sys
 import os

@@ -200,7 +200,12 @@ def _set_nested(config: dict, path: str, value: Any) -> None:
 
 
 def _update_env_file(env_path: str, updates: dict[str, str]) -> None:
-    """更新 .env 文件（追加或覆盖对应行）。"""
+    """更新 .env 文件（追加或覆盖对应行），并同步更新 os.environ。
+
+    同步 os.environ 是关键：热重载时 ``load_config`` 解析 ``${ENV_VAR}``
+    占位符读取 ``os.environ``，若仅写文件不更新环境变量，热重载后 LLM
+    客户端仍用旧值（``load_dotenv`` 只在启动时调用一次）。
+    """
     from pathlib import Path
     path = Path(env_path)
     lines = []
@@ -215,6 +220,89 @@ def _update_env_file(env_path: str, updates: dict[str, str]) -> None:
             lines.append(f"{key}={value}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 同步更新 os.environ，确保热重载时占位符解析读到新值
+    for key, value in updates.items():
+        os.environ[key] = value
+
+
+# ---------------------------------------------------------------------------
+# 敏感字段脱敏（Task 23）：GET /config 时对前端脱敏，防止 DevTools 窃取
+# ---------------------------------------------------------------------------
+
+# 脱敏掩码标记——用于检测 PUT 请求中是否传来脱敏值
+_MASK_SENTINEL = "****"
+
+
+def mask_api_key(value: str) -> str:
+    """将 API Key 脱敏，仅保留首尾若干字符用于辨别是否已设置。
+
+    规则:
+    - 空值 → 空字符串
+    - 长度 ≤ 8 → 全部掩为 ``****``
+    - 正常 Key → ``前缀4字符 + **** + 后缀4字符``（如 ``sk-****abcd``）
+
+    参数:
+        value: 原始 API Key。
+
+    返回:
+        脱敏后的字符串。
+    """
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return _MASK_SENTINEL
+    return value[:4] + _MASK_SENTINEL + value[-4:]
+
+
+def is_masked_value(value: Any) -> bool:
+    """判断前端提交的值是否为脱敏占位（含 ``****`` 标记）。
+
+    用于 PUT /config 识别前端未修改的脱敏字段，从而保留服务端原始值。
+    """
+    return isinstance(value, str) and _MASK_SENTINEL in value
+
+
+def mask_sensitive_config(config: dict) -> dict:
+    """对配置字典中的所有敏感字段进行脱敏处理（原地修改并返回）。
+
+    遍历 ``SENSITIVE_FIELDS`` 中定义的路径，对每个非空值调用
+    :func:`mask_api_key` 替换为脱敏形态。
+
+    参数:
+        config: 原始配置字典（会被原地修改）。
+
+    返回:
+        脱敏后的配置字典（与入参为同一对象）。
+    """
+    for field_path in SENSITIVE_FIELDS:
+        actual = _get_nested(config, field_path)
+        if actual:
+            _set_nested(config, field_path, mask_api_key(str(actual)))
+    return config
+
+
+def unmask_sensitive_config(
+    incoming: dict, existing: dict
+) -> dict:
+    """将前端提交的脱敏敏感字段还原为服务端实际值（原地修改并返回）。
+
+    遍历 ``SENSITIVE_FIELDS``，若 incoming 中的值为脱敏形态（``****``），
+    则将 existing 中的实际值复制到 incoming 中，避免用脱敏值覆盖真实值。
+
+    参数:
+        incoming: 前端 PUT 提交的配置字典（会被原地修改）。
+        existing: 当前服务端的实际配置字典。
+
+    返回:
+        还原后的 incoming 字典（与入参为同一对象）。
+    """
+    for field_path in SENSITIVE_FIELDS:
+        incoming_val = _get_nested(incoming, field_path)
+        if incoming_val and is_masked_value(incoming_val):
+            existing_val = _get_nested(existing, field_path)
+            if existing_val:
+                _set_nested(incoming, field_path, existing_val)
+    return incoming
 
 
 def write_config_with_sensitive_separation(

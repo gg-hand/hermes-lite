@@ -7,19 +7,22 @@ Task 11: 从 server.py 迁移 2 个端点。重构后直接从 config_helpers / 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from fastapi import APIRouter, HTTPException, Request
 from hermes.schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
 
 # 直接从源模块导入辅助函数（不再依赖 server.py re-export）
-from hermes.config import load_config, clear_config_cache
+from hermes.config import (
+    load_config, clear_config_cache, write_config_with_sensitive_separation,
+    mask_sensitive_config, unmask_sensitive_config,
+)
 from hermes.config_helpers import (
     _config_write_lock,
     _deep_merge_config,
     _validate_config_schema,
     _backup_config,
-    _atomic_write_config,
     _apply_runtime_config,
     _check_needs_restart,
 )
@@ -49,7 +52,9 @@ def _get_config_path() -> str:
 def get_config():
     try:
         config = load_config(_get_config_path())
-        return ConfigResponse(config=config)
+        # Task 23：API Key 等敏感字段脱敏后返回前端，防止 DevTools 窃取
+        masked = mask_sensitive_config(config)
+        return ConfigResponse(config=masked)
     except Exception as e:
         logger.exception("读取配置失败: %s", e)
         raise HTTPException(status_code=500, detail=f"读取配置失败: {e}")
@@ -67,13 +72,19 @@ async def update_config(req: ConfigUpdateRequest, request: Request):
 
             merged_config = _deep_merge_config(old_config, req.config)
 
+            # Task 23：前端提交的脱敏字段（含 ****）还原为服务端实际值，
+            # 防止前端用脱敏值覆盖真实 API Key
+            merged_config = unmask_sensitive_config(merged_config, old_config)
+
             try:
                 _validate_config_schema(merged_config)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
             _backup_config(config_path)
-            _atomic_write_config(config_path, merged_config)
+            # 敏感字段分离：API Key 等实际值写入 .env，config.yaml 保留 ${VAR} 占位符
+            env_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), ".env")
+            write_config_with_sensitive_separation(merged_config, config_path, env_path)
             clear_config_cache()
 
             applied = _apply_runtime_config(merged_config)
@@ -128,7 +139,7 @@ async def update_config(req: ConfigUpdateRequest, request: Request):
                     logger.warning("热重载后重启后台 task 失败: %s", e)
 
         if needs_restart:
-            message = "配置已保存。部分项（LLM/路径/端口）需重启服务生效。"
+            message = "配置已保存。部分项（路径/端口/规则）需重启服务生效。"
         elif reloaded_components:
             message = f"配置已保存。{len(reloaded_components)} 个组件已热重载。"
         elif applied:

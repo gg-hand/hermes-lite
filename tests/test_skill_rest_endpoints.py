@@ -1,4 +1,4 @@
-﻿"""Skill REST 端点单元测试（P1 双路径化 + 软禁用改造）。
+﻿﻿"""Skill REST 端点单元测试（P1 双路径化 + 软禁用改造）。
 
 覆盖 ``src/server.py`` 的 4 个 Skill 端点：
 - ``GET /skills/{name}``：返回 meta 信息（含 stub_registered / disabled / body_preview）

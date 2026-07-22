@@ -1,4 +1,4 @@
-﻿# tests/test_factory_paths.py
+﻿﻿# tests/test_factory_paths.py
 """测试 app.py 工厂函数导入路径正确性。
 
 spec 2026-07-13 阶段 1：修复 10 个工厂导入路径 + HealthChecker 参数。

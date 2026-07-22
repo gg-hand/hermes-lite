@@ -1,4 +1,4 @@
-﻿"""DI 容器测试:注册/获取/热重载/级联/循环检测/原子性回滚。"""
+﻿﻿"""DI 容器测试:注册/获取/热重载/级联/循环检测/原子性回滚。"""
 import sys, os, threading, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
 

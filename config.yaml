@@ -14,6 +14,9 @@ llm:
 memory:
   chroma_path: data/chroma
   memory_md_path: data/memory.md
+  # chroma TTL 清理：超过此天数的记忆条目将被自动删除（0 禁用清理）
+  # 由 cleanup_loop 后台任务执行，与 session_ttl_days 共用 cleanup_interval_hours
+  chroma_ttl_days: 90
   consolidation_threshold: 15
   dedup_similarity_threshold: 0.85
   retrieval_top_k: 5
@@ -37,6 +40,9 @@ server:
   cors_origins:
   - http://localhost:3000
 storage:
+  # 主存储：sessions.db messages 表（含 FTS5 全文索引），由 SessionLogger 写入
+  # HistoryBuffer 是 messages 表的内存缓存层 + 会话级 JSONL 完整归档
+  # 两者写入相同内容但职责不同：本表服务检索/审计，HistoryBuffer 服务 LLM 上下文
   sqlite_path: data/sessions.db
   session_ttl_days: 30
   cleanup_interval_hours: 24
@@ -91,6 +97,9 @@ files:
     .gif: 60
     _default: 30
 history:
+  # HistoryBuffer 磁盘 JSONL 持久化目录：会话级完整历史归档（不截断）
+  # 与 sessions.db messages 表的关系：messages 是主存储（含 FTS5 检索），
+  # 本目录是会话恢复/导出用的完整历史副本，两者职责不同非重复存储
   persistence_dir: data/history
 tools:
   max_react_loops: 50
@@ -108,6 +117,8 @@ skills:
   mcp: []
 security:
   enabled: true
+  # 生产部署必须设置 api_key（建议通过 HERMES_API_KEY 环境变量注入）
+  # 留空 = 所有 API 端点无认证保护，仅本地开发适用
   api_key: ''
   workspace_root: .
   approval_timeout_seconds: 300
@@ -150,8 +161,8 @@ guardrails:
     enabled: false
     enable_bank_card: true
 web_search:
-  bing_api_key: ${BING_API_KEY}
-  baidu_api_key: ${BAIDU_API_KEY}
+  bing_api_key: ''
+  baidu_api_key: ***REMOVED***
 tasks: {}
 schedules: []
 cron:
@@ -173,3 +184,4 @@ reasoning:
     preserve_history: false
     display: false
   persist_thinking: false
+_config_path: config.yaml

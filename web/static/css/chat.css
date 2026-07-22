@@ -1030,6 +1030,35 @@ pre:hover .copy-btn { opacity: 1; }
 .config-tag.hot { background: var(--success-soft); color: var(--success); }
 .config-tag.restart { background: var(--danger-soft); color: var(--danger); }
 
+/* ========== API Key 安全指示器（Task 23） ========== */
+.key-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.key-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+.key-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.key-input-wrap .form-input {
+  flex: 1;
+}
+.key-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* ========== 按钮 mini ========== */
 .btn-mini {
   padding: 2px 8px;

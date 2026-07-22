@@ -1,4 +1,4 @@
-﻿"""调度 API 端点单元测试（Phase 6 Task 7）。
+﻿﻿"""调度 API 端点单元测试（Phase 6 Task 7）。
 
 验证 ``src/server.py`` 的 /schedules 端点。使用 FastAPI TestClient。
 

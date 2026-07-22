@@ -94,6 +94,9 @@ class SyncRunner:
         """
         loop = self.loop
 
+        # 批次 2.4: 重置 last_usage，避免跨调用污染
+        loop.last_usage = None
+
         # 1. 构建 messages = history + [user_input]
         messages: List[Dict[str, Any]] = []
         if history:
@@ -159,6 +162,15 @@ class SyncRunner:
                 if last_text:
                     return last_text, messages, False, "normal"
                 raise
+
+            # 批次 2.4: 累积 LLM usage 到 loop.last_usage，供 chat_handler 回填 token_count
+            # 多轮工具调用时 input/output tokens 求和，反映整个 react 循环的总消耗
+            _resp_usage = getattr(response, "usage", None)
+            if _resp_usage and isinstance(_resp_usage, dict):
+                if loop.last_usage is None:
+                    loop.last_usage = {"input_tokens": 0, "output_tokens": 0}
+                loop.last_usage["input_tokens"] += _resp_usage.get("input_tokens", 0)
+                loop.last_usage["output_tokens"] += _resp_usage.get("output_tokens", 0)
 
             # 解析响应
             content_blocks = getattr(response, "content", []) or []

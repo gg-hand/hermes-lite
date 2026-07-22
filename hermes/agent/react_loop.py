@@ -190,6 +190,11 @@ class ReactLoop:
         else:
             self.sync_runner = None
 
+        # 批次 2.4: 最近一次 run() 累积的 LLM usage（input/output tokens 之和）
+        # 每次 run() 开始时重置为 None，避免跨调用污染
+        # chat_handler / scheduler 读取此属性回填 messages.token_count
+        self.last_usage: Optional[Dict[str, Any]] = None
+
     def get_info_count(self) -> int:
         """返回当前信息计数器值。"""
         return self._info_count

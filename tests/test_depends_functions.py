@@ -1,4 +1,4 @@
-﻿# tests/test_depends_functions.py
+﻿﻿# tests/test_depends_functions.py
 """测试 app.py Depends 函数正确返回容器组件。
 
 spec 2026-07-13 阶段 2：添加 11+ 个 Depends 函数供路由类型安全注入。

@@ -1,4 +1,4 @@
-﻿# tests/test_lifespan_module.py（修改）
+﻿﻿# tests/test_lifespan_module.py（修改）
 """测试 lifespan 模块使用 container.get() 而非手工 new。
 
 spec 2026-07-13 阶段 2：lifespan 从 796 行降至 ~200 行。

@@ -34,6 +34,10 @@ async def cleanup_loop(session_logger=None, metrics_store=None, orchestrator=Non
     if not ttl_days:
         return
 
+    # chroma TTL 清理配置（可选，默认 90 天）
+    memory_cfg = config.get("memory", {})
+    chroma_ttl_days = memory_cfg.get("chroma_ttl_days", 90)
+
     while True:
         try:
             if session_logger is not None:
@@ -77,6 +81,24 @@ async def cleanup_loop(session_logger=None, metrics_store=None, orchestrator=Non
                                     logger.info("清理过期 session todo 文件: %s", f.name)
                                 except OSError as e:
                                     logger.warning("清理 todo 文件失败 %s: %s", f.name, e)
+            # chroma 向量库 TTL 清理
+            if (
+                chroma_ttl_days > 0
+                and orchestrator is not None
+                and getattr(orchestrator, "chroma_store", None) is not None
+            ):
+                try:
+                    # P2-6 修复：all_collections=True 覆盖所有已创建的 collection
+                    deleted_chroma = orchestrator.chroma_store.delete_old_entries(
+                        days=chroma_ttl_days, all_collections=True
+                    )
+                    if deleted_chroma:
+                        logger.info(
+                            "清理了 %d 条过期 chroma 记忆（超过 %d 天）",
+                            deleted_chroma, chroma_ttl_days,
+                        )
+                except Exception as e:
+                    logger.warning("chroma 清理失败: %s", e)
         except Exception as e:
             logger.error("定时清理会话失败: %s", e)
         await asyncio.sleep(interval_hours * 3600)

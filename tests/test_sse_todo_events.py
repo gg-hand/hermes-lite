@@ -1,4 +1,4 @@
-﻿"""SSE 事件透传测试（Phase 6 Task 7）。
+﻿﻿"""SSE 事件透传测试（Phase 6 Task 7）。
 
 验证 ``src/server.py`` 的 ``POST /chat/stream`` 端点正确透传 round_start /
 todo_init / todo_update / todo_complete / tool 等事件，并对 done 事件补充

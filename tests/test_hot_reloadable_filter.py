@@ -1,4 +1,4 @@
-﻿# tests/test_hot_reloadable_filter.py
+﻿﻿# tests/test_hot_reloadable_filter.py
 """测试 container.py reload 方法过滤 hot_reloadable=False 组件。
 
 spec 2026-07-13 阶段 1：修复 hot_reloadable 死代码。

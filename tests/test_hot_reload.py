@@ -1,4 +1,4 @@
-﻿"""热重载测试：LLM/安全/存储三种场景（Task 5）。
+﻿﻿"""热重载测试：LLM/安全/存储三种场景（Task 5）。
 
 验证 Container.reload() 的原子性重建、级联重建、ComponentRef 代理转发。
 同时验证 detect_changed_sections 的顶层段比较逻辑。

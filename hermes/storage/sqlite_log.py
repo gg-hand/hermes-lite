@@ -9,7 +9,20 @@ from typing import Any, Dict, List, Optional
 
 
 class SessionLogger:
-    """会话日志记录器，负责将会话与消息持久化到 SQLite。"""
+    """会话日志记录器，负责将会话与消息持久化到 SQLite。
+
+    角色定位（v1.0.4 澄清）：
+    - **主存储**：``sessions.db`` 的 ``messages`` 表是会话消息的权威存储，
+      含 FTS5 全文索引，服务检索、审计与导出。
+    - 与 :class:`~hermes.storage.history_buffer.HistoryBuffer` 的关系：
+      HistoryBuffer 是本类的内存缓存层（LLM 上下文快路径）+ 会话级
+      JSONL 完整归档。两者写入相同内容但职责不同——本类服务持久化与
+      检索，HistoryBuffer 服务 LLM 上下文构建。这不是"重复存储"而是
+      "读写分离"。
+    - ``messages`` 表的 FTS5 使用 ``content='messages'`` 外部表模式
+      （``content_rowid='id'``），FTS5 内部 content 副本是全文索引的
+      工作机制本身，无法消除。
+    """
 
     def __init__(self, db_path: str):
         """初始化日志记录器。

@@ -1,4 +1,4 @@
-﻿# tests/test_routes_batch2_no_state.py
+﻿﻿# tests/test_routes_batch2_no_state.py
 """测试 routes 批次 2 无 import state。"""
 from __future__ import annotations
 import sys

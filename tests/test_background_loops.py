@@ -1,4 +1,4 @@
-﻿# tests/test_background_loops.py
+﻿﻿# tests/test_background_loops.py
 """测试 background_loops.py 参数注入改造。
 
 spec 2026-07-13 阶段 2：3 个循环改参数注入 + asyncio.Event。

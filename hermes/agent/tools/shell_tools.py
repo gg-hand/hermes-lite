@@ -22,6 +22,29 @@ logger = logging.getLogger(__name__)
 
 _SHELL_META_RE = re.compile(r'[|>&;`$(){}!~]|&&|\|\|')
 
+# 工具输出截断阈值（字符数），与 file_read 的 max_chars 对齐
+# 避免大量命令输出（如 dir /s、cat 大日志）注入 LLM 上下文导致 token 预算耗尽
+_MAX_OUTPUT_CHARS = int(os.environ.get("HERMES_MAX_OUTPUT_CHARS", "20000"))
+
+
+def _truncate_output(text: str) -> str:
+    """对命令输出做长度截断。
+
+    超过 _MAX_OUTPUT_CHARS 的输出截断为前 N 字符 + 原文长度提示。
+    提示格式: ``...[truncated, original {N} chars]``
+
+    Args:
+        text: 原始输出文本（stdout / stderr 拼接后的最终输出）。
+
+    Returns:
+        截断后的文本。若未超阈值则原样返回。
+    """
+    if not isinstance(text, str):
+        return text
+    if len(text) <= _MAX_OUTPUT_CHARS:
+        return text
+    return text[:_MAX_OUTPUT_CHARS] + f"\n...[truncated, original {len(text)} chars]"
+
 
 def _has_shell_metachar(command: str) -> bool:
     """检查命令是否含有 shell 元字符。
@@ -287,7 +310,7 @@ def _execute_command_inner(
         output = "[提示] 命令执行成功但 stdout 为空。可能命令无输出或输出被重定向。"
     if interrupted:
         output = "[命令已被用户中断]\n" + output
-    return output
+    return _truncate_output(output)
 
 
 def register_bash_tool(registry, timeout: int = 30) -> None:

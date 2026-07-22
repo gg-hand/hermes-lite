@@ -1,4 +1,4 @@
-﻿"""server.py reasoning 路由与 SSE 透传测试。
+﻿﻿"""server.py reasoning 路由与 SSE 透传测试。
 
 spec integrate-llm-reasoning-mode Task 22 SubTask 22.18-22.21：
 - SubTask 22.18: done 事件 SSE 透传 usage 字段单测

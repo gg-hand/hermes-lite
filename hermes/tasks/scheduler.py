@@ -678,6 +678,12 @@ class CronScheduler:
                 started_at_dt = datetime.now()
             started_at = started_at_dt.isoformat()
 
+            # P1-4 修复：workflow 路径开始前重置 react_loop.last_usage
+            # 避免纯工具步骤的 workflow 读到上一次调用的残留 usage
+            _react_loop = getattr(orchestrator, "react_loop", None)
+            if _react_loop is not None:
+                _react_loop.last_usage = None
+
             # Task 10：提前生成 run_id，供 WorkflowContext 注入与 RunSummary 持久化
             run_id = uuid.uuid4().hex[:12]
 
@@ -804,10 +810,22 @@ class CronScheduler:
                     else:
                         err_lines = "; ".join(errors) if errors else "未知错误"
                         final_content = f"[调度执行失败] {err_lines}"
+                    # 批次 2.4: 从 react_loop.last_usage 回填 token_count
+                    # workflow 路径不经过 orchestrator.chat()，需手动读取累积的 usage
+                    _wf_usage = getattr(
+                        getattr(orchestrator, "react_loop", None),
+                        "last_usage", None,
+                    )
+                    _wf_token_count = (
+                        int(_wf_usage.get("input_tokens", 0))
+                        + int(_wf_usage.get("output_tokens", 0))
+                        if isinstance(_wf_usage, dict) else 0
+                    )
                     _sl.log_message(
                         session_id=session_id,
                         role="assistant",
                         content=final_content,
+                        token_count=_wf_token_count,
                     )
                 except Exception as e:
                     logger.warning(

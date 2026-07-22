@@ -240,7 +240,9 @@ class _MockChromaClient:
 
     def get_or_create_collection(self, name: str, metadata: dict = None):
         if name not in self._collections:
-            self._collections[name] = _MockCollection()
+            col = _MockCollection()
+            col.name = name  # 设置 name 属性，便于测试验证
+            self._collections[name] = col
         return self._collections[name]
 
 
