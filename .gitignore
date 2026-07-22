@@ -1,6 +1,8 @@
 # ── 敏感文件 ──
 # API Key 使用 ${VAR} 环境变量注入，不存明文
 # 本地覆盖配置放 config.yaml.bak（自动忽略）
+# config.yaml 含 ${VAR} 占位符但禁止硬编码密钥，仍可能含本地路径等敏感配置，不入库
+config.yaml
 config.yaml.bak
 .env
 # .env.example 仅含占位符模板，需提交以便用户参考
