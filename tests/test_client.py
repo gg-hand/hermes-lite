@@ -1,4 +1,4 @@
-﻿"""OpenAICompatBackend 清理孤立 tool_result 单元测试 — Phase 9 Task 6 方案 B。
+"""OpenAICompatBackend 清理孤立 tool_result 单元测试 — Phase 9 Task 6 方案 B。
 
 验证 :meth:`OpenAICompatBackend._clean_orphan_tool_results` 与
 :meth:`OpenAICompatBackend._convert_messages` 的边界清理行为，覆盖：
@@ -40,7 +40,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.llm.client import OpenAICompatBackend  # noqa: E402
+from teage_liu.llm.client import OpenAICompatBackend  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ class TestCleanOrphanToolResults(unittest.TestCase):
             make_user_tool_result("tu_orphan_warn", "孤立"),
         ]
         with self.assertLogs(
-            "hermes.llm.client", level="WARNING"
+            "teage_liu.llm.client", level="WARNING"
         ) as cm:
             OpenAICompatBackend._clean_orphan_tool_results(messages)
         # 至少一条 warning 包含 "清理孤立 tool_result"
@@ -335,7 +335,7 @@ class TestConvertMessagesInvokesCleanup(unittest.TestCase):
         messages = [
             make_user_tool_result("tu_orphan_log", "孤立"),
         ]
-        with self.assertLogs("hermes.llm.client", level="WARNING") as cm:
+        with self.assertLogs("teage_liu.llm.client", level="WARNING") as cm:
             backend._convert_messages(messages, system=None)
         joined = "\n".join(cm.output)
         self.assertIn("清理孤立 tool_result", joined)
@@ -348,7 +348,7 @@ class TestOrphanCleanupRegression(unittest.TestCase):
     def test_logger_level_unchanged(self):
         """调用清理函数后 src.llm.client logger 级别不被修改。"""
         backend = _build_backend()
-        logger = logging.getLogger("hermes.llm.client")
+        logger = logging.getLogger("teage_liu.llm.client")
         original_level = logger.level
         messages = [make_user_tool_result("tu_reg", "孤立")]
         backend._convert_messages(messages, system=None)

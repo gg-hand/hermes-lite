@@ -1,4 +1,4 @@
-﻿"""GuardrailEngine 单元测试 — 验证统一编排器的入口委托与 fail-open 行为。
+"""GuardrailEngine 单元测试 — 验证统一编排器的入口委托与 fail-open 行为。
 
 覆盖 Phase 9 Task 4 spec 中所有要求：
 - from_config 正常构造（含各子组件参数透传）
@@ -34,7 +34,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.guardrails import (  # noqa: E402
+from teage_liu.guardrails import (  # noqa: E402
     DEFAULT_TRUSTED_TOOLS,
     GuardrailEngine,
     InjectionGuard,
@@ -280,7 +280,7 @@ class TestFromConfigMissingSections(unittest.TestCase):
 
     def test_invalid_max_output_length_degrades(self):
         """max_output_length 非正整数 → 降级为 MAX_TOOL_RESULT_LENGTH。"""
-        from hermes.guardrails.injection_guard import MAX_TOOL_RESULT_LENGTH
+        from teage_liu.guardrails.injection_guard import MAX_TOOL_RESULT_LENGTH
 
         config = {
             "guardrails": {
@@ -371,7 +371,7 @@ class TestScanInput(unittest.TestCase):
             input_scan_enabled=True,
         )
         with self.assertLogs(
-            "hermes.guardrails.guardrail_engine", level="WARNING"
+            "teage_liu.guardrails.guardrail_engine", level="WARNING"
         ) as cm:
             engine.scan_input("anything")
         self.assertTrue(
@@ -462,7 +462,7 @@ class TestSanitizeToolResult(unittest.TestCase):
             sanitizer_enabled=True,
         )
         with self.assertLogs(
-            "hermes.guardrails.guardrail_engine", level="WARNING"
+            "teage_liu.guardrails.guardrail_engine", level="WARNING"
         ) as cm:
             engine.sanitize_tool_result("text", tool_name="web_fetch")
         self.assertTrue(
@@ -553,7 +553,7 @@ class TestFilterOutput(unittest.TestCase):
             output_filter_enabled=True,
         )
         with self.assertLogs(
-            "hermes.guardrails.guardrail_engine", level="WARNING"
+            "teage_liu.guardrails.guardrail_engine", level="WARNING"
         ) as cm:
             engine.filter_output("text")
         self.assertTrue(
@@ -851,7 +851,7 @@ class TestIntegration(unittest.TestCase):
         try:
             # 构造一个会触发异常的 config（通过 mock InjectionGuard 构造函数）
             with patch(
-                "hermes.guardrails.guardrail_engine.InjectionGuard",
+                "teage_liu.guardrails.guardrail_engine.InjectionGuard",
                 side_effect=RuntimeError("construction failed"),
             ):
                 engine = GuardrailEngine.from_config(

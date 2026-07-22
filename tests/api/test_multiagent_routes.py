@@ -94,8 +94,8 @@ def bb_root(tmp_path: Path) -> Path:
 @pytest.fixture
 def app_with_multiagent(bb_root: Path) -> FastAPI:
     """构造启用了 multiagent 的 FastAPI app。"""
-    from hermes.api.multiagent_routes import create_multiagent_router
-    from hermes.container import Container
+    from teage_liu.api.multiagent_routes import create_multiagent_router
+    from teage_liu.container import Container
 
     config = {
         "multiagent": {
@@ -152,8 +152,8 @@ class TestMultiagentRoutes:
     @pytest.mark.asyncio
     async def test_get_agents_list(self, app_with_multiagent: FastAPI, bb_root: Path):
         """GET /api/multiagent/agents 返回 agent 列表。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.schema_validator import SchemaValidator
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
 
         registry = AgentRegistry(bb_root, SchemaValidator())
         await registry.register(_make_agent_card("worker_001", "worker"))
@@ -167,7 +167,7 @@ class TestMultiagentRoutes:
     @pytest.mark.asyncio
     async def test_get_messages(self, app_with_multiagent: FastAPI, bb_root: Path):
         """GET /api/multiagent/messages 返回消息列表。"""
-        from hermes.multiagent.blackboard import append_message
+        from teage_liu.multiagent.blackboard import append_message
 
         await append_message(
             bb_root,
@@ -192,7 +192,7 @@ class TestMultiagentRoutes:
     @pytest.mark.asyncio
     async def test_get_audit_records(self, app_with_multiagent: FastAPI, bb_root: Path):
         """GET /api/multiagent/audit 返回审计记录。"""
-        from hermes.multiagent.blackboard import append_audit
+        from teage_liu.multiagent.blackboard import append_audit
 
         await append_audit(
             bb_root,
@@ -229,8 +229,8 @@ class TestMultiagentRoutes:
     @pytest.mark.asyncio
     async def test_disabled_returns_404(self, tmp_path: Path):
         """multiagent.enabled=False 时所有端点返回 404。"""
-        from hermes.api.multiagent_routes import create_multiagent_router
-        from hermes.container import Container
+        from teage_liu.api.multiagent_routes import create_multiagent_router
+        from teage_liu.container import Container
 
         config = {"multiagent": {"enabled": False}}
         container = Container(config)
@@ -284,7 +284,7 @@ class TestMultiagentRoutes:
 
 def test_determine_director_state_unknown_for_empty():
     """_determine_director_state 对空 dict 返回 unknown。"""
-    from hermes.api.multiagent_routes import _determine_director_state
+    from teage_liu.api.multiagent_routes import _determine_director_state
 
     assert _determine_director_state({}) == "unknown"
     assert _determine_director_state(None) == "unknown"
@@ -294,7 +294,7 @@ def test_determine_director_state_healthy_for_recent_tick():
     """_determine_director_state 对最近 tick 返回 healthy。"""
     from datetime import datetime, timezone
 
-    from hermes.api.multiagent_routes import _determine_director_state
+    from teage_liu.api.multiagent_routes import _determine_director_state
 
     now_iso = datetime.now(timezone.utc).isoformat()
     state = _determine_director_state({"last_director_tick": now_iso})
@@ -305,7 +305,7 @@ def test_determine_director_state_fault_for_stale_tick():
     """_determine_director_state 对过期 tick 返回 fault。"""
     from datetime import datetime, timedelta, timezone
 
-    from hermes.api.multiagent_routes import _determine_director_state
+    from teage_liu.api.multiagent_routes import _determine_director_state
 
     old_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
     state = _determine_director_state({"last_director_tick": old_iso})
@@ -314,7 +314,7 @@ def test_determine_director_state_fault_for_stale_tick():
 
 def test_detect_event_type_director_state_change():
     """_detect_event_type 检测 director 状态变更。"""
-    from hermes.api.multiagent_routes import _detect_event_type
+    from teage_liu.api.multiagent_routes import _detect_event_type
 
     old = {"director": {"state": "healthy"}, "agents": [], "autonomous_mode": False}
     new = {"director": {"state": "degraded"}, "agents": [], "autonomous_mode": False}
@@ -323,7 +323,7 @@ def test_detect_event_type_director_state_change():
 
 def test_detect_event_type_agent_join():
     """_detect_event_type 检测 agent 加入。"""
-    from hermes.api.multiagent_routes import _detect_event_type
+    from teage_liu.api.multiagent_routes import _detect_event_type
 
     old = {"director": {"state": "healthy"}, "agents": [{"agent_id": "a"}], "autonomous_mode": False}
     new = {"director": {"state": "healthy"}, "agents": [{"agent_id": "a"}, {"agent_id": "b"}], "autonomous_mode": False}
@@ -332,7 +332,7 @@ def test_detect_event_type_agent_join():
 
 def test_detect_event_type_autonomous_enter():
     """_detect_event_type 检测进入自治模式。"""
-    from hermes.api.multiagent_routes import _detect_event_type
+    from teage_liu.api.multiagent_routes import _detect_event_type
 
     old = {"director": {"state": "healthy"}, "agents": [], "autonomous_mode": False}
     new = {"director": {"state": "healthy"}, "agents": [], "autonomous_mode": True}
@@ -341,7 +341,7 @@ def test_detect_event_type_autonomous_enter():
 
 def test_format_sse():
     """_format_sse 生成合规的 SSE 事件块。"""
-    from hermes.api.multiagent_routes import _format_sse
+    from teage_liu.api.multiagent_routes import _format_sse
 
     block = _format_sse("initial", {"enabled": True})
     assert block.startswith("event: initial\n")

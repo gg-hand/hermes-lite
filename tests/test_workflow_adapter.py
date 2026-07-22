@@ -1,4 +1,4 @@
-﻿"""Workflow 适配器单元测试（Task 6.4）。
+"""Workflow 适配器单元测试（Task 6.4）。
 
 覆盖 6 个用例（每个旧模板各自包装为单 step WorkflowSpec）：
 1. directory_watch 包装
@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import unittest
 
-from hermes.tasks.workflow.adapter import (
+from teage_liu.tasks.workflow.adapter import (
     TEMPLATE_STEP_TYPE_MAP,
     is_adapter_wrapped,
     wrap_template_as_workflow,
 )
-from hermes.tasks.workflow.spec import WorkflowSpec
+from teage_liu.tasks.workflow.spec import WorkflowSpec
 
 
 class TestWorkflowAdapterWrapDirectoryWatch(unittest.TestCase):

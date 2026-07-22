@@ -1,4 +1,4 @@
-﻿"""HistoryBuffer 归档回调单元测试 — 验证 FIFO 淘汰时归档到向量库的行为。
+"""HistoryBuffer 归档回调单元测试 — 验证 FIFO 淘汰时归档到向量库的行为。
 
 覆盖以下测试用例：
 1. test_fifo_invokes_archive_callback      - FIFO 淘汰时 callback 被调用，传入正确 session_id 与 message
@@ -23,7 +23,7 @@ import unittest
 # 路径与 mock 依赖初始化（必须在导入任何 src 模块之前完成）
 # ---------------------------------------------------------------------------
 
-# 将项目根目录加入 sys.path，使 from hermes.xxx import yyy 可用
+# 将项目根目录加入 sys.path，使 from teage_liu.xxx import yyy 可用
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -32,7 +32,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.storage.history_buffer import HistoryBuffer  # noqa: E402
+from teage_liu.storage.history_buffer import HistoryBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ class TestHistoryBufferArchiveIntegrationWithChroma(unittest.TestCase):
     def test_archive_callback_writes_to_chroma_store(self):
         """归档回调将淘汰消息以 type=conversation_turn 写入 ChromaMemoryStore。"""
         # 使用 mock 的 chromadb，避免依赖真实模型权重
-        from hermes.storage.chroma_store import ChromaMemoryStore
+        from teage_liu.storage.chroma_store import ChromaMemoryStore
 
         store = ChromaMemoryStore(persist_path="data/chroma_test_archive")
 

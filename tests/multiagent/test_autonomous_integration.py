@@ -18,14 +18,14 @@ import pytest
 import pytest_asyncio
 import yaml
 
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     atomic_write,
     read_messages,
 )
-from hermes.multiagent.schema_validator import SchemaValidator
-from hermes.multiagent.worker_adapter import WorkerAdapter
+from teage_liu.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.worker_adapter import WorkerAdapter
 
 
 def _make_worker_card(agent_id: str) -> dict:

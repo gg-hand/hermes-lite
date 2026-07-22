@@ -1,4 +1,4 @@
-﻿"""P2-5 会话存在性检查优化测试 — 验证 session_exists 与 _ensure_session。
+"""P2-5 会话存在性检查优化测试 — 验证 session_exists 与 _ensure_session。
 
 运行方式:
     python -m unittest tests.test_session_logger_ext -v
@@ -24,7 +24,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.storage.sqlite_log import SessionLogger
+from teage_liu.storage.sqlite_log import SessionLogger
 
 
 class TestSessionExistsContract(unittest.TestCase):

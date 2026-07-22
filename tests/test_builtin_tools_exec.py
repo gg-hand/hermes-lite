@@ -1,4 +1,4 @@
-﻿"""execute_command Popen 可中断版测试。
+"""execute_command Popen 可中断版测试。
 
 mock 策略：不 mock subprocess（需要真实进程行为测试 kill）。
 使用跨平台安全命令：sleep / echo 等。
@@ -23,7 +23,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent.tools.shell_tools import (
+from teage_liu.agent.tools.shell_tools import (
     execute_command,
     _set_running_proc,
     _get_and_clear_running_proc,
@@ -151,7 +151,7 @@ class TestInterruptDetection(unittest.TestCase):
         def run_and_kill():
             # 注入 cancel_event 到 ContextVar
             try:
-                from hermes.agent._cancel_context import current_cancel_event
+                from teage_liu.agent._cancel_context import current_cancel_event
                 token = current_cancel_event.set(cancel_event)
             except ImportError:
                 return

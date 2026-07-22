@@ -1,4 +1,4 @@
-﻿"""TodoListRegistry 持久化层单元测试。
+"""TodoListRegistry 持久化层单元测试。
 
 验证 ``src/tasks/todo_list.py`` 的 ``TodoListRegistry`` 磁盘持久化能力：
 init_plan 落盘、update_step 持久化、重启懒加载恢复、delete 清理、
@@ -26,7 +26,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.tasks.todo_list import TodoListRegistry  # noqa: E402
+from teage_liu.tasks.todo_list import TodoListRegistry  # noqa: E402
 
 
 class TestTodoListRegistryPersistence(unittest.TestCase):

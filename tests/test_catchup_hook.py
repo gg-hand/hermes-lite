@@ -15,7 +15,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from hermes.tasks.hooks.catchup_hook import CatchUpHook
+from teage_liu.tasks.hooks.catchup_hook import CatchUpHook
 
 
 class TestCatchUpHookBeforeExecute(unittest.TestCase):
@@ -167,7 +167,7 @@ class TestRunScheduleDirect(unittest.TestCase):
     """_run_schedule_direct 是 thin wrapper（spec 5.1 P1 修复）。"""
 
     def test_delegates_to_run_schedule_with_injected_params(self):
-        from hermes.tasks.scheduler import CronScheduler
+        from teage_liu.tasks.scheduler import CronScheduler
 
         scheduler = CronScheduler.__new__(CronScheduler)
         scheduler._orchestrator = MagicMock()
@@ -189,7 +189,7 @@ class TestRunLoopStartupCatchUp(unittest.TestCase):
 
     def test_run_loop_invokes_scan_and_compensate_before_first_iteration(self):
         """run_loop 首次循环前调用 hooks.catchup.scan_and_compensate。"""
-        from hermes.tasks.scheduler import CronScheduler
+        from teage_liu.tasks.scheduler import CronScheduler
 
         scheduler = CronScheduler.__new__(CronScheduler)
         scheduler._schedules = []

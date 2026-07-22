@@ -1,6 +1,6 @@
 """multiagent 路由集成测试（Plan 4 Task 5）。
 
-验证 hermes/app.py 的 register_components 正确注册 multiagent_router 到容器，
+验证 teage_liu/app.py 的 register_components 正确注册 multiagent_router 到容器，
 以及通过容器获取的路由可挂载到 FastAPI app 并提供端点。
 
 RED 阶段：register_components 未注册 multiagent_router，
@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def _reset_container():
     """每个测试前后清理全局容器，避免污染其他测试。"""
-    from hermes.app import close_container
+    from teage_liu.app import close_container
 
     close_container()
     yield
@@ -110,7 +110,7 @@ class TestRouteIntegration:
         RED 失败原因：register_components 未注册 multiagent_router，
                       container.get("multiagent_router") 返回 None。
         """
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         bb_dir = tmp_path / "bb"
         _init_blackboard_skeleton(bb_dir)
@@ -138,7 +138,7 @@ class TestRouteIntegration:
         self, tmp_path: Path, _reset_container
     ):
         """multiagent.enabled=False 时 register_components 不注册 multiagent_router。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {"multiagent": {"enabled": False}}
         init_container(config)
@@ -157,7 +157,7 @@ class TestRouteIntegration:
         RED 失败原因：container.get("multiagent_router") 返回 None，
                       app.include_router(None) 抛 TypeError。
         """
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         bb_dir = tmp_path / "bb"
         _init_blackboard_skeleton(bb_dir)
@@ -189,7 +189,7 @@ class TestRouteIntegration:
 
     def test_router_is_hot_reloadable(self, tmp_path: Path, _reset_container):
         """multiagent_router 注册时标记为 hot_reloadable=True（支持配置热更新）。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         bb_dir = tmp_path / "bb"
         _init_blackboard_skeleton(bb_dir)
@@ -216,7 +216,7 @@ class TestRouteIntegration:
         self, tmp_path: Path, _reset_container
     ):
         """容器注册的 multiagent_router 包含全部 6 个端点。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         bb_dir = tmp_path / "bb"
         _init_blackboard_skeleton(bb_dir)

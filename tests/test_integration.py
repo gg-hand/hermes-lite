@@ -1,4 +1,4 @@
-﻿"""端到端集成测试（mock 模式，不依赖真实 LLM API）。
+"""端到端集成测试（mock 模式，不依赖真实 LLM API）。
 
 覆盖以下测试用例：
 1. test_history_buffer_fifo        - HistoryBuffer 的 FIFO 删除逻辑
@@ -28,7 +28,7 @@ import unittest
 # 路径与 mock 依赖初始化（必须在导入任何 src 模块之前完成）
 # ---------------------------------------------------------------------------
 
-# 将项目根目录加入 sys.path，使 from hermes.xxx import yyy 可用
+# 将项目根目录加入 sys.path，使 from teage_liu.xxx import yyy 可用
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -39,14 +39,14 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 # 导入被测模块（此时 mock 已就位，chroma_store.py 等可正常导入）
-from hermes.storage.history_buffer import HistoryBuffer  # noqa: E402
-from hermes.memory.consolidation import ConsolidationEngine  # noqa: E402
-from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
-from hermes.memory.context_manager import ContextManager  # noqa: E402
-from hermes.llm.prompts import SYSTEM_PROMPT  # noqa: E402
-from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
-from hermes.memory.memory_md import MemoryMdManager  # noqa: E402
-from hermes.memory.retrieval import MemoryRetriever  # noqa: E402
+from teage_liu.storage.history_buffer import HistoryBuffer  # noqa: E402
+from teage_liu.memory.consolidation import ConsolidationEngine  # noqa: E402
+from teage_liu.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from teage_liu.memory.context_manager import ContextManager  # noqa: E402
+from teage_liu.llm.prompts import SYSTEM_PROMPT  # noqa: E402
+from teage_liu.agent.tool_registry import ToolRegistry  # noqa: E402
+from teage_liu.memory.memory_md import MemoryMdManager  # noqa: E402
+from teage_liu.memory.retrieval import MemoryRetriever  # noqa: E402
 
 
 # ===========================================================================

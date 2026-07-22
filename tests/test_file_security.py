@@ -1,4 +1,4 @@
-﻿"""安全边界与健壮性测试。
+"""安全边界与健壮性测试。
 
 覆盖：路径穿越、MIME伪装、XSS、SQL注入、超大文件名、空文件body。
 
@@ -21,7 +21,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from hermes.files.upload_manager import UploadManager
+from teage_liu.files.upload_manager import UploadManager
 
 
 class TestFileSecurity(unittest.TestCase):

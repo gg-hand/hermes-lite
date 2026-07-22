@@ -1,4 +1,4 @@
-﻿﻿# tests/test_background_task_registry.py
+# tests/test_background_task_registry.py
 """测试 BackgroundTaskRegistry：后台 task 注册/取消/重启。
 
 spec 2026-07-13 阶段 2：新增 BackgroundTaskRegistry 解决 reload/软重启后
@@ -10,8 +10,8 @@ import os
 import asyncio
 import pytest
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
-from hermes.background_task_registry import BackgroundTaskRegistry
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
+from teage_liu.background_task_registry import BackgroundTaskRegistry
 
 
 @pytest.mark.asyncio

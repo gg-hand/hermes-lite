@@ -1,4 +1,4 @@
-﻿"""HistoryBuffer JSONL 持久化端到端集成测试 — Phase 10 SubTask 5.x。
+"""HistoryBuffer JSONL 持久化端到端集成测试 — Phase 10 SubTask 5.x。
 
 聚焦"重启恢复"与"内存/磁盘一致性"端到端场景，区别于
 ``test_history_buffer_persistence.py`` 的单元细节测试。覆盖：
@@ -40,7 +40,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.storage.history_buffer import HistoryBuffer  # noqa: E402
+from teage_liu.storage.history_buffer import HistoryBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

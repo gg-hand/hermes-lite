@@ -1,4 +1,4 @@
-﻿"""ReactLoop 多轮独立渲染与 todo 事件透传测试（T5）。
+"""ReactLoop 多轮独立渲染与 todo 事件透传测试（T5）。
 
 验证 run_stream 在多轮循环中：
 1. 每轮循环开始时 yield round_start 事件，loop_idx 从 0 递增；
@@ -38,8 +38,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.react_loop import ReactLoop  # noqa: E402
-from hermes.agent.policy import Decision  # noqa: E402
+from teage_liu.agent.react_loop import ReactLoop  # noqa: E402
+from teage_liu.agent.policy import Decision  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -948,7 +948,7 @@ class TestBuildDoneEventFields(unittest.IsolatedAsyncioTestCase):
 
     async def test_done_event_includes_reasoning_stats(self):
         """reasoning 开启时 done 事件含 reasoning_stats。"""
-        from hermes.llm.reasoning_profiles import ReasoningConfig
+        from teage_liu.llm.reasoning_profiles import ReasoningConfig
         loop = self._make_react_loop()
         cfg = ReasoningConfig(enabled=True, effort="medium", budget_tokens=8000)
         evt = loop._build_done_event(

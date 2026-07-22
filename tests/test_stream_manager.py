@@ -1,7 +1,7 @@
-﻿"""StreamManager 单元测试。"""
+"""StreamManager 单元测试。"""
 import threading
 import pytest
-from hermes.stream_manager import StreamManager, StreamCancelled
+from teage_liu.stream_manager import StreamManager, StreamCancelled
 
 
 class TestStreamManager:

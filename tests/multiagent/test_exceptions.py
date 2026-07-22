@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes.agent.tool_error import ToolError, ErrorStage
-from hermes.multiagent.exceptions import (
+from teage_liu.agent.tool_error import ToolError, ErrorStage
+from teage_liu.multiagent.exceptions import (
     A2AGatewayError,
     CASConflictError,
     CASVersionMismatchError,

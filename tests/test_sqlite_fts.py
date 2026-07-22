@@ -1,4 +1,4 @@
-﻿"""SessionLogger FTS5 全文检索单元测试（P2: Recall Memory）。
+"""SessionLogger FTS5 全文检索单元测试（P2: Recall Memory）。
 
 验证基于 SQLite FTS5 的 search_messages 行为，覆盖以下场景：
 1. 插入后可检索（基础功能）
@@ -36,7 +36,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.storage.sqlite_log import SessionLogger  # noqa: E402
+from teage_liu.storage.sqlite_log import SessionLogger  # noqa: E402
 
 
 def _make_logger(tmpdir: str, name: str = "test.db") -> SessionLogger:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.schema_validator import SchemaValidator
 
 
 @pytest.fixture

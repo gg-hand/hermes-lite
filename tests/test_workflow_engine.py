@@ -21,10 +21,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
-from hermes.tasks.workflow.base import WorkflowContext, WorkflowResult
-from hermes.tasks.workflow.engine import WorkflowCycleError, WorkflowEngine
-from hermes.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
-from hermes.tasks.workflow.step_executor import (
+from teage_liu.tasks.workflow.base import WorkflowContext, WorkflowResult
+from teage_liu.tasks.workflow.engine import WorkflowCycleError, WorkflowEngine
+from teage_liu.tasks.workflow.spec import OnFailure, RetryPolicy, StepSpec, WorkflowSpec
+from teage_liu.tasks.workflow.step_executor import (
     DeterministicExecutor,
     LlmCallExecutor,
     StepExecutionError,
@@ -267,7 +267,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
 
     def test_retry_action_now_equivalent_to_abort(self):
         """旧 spec 的 action="retry" 等效于 abort：失败即终止，不重试。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         failing_then_success = _FailingExecutor(
             error_class="transient",
@@ -294,7 +294,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
 
     def test_fallback_action_still_works(self):
         """fallback 策略仍生效：失败后执行 fallback step。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         always_fail = _FailingExecutor(
             error_class="transient",
@@ -327,7 +327,7 @@ class TestWorkflowEngineRetry(unittest.TestCase):
 
     def test_notimplementederror_not_retried(self):
         """NotImplementedError（subworkflow P2 stub）不重试，直接 abort。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         # 直接用真实的 SubworkflowExecutor
         engine = WorkflowEngine()  # 默认 executors
@@ -362,7 +362,7 @@ class TestWorkflowEngineAbort(unittest.TestCase):
 
     def test_abort_terminates_workflow(self):
         """on_failure.action=abort 时失败即终止后续 step。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         always_fail = _FailingExecutor(error_class="permanent", error_message="fatal")
         executor_calls: List[str] = []
@@ -403,7 +403,7 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
 
         Q1 决策：step 级 RetryBudget 已移除，action=retry 等效于 abort。
         """
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         permanent_fail = _FailingExecutor(
             error_class="permanent",
@@ -430,7 +430,7 @@ class TestWorkflowEngineErrorClassMapping(unittest.TestCase):
 
     def test_transient_error_does_not_retry(self):
         """Q1 决策：TRANSIENT 错误也不在 step 级重试（整次重跑由 RetryHook 接管）。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         transient_fail = _FailingExecutor(
             error_class="transient",
@@ -492,7 +492,7 @@ class TestWorkflowEngineTopoSort(unittest.TestCase):
 
     def test_cycle_detection_raises(self):
         """depends_on 含环时 raise WorkflowExecutionError（含环信息）。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         engine = WorkflowEngine()
         spec = _make_simple_spec([
@@ -512,7 +512,7 @@ class TestWorkflowEngineTopoSort(unittest.TestCase):
 
     def test_depends_on_nonexistent_step_raises(self):
         """depends_on 引用不存在的 step 时 raise WorkflowExecutionError。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         engine = WorkflowEngine()
         spec = _make_simple_spec([
@@ -665,7 +665,7 @@ class TestWorkflowEngineSimpleMode(unittest.TestCase):
 
     def test_simple_mode_calls_template(self):
         """简易模式（仅 template）应直接调用 WorkflowTemplate.execute。"""
-        from hermes.tasks.workflow import BUILTIN_TEMPLATES
+        from teage_liu.tasks.workflow import BUILTIN_TEMPLATES
 
         # mock 一个测试模板
         class _TestTemplate:
@@ -728,7 +728,7 @@ class TestWorkflowEngineTimeout(unittest.TestCase):
                 return 0.0
             return 100.0
 
-        with patch("hermes.tasks.workflow.engine.time.perf_counter", mock_perf_counter):
+        with patch("teage_liu.tasks.workflow.engine.time.perf_counter", mock_perf_counter):
             result = engine.execute(spec, ctx)
 
         # 至少 1 个 step 应被跳过
@@ -791,7 +791,7 @@ class TestWorkflowEngineEmptyWorkflowSpec(unittest.TestCase):
         ctx = _make_context()
 
         # Q1 决策：失败时 raise WorkflowExecutionError
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
         with self.assertRaises(WorkflowExecutionError) as cm:
             engine.execute(spec, ctx)
         result = cm.exception.result
@@ -810,7 +810,7 @@ class TestWorkflowEngineUnknownStepType(unittest.TestCase):
         ctx = _make_context()
 
         # Q1 决策：失败时 raise WorkflowExecutionError
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
         with self.assertRaises(WorkflowExecutionError) as cm:
             engine.execute(spec, ctx)
         result = cm.exception.result
@@ -828,7 +828,7 @@ class TestWorkflowEngineNoRetryBudget(unittest.TestCase):
 
     def test_failed_workflow_raises_workflow_execution_error(self):
         """workflow 失败时抛 WorkflowExecutionError，携带完整 result。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         always_fail = _FailingExecutor(
             error_class="transient",
@@ -853,7 +853,7 @@ class TestWorkflowEngineNoRetryBudget(unittest.TestCase):
 
     def test_successful_workflow_does_not_raise(self):
         """成功 workflow 不抛异常，正常返回 result。"""
-        from hermes.agent.tool_error import WorkflowExecutionError
+        from teage_liu.agent.tool_error import WorkflowExecutionError
 
         stub = _StubExecutor(outputs_list=[{"response": "ok"}])
         engine = WorkflowEngine(custom_executors={"llm": stub})
@@ -871,11 +871,11 @@ class TestOnFailureActionsNoRetry(unittest.TestCase):
     """Q3: ALLOWED_ON_FAILURE_ACTIONS 移除 retry。"""
 
     def test_retry_not_in_allowed_actions(self):
-        from hermes.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
+        from teage_liu.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
         self.assertNotIn("retry", ALLOWED_ON_FAILURE_ACTIONS)
 
     def test_allowed_actions_are_three(self):
-        from hermes.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
+        from teage_liu.tasks.workflow.spec import ALLOWED_ON_FAILURE_ACTIONS
         self.assertEqual(
             ALLOWED_ON_FAILURE_ACTIONS,
             frozenset({"fallback", "skip", "abort"}),

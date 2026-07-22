@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from hermes.tasks.workflow.step_trace import StepTrace, ALLOWED_STEP_STATUSES
+from teage_liu.tasks.workflow.step_trace import StepTrace, ALLOWED_STEP_STATUSES
 
 
 class TestStepTraceSerialization(unittest.TestCase):
@@ -133,12 +133,12 @@ class TestStepTraceRetryReason(unittest.TestCase):
     """Q6: StepTrace 新增 retry_reason 字段。"""
 
     def test_retry_reason_defaults_empty(self):
-        from hermes.tasks.workflow.step_trace import StepTrace
+        from teage_liu.tasks.workflow.step_trace import StepTrace
         trace = StepTrace(step_id="s1")
         self.assertEqual(trace.retry_reason, "")
 
     def test_retry_reason_roundtrip(self):
-        from hermes.tasks.workflow.step_trace import StepTrace
+        from teage_liu.tasks.workflow.step_trace import StepTrace
         trace = StepTrace(step_id="s1", retry_reason="已达最大重试次数 3")
         d = trace.to_dict()
         self.assertEqual(d["retry_reason"], "已达最大重试次数 3")
@@ -147,7 +147,7 @@ class TestStepTraceRetryReason(unittest.TestCase):
 
     def test_from_dict_missing_retry_reason_defaults_empty(self):
         """旧记录无 retry_reason 字段时默认空串（向后兼容）。"""
-        from hermes.tasks.workflow.step_trace import StepTrace
+        from teage_liu.tasks.workflow.step_trace import StepTrace
         d = {"step_id": "s1"}  # 无 retry_reason
         trace = StepTrace.from_dict(d)
         self.assertEqual(trace.retry_reason, "")

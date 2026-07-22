@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest_asyncio.fixture
@@ -25,7 +25,7 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_single_device_becomes_director(self, bb_root: Path):
         """单设备场景，本机自动成为 Director。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         election = Election(bb_root, agent_id="device_a", config={
             "election_timeout_seconds": 5,
@@ -37,7 +37,7 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_higher_epoch_wins(self, bb_root: Path):
         """epoch 更高的设备当选 Director。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         # 模拟设备 B 已声明 epoch=5（fresh 心跳，未超时）
         fresh_time = datetime.now(timezone.utc).isoformat()
@@ -58,7 +58,7 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_stale_director_gets_preempted(self, bb_root: Path):
         """Director 心跳超时，本机抢占。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         # 模拟设备 B 是 Director，但心跳已超时
         status_path = bb_root / "status.json"
@@ -80,8 +80,8 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_election_writes_audit(self, bb_root: Path):
         """选举结果写 audit。"""
-        from hermes.multiagent.election import Election
-        from hermes.multiagent.blackboard import read_audit_records
+        from teage_liu.multiagent.election import Election
+        from teage_liu.multiagent.blackboard import read_audit_records
 
         election = Election(bb_root, agent_id="device_a", config={
             "election_timeout_seconds": 5,
@@ -95,7 +95,7 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_election_uses_remote_endpoints(self, bb_root: Path):
         """选举时查询远程端点 epoch。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         config = {
             "election_timeout_seconds": 30,
@@ -123,7 +123,7 @@ class TestElection:
     @pytest.mark.asyncio
     async def test_election_tie_break_by_agent_id(self, bb_root: Path):
         """epoch 相同时，agent_id 字典序更小者当选。"""
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
 
         # 模拟设备 A 和 B 都是 epoch=0，但 B 字典序更小
         # 设备 B 心跳未超时（fresh）

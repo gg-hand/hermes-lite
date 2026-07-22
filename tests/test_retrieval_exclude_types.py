@@ -1,4 +1,4 @@
-﻿"""MemoryRetriever.get_injection_text exclude_types 过滤测试（ops-reliability-uplift Task 5.6）。
+"""MemoryRetriever.get_injection_text exclude_types 过滤测试（ops-reliability-uplift Task 5.6）。
 
 验证：
 - exclude_types={"conversation_turn"} 过滤命中 metadata.type 的记录
@@ -29,8 +29,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.memory.retrieval import MemoryRetriever  # noqa: E402
-from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from teage_liu.memory.retrieval import MemoryRetriever  # noqa: E402
+from teage_liu.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 def _make_retriever(store: ChromaMemoryStore, top_k: int = 5) -> MemoryRetriever:

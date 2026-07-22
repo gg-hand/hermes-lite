@@ -1,4 +1,4 @@
-﻿"""Phase 8 Task 3: cron 工具集 + 提议-确认协议测试套件。
+"""Phase 8 Task 3: cron 工具集 + 提议-确认协议测试套件。
 
 覆盖 9 个 SubTask 的实现：
 - SubTask 3.1: ProposalStore 内存存储 + 状态机
@@ -36,12 +36,12 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.cron_proposals import (  # noqa: E402
+from teage_liu.agent.cron_proposals import (  # noqa: E402
     VALID_STATUSES,
     Proposal,
     ProposalStore,
 )
-from hermes.agent.cron_tools import (  # noqa: E402
+from teage_liu.agent.cron_tools import (  # noqa: E402
     HARD_DISABLED_TOOLS,
     _extract_tool_snapshot,
     is_hard_disabled,

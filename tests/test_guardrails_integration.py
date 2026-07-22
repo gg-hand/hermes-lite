@@ -1,4 +1,4 @@
-﻿"""Phase 9 Task 6: GuardrailEngine 与 orchestrator / react_loop 集成测试。
+"""Phase 9 Task 6: GuardrailEngine 与 orchestrator / react_loop 集成测试。
 
 验证 GuardrailEngine 已正确接入主对话流程：
 
@@ -39,16 +39,16 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.audit import AuditLogger  # noqa: E402
-from hermes.agent.context_builder import ContextBuilder  # noqa: E402
-from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
-from hermes.agent.msg_persistence import MessagePersistence  # noqa: E402
-from hermes.agent.session_manager import SessionManager  # noqa: E402
-from hermes.agent.skill_manager import SkillManager  # noqa: E402
-from hermes.guardrails import GuardrailEngine  # noqa: E402
-from hermes.orchestrator import Orchestrator  # noqa: E402
-from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
-from hermes.orchestrator.chat_handler import ChatHandler  # noqa: E402
+from teage_liu.agent.audit import AuditLogger  # noqa: E402
+from teage_liu.agent.context_builder import ContextBuilder  # noqa: E402
+from teage_liu.agent.cron_isolator import CronIsolator  # noqa: E402
+from teage_liu.agent.msg_persistence import MessagePersistence  # noqa: E402
+from teage_liu.agent.session_manager import SessionManager  # noqa: E402
+from teage_liu.agent.skill_manager import SkillManager  # noqa: E402
+from teage_liu.guardrails import GuardrailEngine  # noqa: E402
+from teage_liu.orchestrator import Orchestrator  # noqa: E402
+from teage_liu.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from teage_liu.orchestrator.chat_handler import ChatHandler  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ class TestReactLoopToolResultSanitize(unittest.TestCase):
 
     def test_external_tool_result_sanitized(self):
         """外部工具（非 trusted）的返回值应被加边界标记。"""
-        from hermes.agent.react_loop import ReactLoop
+        from teage_liu.agent.react_loop import ReactLoop
 
         config = {
             "guardrails": {
@@ -554,7 +554,7 @@ class TestReactLoopToolResultSanitize(unittest.TestCase):
 
     def test_react_loop_sanitize_injection_in_tool_result(self):
         """react_loop 应通过 guardrail_engine 脱敏工具返回值中的注入模式。"""
-        from hermes.agent.react_loop import ReactLoop
+        from teage_liu.agent.react_loop import ReactLoop
 
         config = {
             "guardrails": {

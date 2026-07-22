@@ -14,7 +14,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from hermes.tasks.hooks.notify_hook import NotifyHook
+from teage_liu.tasks.hooks.notify_hook import NotifyHook
 
 
 class TestNotifyHookFailureCount(unittest.TestCase):

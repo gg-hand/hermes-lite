@@ -1,4 +1,4 @@
-﻿"""DocumentChunker 单元测试。
+"""DocumentChunker 单元测试。
 
 覆盖：正常分块、段落感知、边界条件、overlap。
 
@@ -20,7 +20,7 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
-from hermes.files.chunker import DocumentChunker  # noqa: E402
+from teage_liu.files.chunker import DocumentChunker  # noqa: E402
 
 
 class TestDocumentChunker(unittest.TestCase):

@@ -1,4 +1,4 @@
-﻿"""CommandClassifier 单元测试 — 验证 execute_command 命令分类器的
+"""CommandClassifier 单元测试 — 验证 execute_command 命令分类器的
 读取白名单 / 删除黑名单 / 命令注入防御 / 混合命令 / 大小写不敏感逻辑。
 
 覆盖 T3 spec 中所有决策规则（黑名单为主 + 白名单加速 + 未知 allow）：
@@ -29,7 +29,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.policy import CommandClassifier, PolicyEngine, Decision  # noqa: E402
+from teage_liu.agent.policy import CommandClassifier, PolicyEngine, Decision  # noqa: E402
 
 
 class TestCommandClassifierReadWhitelist(unittest.TestCase):
@@ -792,7 +792,7 @@ class TestCommandClassifierCustomRulesIntegration(unittest.TestCase):
         self.assertEqual(d.action, "allow")
 
         # 注入 file_registry 但 session_id=None
-        from hermes.agent.file_registry import FileOperationRegistry
+        from teage_liu.agent.file_registry import FileOperationRegistry
         engine2 = PolicyEngine(file_registry=FileOperationRegistry())
         d2 = engine2.check("bash_exec", {"command": "dir"})
         self.assertEqual(d2.action, "allow")

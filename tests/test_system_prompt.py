@@ -1,4 +1,4 @@
-﻿"""SYSTEM_PROMPT plan 模式说明单元测试 — 验证任务编排能力段落存在且关键字完整。
+"""SYSTEM_PROMPT plan 模式说明单元测试 — 验证任务编排能力段落存在且关键字完整。
 
 运行方式:
     python -m unittest tests.test_system_prompt -v
@@ -20,7 +20,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from hermes.llm.prompts import CONSOLIDATION_PROMPT, SYSTEM_PROMPT  # noqa: E402
+from teage_liu.llm.prompts import CONSOLIDATION_PROMPT, SYSTEM_PROMPT  # noqa: E402
 
 
 class TestSystemPromptExists(unittest.TestCase):

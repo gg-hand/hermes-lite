@@ -1,4 +1,4 @@
-﻿"""InjectionGuard 单元测试 — 验证 prompt 注入扫描与工具返回值脱敏。
+"""InjectionGuard 单元测试 — 验证 prompt 注入扫描与工具返回值脱敏。
 
 覆盖 Phase 9 Task 2 spec 中所有要求：
 - 中英文各 5+ 注入模式检测（共 12 条默认模式）
@@ -26,13 +26,13 @@ import sys
 
 import pytest
 
-# 将项目根目录加入 sys.path，便于 from hermes.guardrails import ...
+# 将项目根目录加入 sys.path，便于 from teage_liu.guardrails import ...
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 # InjectionGuard 零外部依赖，无需 install_mocks
-from hermes.guardrails import (  # noqa: E402
+from teage_liu.guardrails import (  # noqa: E402
     DEFAULT_EXTERNAL_TOOLS,
     DEFAULT_PATTERNS,
     DEFAULT_TRUSTED_TOOLS,

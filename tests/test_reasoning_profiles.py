@@ -1,4 +1,4 @@
-﻿"""ReasoningProfile 抽象层单元测试（spec integrate-llm-reasoning-mode Task 1 SubTask 1.6）。
+"""ReasoningProfile 抽象层单元测试（spec integrate-llm-reasoning-mode Task 1 SubTask 1.6）。
 
 覆盖：
 - ReasoningConfig dataclass 默认值
@@ -28,7 +28,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from hermes.llm.reasoning_profiles import (  # noqa: E402
+from teage_liu.llm.reasoning_profiles import (  # noqa: E402
     AnthropicProfile,
     DeepSeekProfile,
     OpenAIProfile,

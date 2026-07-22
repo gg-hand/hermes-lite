@@ -19,7 +19,7 @@ import pytest
 # 注入 mock 依赖
 import tests._mock_deps  # noqa: F401
 
-from hermes.storage.chroma_store import ChromaMemoryStore
+from teage_liu.storage.chroma_store import ChromaMemoryStore
 
 
 class _CountingClient:
@@ -61,7 +61,7 @@ class TestRecoverPendingQueue:
     def test_init_calls_recover_with_persist_capable_client(self, tmp_path):
         """__init__ 应调用 _recover_pending_queue，client 有 persist 时被调用一次。"""
         counting_client = _CountingClient()
-        with patch("hermes.storage.chroma_store.chromadb") as mock_chromadb:
+        with patch("teage_liu.storage.chroma_store.chromadb") as mock_chromadb:
             mock_chromadb.PersistentClient.return_value = counting_client
             store = ChromaMemoryStore(persist_path=str(tmp_path / "chroma"))
         # 启动时触发一次 persist
@@ -70,7 +70,7 @@ class TestRecoverPendingQueue:
     def test_init_does_not_raise_when_client_has_no_persist(self, tmp_path):
         """client 无 persist 方法时（chromadb 0.5+），不抛异常。"""
         no_persist_client = _NoPersistClient()
-        with patch("hermes.storage.chroma_store.chromadb") as mock_chromadb:
+        with patch("teage_liu.storage.chroma_store.chromadb") as mock_chromadb:
             mock_chromadb.PersistentClient.return_value = no_persist_client
             # 不应抛异常
             store = ChromaMemoryStore(persist_path=str(tmp_path / "chroma"))
@@ -80,7 +80,7 @@ class TestRecoverPendingQueue:
     def test_add_memory_triggers_periodic_persist(self, tmp_path):
         """add_memory 每 N 次（N=10）调用一次 persist。"""
         counting_client = _CountingClient()
-        with patch("hermes.storage.chroma_store.chromadb") as mock_chromadb:
+        with patch("teage_liu.storage.chroma_store.chromadb") as mock_chromadb:
             mock_chromadb.PersistentClient.return_value = counting_client
             # patch embedding 函数避免真实 ONNX 调用
             with patch.object(ChromaMemoryStore, "_embed", return_value=[0.1, 0.2]):
@@ -111,7 +111,7 @@ class TestRecoverPendingQueue:
     def test_add_memory_without_persist_method_does_not_raise(self, tmp_path):
         """add_memory 多次后，client 无 persist 方法时不抛异常。"""
         no_persist_client = _NoPersistClient()
-        with patch("hermes.storage.chroma_store.chromadb") as mock_chromadb:
+        with patch("teage_liu.storage.chroma_store.chromadb") as mock_chromadb:
             mock_chromadb.PersistentClient.return_value = no_persist_client
             with patch.object(ChromaMemoryStore, "_embed", return_value=[0.1, 0.2]):
                 store = ChromaMemoryStore(persist_path=str(tmp_path / "chroma"))
@@ -128,7 +128,7 @@ class TestRecoverPendingQueue:
                 raise RuntimeError("simulated persist failure")
 
         failing_client = _FailingPersistClient()
-        with patch("hermes.storage.chroma_store.chromadb") as mock_chromadb:
+        with patch("teage_liu.storage.chroma_store.chromadb") as mock_chromadb:
             mock_chromadb.PersistentClient.return_value = failing_client
             # 不应抛异常
             store = ChromaMemoryStore(persist_path=str(tmp_path / "chroma"))

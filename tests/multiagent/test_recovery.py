@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-from hermes.multiagent.recovery import RecoveryCoordinator
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.recovery import RecoveryCoordinator
 
 
 @pytest.fixture

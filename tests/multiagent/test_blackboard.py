@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     append_jsonl,
     atomic_write,
     read_json,
     read_yaml_frontmatter,
     validate_path_safety,
 )
-from hermes.multiagent.exceptions import PathSafetyError
+from teage_liu.multiagent.exceptions import PathSafetyError
 
 
 def _can_create_symlink(tmp_path: Path) -> bool:

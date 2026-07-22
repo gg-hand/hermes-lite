@@ -1,4 +1,4 @@
-﻿﻿"""配置更新接口与辅助函数测试。
+"""配置更新接口与辅助函数测试。
 
 覆盖：
 - ``_deep_merge_config``：递归合并、保留旧 key、标量覆盖、list 覆盖、不修改入参
@@ -35,7 +35,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 install_mocks()
 
 # Task 11: 配置辅助函数直接从 config_helpers 导入（server.py 不再 re-export）
-from hermes.config_helpers import (  # noqa: E402
+from teage_liu.config_helpers import (  # noqa: E402
     _deep_merge_config,
     _atomic_write_config,
     _backup_config,
@@ -143,13 +143,13 @@ class TestPutConfigEndpoint(unittest.TestCase):
             f.write(_INITIAL_CONFIG_YAML)
         # CONFIG_PATH 仍保留在 server.py，继续用 patch
         self._patches = [
-            patch("hermes.server.CONFIG_PATH", self.config_path),
+            patch("teage_liu.server.CONFIG_PATH", self.config_path),
         ]
         for p in self._patches:
             p.start()
         # 通过 DI override 注入 orchestrator=None，使 _apply_runtime_config 早退
-        from hermes.server import app  # noqa: E402
-        from hermes.app import get_orchestrator  # noqa: E402
+        from teage_liu.server import app  # noqa: E402
+        from teage_liu.app import get_orchestrator  # noqa: E402
         self._app = app
         self._get_orchestrator = get_orchestrator
         app.dependency_overrides[get_orchestrator] = lambda: None
@@ -317,8 +317,8 @@ class TestApplyRuntimeConfigSentinel(unittest.TestCase):
 
     def setUp(self):
         """注入 mock orchestrator via app.dependency_overrides。"""
-        from hermes.server import app  # noqa: E402
-        from hermes.app import get_orchestrator  # noqa: E402
+        from teage_liu.server import app  # noqa: E402
+        from teage_liu.app import get_orchestrator  # noqa: E402
         self._app = app
         self._get_orchestrator = get_orchestrator
 
@@ -352,8 +352,8 @@ class TestGuardrailSwitchHotUpdate(unittest.TestCase):
 
     def setUp(self):
         """注入 mock orchestrator via app.dependency_overrides。"""
-        from hermes.server import app  # noqa: E402
-        from hermes.app import get_orchestrator  # noqa: E402
+        from teage_liu.server import app  # noqa: E402
+        from teage_liu.app import get_orchestrator  # noqa: E402
         self._app = app
         self._get_orchestrator = get_orchestrator
 
@@ -438,8 +438,8 @@ class TestHilDisableResolveAll(unittest.TestCase):
 
     def setUp(self):
         """通过 app.dependency_overrides 注入 mock 组件。"""
-        from hermes.server import app  # noqa: E402
-        from hermes.app import (  # noqa: E402
+        from teage_liu.server import app  # noqa: E402
+        from teage_liu.app import (  # noqa: E402
             get_orchestrator,
             get_approval_manager,
             get_audit_logger,

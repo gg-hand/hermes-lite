@@ -1,6 +1,6 @@
-﻿"""BreakpointDetector 单元测试。"""
+"""BreakpointDetector 单元测试。"""
 import pytest
-from hermes.breakpoint_detector import BreakpointDetector
+from teage_liu.breakpoint_detector import BreakpointDetector
 
 
 class TestBreakpointDetector:

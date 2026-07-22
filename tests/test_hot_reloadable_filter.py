@@ -1,4 +1,4 @@
-﻿﻿# tests/test_hot_reloadable_filter.py
+# tests/test_hot_reloadable_filter.py
 """测试 container.py reload 方法过滤 hot_reloadable=False 组件。
 
 spec 2026-07-13 阶段 1：修复 hot_reloadable 死代码。
@@ -7,8 +7,8 @@ from __future__ import annotations
 import sys
 import os
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
-from hermes.container import Container
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
+from teage_liu.container import Container
 
 
 class TestHotReloadableFilter:

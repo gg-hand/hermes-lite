@@ -1,4 +1,4 @@
-﻿"""Condenser 历史压缩器单元测试。
+"""Condenser 历史压缩器单元测试。
 
 覆盖 spec ``add-condenser-history-management`` 中所有压缩器场景：
 - MaskingCondenser：未超阈值不压缩 / 正常压缩 / tool_use 保留 / tool_result
@@ -32,7 +32,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.memory.condenser import (  # noqa: E402
+from teage_liu.memory.condenser import (  # noqa: E402
     Condenser,
     LLMSummarizingCondenser,
     MaskingCondenser,

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from hermes.container import CONFIG_TO_COMPONENTS, Container
+from teage_liu.container import CONFIG_TO_COMPONENTS, Container
 
 
 class TestContainerIntegration:
@@ -56,7 +56,7 @@ class TestContainerIntegration:
         container = Container(config)
 
         # 注册 multiagent_adapter（模拟 lifespan.py 的注册逻辑）
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
 
         multiagent_cfg = config["multiagent"]
         bb_dir = multiagent_cfg["blackboard_dir"]
@@ -113,7 +113,7 @@ class TestContainerIntegration:
         container = Container(config)
 
         # 注册 multiagent_adapter（模拟 lifespan.py 的注册逻辑）
-        from hermes.multiagent.director_engine import DirectorEngine
+        from teage_liu.multiagent.director_engine import DirectorEngine
 
         multiagent_cfg = config["multiagent"]
         bb_dir = multiagent_cfg["blackboard_dir"]
@@ -141,8 +141,8 @@ class TestLifespanIntegration:
     @pytest.mark.asyncio
     async def test_worker_adapter_start_stop(self, tmp_path: Path):
         """WorkerAdapter 可独立 start/stop（lifespan 集成冒烟）。"""
-        from hermes.multiagent.blackboard import Blackboard
-        from hermes.multiagent.worker_adapter import WorkerAdapter
+        from teage_liu.multiagent.blackboard import Blackboard
+        from teage_liu.multiagent.worker_adapter import WorkerAdapter
 
         bb_root = tmp_path / "blackboard"
         bb = Blackboard(bb_root)

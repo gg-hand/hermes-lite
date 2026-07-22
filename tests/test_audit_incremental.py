@@ -20,7 +20,7 @@ import pytest
 # 注入 mock 依赖（与项目其他测试一致）
 import tests._mock_deps  # noqa: F401
 
-from hermes.agent.audit import AuditLogger
+from teage_liu.agent.audit import AuditLogger
 
 
 def _parse_iso_to_ts(iso_str: str) -> float:

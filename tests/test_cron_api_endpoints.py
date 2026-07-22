@@ -13,8 +13,8 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-# 先 import hermes.server.app 触发完整 app 装配，避免循环导入
-from hermes.server import app  # noqa: E402,F401
+# 先 import teage_liu.server.app 触发完整 app 装配，避免循环导入
+from teage_liu.server import app  # noqa: E402,F401
 
 
 class TestCronRunsApiEndpoints(unittest.TestCase):
@@ -36,32 +36,32 @@ class TestCronRunsApiEndpoints(unittest.TestCase):
 
     def test_get_schedule_runs_returns_list(self):
         """GET /cron_tools/schedules/{id}/runs 返回执行历史列表。"""
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         mock_runs = [
             RunSummary(schedule_id="s1", run_id="r1", success=True),
             RunSummary(schedule_id="s1", run_id="r2", success=False),
         ]
         self.mock_app.state.cron_scheduler.runs_store.read_recent.return_value = mock_runs
 
-        from hermes.routes.cron_tools import get_schedule_runs
+        from teage_liu.routes.cron_tools import get_schedule_runs
         response = get_schedule_runs("s1", limit=20, request=self._make_request())
         self.assertEqual(response.status_code, 200)
 
     def test_get_schedule_runs_scheduler_none_returns_503(self):
         """scheduler 为 None 时返回 503。"""
         self.mock_app.state.cron_scheduler = None
-        from hermes.routes.cron_tools import get_schedule_runs
+        from teage_liu.routes.cron_tools import get_schedule_runs
         response = get_schedule_runs("s1", limit=20, request=self._make_request())
         self.assertEqual(response.status_code, 503)
 
     def test_get_run_by_id_returns_detail(self):
         """GET /cron_tools/schedules/{id}/runs/{run_id} 返回单次详情。"""
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         mock_run = RunSummary(schedule_id="s1", run_id="r1", success=False)
         mock_dict = mock_run.to_dict()
         self.mock_app.state.cron_scheduler.runs_store.read_by_run_id.return_value = mock_dict
 
-        from hermes.routes.cron_tools import get_run_detail
+        from teage_liu.routes.cron_tools import get_run_detail
         response = get_run_detail("s1", "r1", request=self._make_request())
         self.assertEqual(response.status_code, 200)
 
@@ -69,13 +69,13 @@ class TestCronRunsApiEndpoints(unittest.TestCase):
         """run_id 不存在时返回 404。"""
         self.mock_app.state.cron_scheduler.runs_store.read_by_run_id.return_value = None
 
-        from hermes.routes.cron_tools import get_run_detail
+        from teage_liu.routes.cron_tools import get_run_detail
         response = get_run_detail("s1", "nonexistent", request=self._make_request())
         self.assertEqual(response.status_code, 404)
 
     def test_trigger_run_returns_202(self):
         """POST /cron_tools/schedules/{id}/run 异步触发，返回 202。"""
-        from hermes.routes.cron_tools import trigger_schedule_run
+        from teage_liu.routes.cron_tools import trigger_schedule_run
         # mock _run_schedule_direct 为 AsyncMock 避免实际执行
         self.mock_app.state.cron_scheduler._run_schedule_direct = AsyncMock()
         response = trigger_schedule_run("s1", request=self._make_request())
@@ -83,20 +83,20 @@ class TestCronRunsApiEndpoints(unittest.TestCase):
 
     def test_trigger_run_schedule_not_found_returns_404(self):
         """schedule_id 不存在时返回 404。"""
-        from hermes.routes.cron_tools import trigger_schedule_run
+        from teage_liu.routes.cron_tools import trigger_schedule_run
         response = trigger_schedule_run("nonexistent", request=self._make_request())
         self.assertEqual(response.status_code, 404)
 
     def test_get_recent_runs_returns_all_schedules(self):
         """GET /cron_tools/runs/recent 返回所有调度最近记录。"""
-        from hermes.routes.cron_tools import get_recent_runs
+        from teage_liu.routes.cron_tools import get_recent_runs
         self.mock_app.state.cron_scheduler.runs_store.read_recent_all.return_value = []
         response = get_recent_runs(limit=50, request=self._make_request())
         self.assertEqual(response.status_code, 200)
 
     def test_get_run_stats_returns_summary(self):
         """GET /cron_tools/runs/stats 返回今日统计。"""
-        from hermes.routes.cron_tools import get_run_stats
+        from teage_liu.routes.cron_tools import get_run_stats
         self.mock_app.state.cron_scheduler.runs_store.read_recent_all.return_value = []
         response = get_run_stats(request=self._make_request())
         self.assertEqual(response.status_code, 200)
@@ -112,7 +112,7 @@ class TestCronRunsApiEndpoints(unittest.TestCase):
         ]
         self.mock_app.state.cron_scheduler.runs_store.read_recent_all.return_value = mock_runs
 
-        from hermes.routes.cron_tools import get_run_stats
+        from teage_liu.routes.cron_tools import get_run_stats
         import json
         response = get_run_stats(request=self._make_request())
         self.assertEqual(response.status_code, 200)

@@ -1,4 +1,4 @@
-﻿"""统一异常处理测试（Task 6）。
+"""统一异常处理测试（Task 6）。
 
 验证全局异常处理器将 ToolError/ConfigError 子类映射为正确的 HTTP 状态码和 JSON 响应。
 """
@@ -18,7 +18,7 @@ import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from hermes.errors import (  # noqa: E402
+from teage_liu.errors import (  # noqa: E402
     ToolNotFoundError,
     ToolExecutionError,
     ToolPermissionDenied,
@@ -31,7 +31,7 @@ from hermes.errors import (  # noqa: E402
 
 def _make_test_app() -> FastAPI:
     """创建注册了全局异常处理器的测试 app。"""
-    from hermes.app import register_exception_handlers
+    from teage_liu.app import register_exception_handlers
     app = FastAPI()
 
     @app.get("/raise/tool_not_found")

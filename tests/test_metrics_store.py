@@ -1,4 +1,4 @@
-﻿"""MetricsStore 单元测试 — 验证按天持久化、增量合并、重启容错、TTL 清理等核心逻辑。
+"""MetricsStore 单元测试 — 验证按天持久化、增量合并、重启容错、TTL 清理等核心逻辑。
 
 运行方式:
     python -m unittest tests.test_metrics_store -v
@@ -21,7 +21,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.monitoring.metrics_store import (  # noqa: E402
+from teage_liu.monitoring.metrics_store import (  # noqa: E402
     MetricsStore,
     _merge_dict,
     _merge_hist,

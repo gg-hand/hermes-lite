@@ -5,13 +5,13 @@ import os
 import re
 
 _ROOT = os.path.join(os.path.dirname(__file__), "..")
-_HERMES = os.path.join(_ROOT, "hermes")
+_PKG_DIR = os.path.join(_ROOT, "teage_liu")
 
 
 class TestNoDualImport:
 
     def test_no_dual_try_except_import(self):
-        """hermes/ 下无双重 try/except 导入样板。
+        """teage_liu/ 下无双重 try/except 导入样板。
 
         模式：try: from .x import Y / except ImportError: from x import Y
         """
@@ -21,7 +21,7 @@ class TestNoDualImport:
         )
 
         offenders = []
-        for root, dirs, files in os.walk(_HERMES):
+        for root, dirs, files in os.walk(_PKG_DIR):
             for fname in files:
                 if not fname.endswith(".py"):
                     continue

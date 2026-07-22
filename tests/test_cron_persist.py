@@ -14,7 +14,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.tasks.scheduler import CronScheduler
+from teage_liu.tasks.scheduler import CronScheduler
 
 
 class TestAppendRunSummaryFailureAlert(unittest.TestCase):
@@ -48,7 +48,7 @@ class TestAppendRunSummaryFailureAlert(unittest.TestCase):
         scheduler.runs_store = None
         schedule = self._make_schedule()
 
-        with patch("hermes.tasks.scheduler.logger") as mock_logger:
+        with patch("teage_liu.tasks.scheduler.logger") as mock_logger:
             self._call_append(scheduler, schedule)
             mock_logger.error.assert_called()
             error_msg = mock_logger.error.call_args[0][0]
@@ -61,7 +61,7 @@ class TestAppendRunSummaryFailureAlert(unittest.TestCase):
         scheduler.runs_store.append.side_effect = OSError("disk full")
         schedule = self._make_schedule()
 
-        with patch("hermes.tasks.scheduler.logger") as mock_logger:
+        with patch("teage_liu.tasks.scheduler.logger") as mock_logger:
             # 不应抛异常
             self._call_append(scheduler, schedule)
             mock_logger.error.assert_called()

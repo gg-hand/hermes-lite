@@ -1,4 +1,4 @@
-﻿"""Pre-seed test data for Hermes Lite performance benchmarks.
+"""Pre-seed test data for Hermes Lite performance benchmarks.
 
 Creates isolated test directories with pre-populated:
 - ChromaDB: 1000 random vectors (various topics)
@@ -22,8 +22,8 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-# We need to ensure we can import from hermes-lite src
-SRC_DIR = str(Path(__file__).resolve().parent.parent / "hermes")
+# We need to ensure we can import from teage_liu-lite src
+SRC_DIR = str(Path(__file__).resolve().parent.parent / "teage_liu")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 

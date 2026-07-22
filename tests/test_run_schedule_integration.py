@@ -16,8 +16,8 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.tasks.hooks.base import RetryDecision
-from hermes.agent.tool_error import ValidationError
+from teage_liu.tasks.hooks.base import RetryDecision
+from teage_liu.agent.tool_error import ValidationError
 
 
 class TestRunScheduleHookIntegration(unittest.TestCase):
@@ -25,7 +25,7 @@ class TestRunScheduleHookIntegration(unittest.TestCase):
 
     def setUp(self):
         """构造最小 CronScheduler 实例。"""
-        from hermes.tasks.scheduler import CronScheduler
+        from teage_liu.tasks.scheduler import CronScheduler
         self.scheduler = CronScheduler.__new__(CronScheduler)
         self.scheduler.hooks = MagicMock()
         self.scheduler.hooks.before_execute = AsyncMock(return_value=MagicMock(validation_errors=[]))
@@ -50,8 +50,8 @@ class TestRunScheduleHookIntegration(unittest.TestCase):
 
     def test_validation_error_routes_to_finalize_failure(self):
         """ValidationError 路由到 _finalize_failure（含 after_execute）。"""
-        from hermes.tasks.scheduler import CronScheduler
-        from hermes.agent.tool_error import ValidationError
+        from teage_liu.tasks.scheduler import CronScheduler
+        from teage_liu.agent.tool_error import ValidationError
 
         # 构造 ctx 抛 ValidationError
         mock_ctx = MagicMock()
@@ -76,7 +76,7 @@ class TestRunScheduleHookIntegration(unittest.TestCase):
 
     def test_after_execute_called_on_success(self):
         """成功路径也调用 after_execute（P0 修复）。"""
-        from hermes.tasks.workflow.base import WorkflowResult
+        from teage_liu.tasks.workflow.base import WorkflowResult
 
         mock_ctx = MagicMock()
         mock_ctx.validation_errors = []
@@ -109,7 +109,7 @@ class TestRunScheduleDirect(unittest.TestCase):
     """_run_schedule_direct 是 thin wrapper。"""
 
     def test_delegates_to_run_schedule(self):
-        from hermes.tasks.scheduler import CronScheduler
+        from teage_liu.tasks.scheduler import CronScheduler
         scheduler = CronScheduler.__new__(CronScheduler)
         scheduler._orchestrator = MagicMock()
         scheduler._run_schedule = AsyncMock()
@@ -128,8 +128,8 @@ class TestRunScheduleRebuildsHooksPerCall(unittest.TestCase):
     """spec 8.2: _run_schedule 每次调用时从最新配置重建 HookRegistry（热更新）。"""
 
     def setUp(self):
-        from hermes.tasks.scheduler import CronScheduler
-        from hermes.tasks.hooks.registry import HookRegistry
+        from teage_liu.tasks.scheduler import CronScheduler
+        from teage_liu.tasks.hooks.registry import HookRegistry
         self.scheduler = CronScheduler.__new__(CronScheduler)
         self.scheduler._failure_counts = {}
         self.scheduler._orchestrator = MagicMock()
@@ -138,7 +138,7 @@ class TestRunScheduleRebuildsHooksPerCall(unittest.TestCase):
 
     def test_rebuild_hooks_reads_latest_config(self):
         """_rebuild_hooks 从 load_config 读取最新 cron.hooks 配置，禁用的 hook 不加载。"""
-        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+        with patch("teage_liu.tasks.scheduler.load_config") as mock_load:
             mock_load.return_value = {
                 "cron": {"hooks": {"retry": {"enabled": False}}}
             }
@@ -148,7 +148,7 @@ class TestRunScheduleRebuildsHooksPerCall(unittest.TestCase):
 
     def test_rebuild_hooks_reflects_max_retries_change(self):
         """_rebuild_hooks 反映 max_retries 配置变更（热更新即时生效）。"""
-        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+        with patch("teage_liu.tasks.scheduler.load_config") as mock_load:
             mock_load.return_value = {
                 "cron": {"hooks": {"retry": {"enabled": True, "max_retries": 10}}}
             }
@@ -158,7 +158,7 @@ class TestRunScheduleRebuildsHooksPerCall(unittest.TestCase):
     def test_rebuild_hooks_creates_new_instance(self):
         """_rebuild_hooks 创建新的 HookRegistry 实例（非原地修改）。"""
         old_hooks = self.scheduler.hooks
-        with patch("hermes.tasks.scheduler.load_config") as mock_load:
+        with patch("teage_liu.tasks.scheduler.load_config") as mock_load:
             mock_load.return_value = {"cron": {"hooks": {}}}
             self.scheduler._rebuild_hooks()
         self.assertIsNot(self.scheduler.hooks, old_hooks)

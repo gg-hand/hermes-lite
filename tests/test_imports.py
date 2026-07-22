@@ -1,4 +1,4 @@
-﻿﻿"""验证项目所有 src/ 下的模块可正常导入（不依赖外部 API）。
+"""验证项目所有 src/ 下的模块可正常导入（不依赖外部 API）。
 
 策略：
 1. 列出 src/ 下所有 .py 文件（排除 __init__.py 也一并验证导入）
@@ -40,10 +40,10 @@ def _collect_src_modules() -> list:
     """收集 src/ 下所有 .py 文件对应的模块全限定名列表。
 
     返回:
-        模块全限定名列表，如 ["hermes.config", "hermes.llm.client", ...]，
+        模块全限定名列表，如 ["teage_liu.config", "teage_liu.llm.client", ...]，
         按 ASCII 字典序排列。
     """
-    src_root = os.path.join(_PROJECT_ROOT, "hermes")
+    src_root = os.path.join(_PROJECT_ROOT, "teage_liu")
     modules = []
 
     for dirpath, _dirnames, filenames in os.walk(src_root):
@@ -74,23 +74,23 @@ class TestImports(unittest.TestCase):
         )
         # 验证关键模块都在列表中
         expected_modules = [
-            "hermes.config",
-            "hermes.llm.client",
-            "hermes.llm.prompts",
-            "hermes.orchestrator.__init__",
-            "hermes.server",
-            "hermes.agent.react_loop",
-            "hermes.agent.tool_registry",
-            "hermes.agent.tools.__init__",
-            "hermes.memory.consolidation",
-            "hermes.memory.memory_md",
-            "hermes.memory.retrieval",
-            "hermes.memory.context_manager",
-            "hermes.memory.condenser",
-            "hermes.memory.decay",
-            "hermes.storage.chroma_store",
-            "hermes.storage.history_buffer",
-            "hermes.storage.sqlite_log",
+            "teage_liu.config",
+            "teage_liu.llm.client",
+            "teage_liu.llm.prompts",
+            "teage_liu.orchestrator.__init__",
+            "teage_liu.server",
+            "teage_liu.agent.react_loop",
+            "teage_liu.agent.tool_registry",
+            "teage_liu.agent.tools.__init__",
+            "teage_liu.memory.consolidation",
+            "teage_liu.memory.memory_md",
+            "teage_liu.memory.retrieval",
+            "teage_liu.memory.context_manager",
+            "teage_liu.memory.condenser",
+            "teage_liu.memory.decay",
+            "teage_liu.storage.chroma_store",
+            "teage_liu.storage.history_buffer",
+            "teage_liu.storage.sqlite_log",
         ]
         for mod in expected_modules:
             self.assertIn(

@@ -43,7 +43,7 @@ class TestEndToEndDualInstance:
         # 启动 Director 进程
         director_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.director_cli",
+                sys.executable, "-m", "teage_liu.multiagent.director_cli",
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
@@ -55,7 +55,7 @@ class TestEndToEndDualInstance:
         # 启动 Worker 进程
         worker_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.worker_cli",
+                sys.executable, "-m", "teage_liu.multiagent.worker_cli",
                 "--bb-root", str(bb_root),
                 "--agent-id", "worker_001",
             ],
@@ -126,7 +126,7 @@ class TestEndToEndDualInstance:
         # 启动 Director（script 模式）
         director_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.director_cli",
+                sys.executable, "-m", "teage_liu.multiagent.director_cli",
                 "--bb-root", str(bb_root),
                 "--mode", "script",
             ],
@@ -138,7 +138,7 @@ class TestEndToEndDualInstance:
         # 启动 Worker（短超时）
         worker_proc = subprocess.Popen(
             [
-                sys.executable, "-m", "hermes.multiagent.worker_cli",
+                sys.executable, "-m", "teage_liu.multiagent.worker_cli",
                 "--bb-root", str(bb_root),
                 "--agent-id", "worker_001",
                 "--heartbeat-timeout", "2",

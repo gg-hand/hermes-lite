@@ -33,7 +33,7 @@ else
     echo "HERMES_API_KEY 已设置，API 认证将启用。"
 fi
 
-exec python -m uvicorn hermes.app:app \
+exec python -m uvicorn teage_liu.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers 1

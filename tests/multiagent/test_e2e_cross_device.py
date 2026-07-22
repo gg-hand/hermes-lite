@@ -16,8 +16,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes.multiagent.blackboard import Blackboard
-from hermes.multiagent.a2a_gateway import create_a2a_router
+from teage_liu.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.a2a_gateway import create_a2a_router
 
 
 @pytest.mark.e2e
@@ -165,7 +165,7 @@ class TestCrossDeviceEndToEnd:
 
         # 设备 B 检测到设备 A 心跳超时（通过远程查询）
         # 这里简化为本地测试，实际应通过 A2A Gateway 查询
-        from hermes.multiagent.election import Election
+        from teage_liu.multiagent.election import Election
         election = Election(device_b_bb, agent_id="device_b", config={
             "election_timeout_seconds": 30,
         })

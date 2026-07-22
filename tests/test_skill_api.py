@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
 from unittest import TestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "teage_liu"))
 
-from hermes.agent.tool_registry import ToolRegistry
+from teage_liu.agent.tool_registry import ToolRegistry
 
 
 class TestSkillAPI(TestCase):

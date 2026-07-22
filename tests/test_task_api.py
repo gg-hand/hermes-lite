@@ -1,4 +1,4 @@
-﻿﻿"""调度 API 端点单元测试（Phase 6 Task 7）。
+"""调度 API 端点单元测试（Phase 6 Task 7）。
 
 验证 ``src/server.py`` 的 /schedules 端点。使用 FastAPI TestClient。
 
@@ -37,10 +37,10 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.server import app  # noqa: E402
-from hermes.tasks.scheduler import CronScheduler  # noqa: E402
+from teage_liu.server import app  # noqa: E402
+from teage_liu.tasks.scheduler import CronScheduler  # noqa: E402
 # Task 11: server.py 全局变量已删除，通过 app.dependency_overrides 注入 mock
-from hermes.app import get_orchestrator, get_cron_scheduler  # noqa: E402
+from teage_liu.app import get_orchestrator, get_cron_scheduler  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 

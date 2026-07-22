@@ -1,4 +1,4 @@
-﻿"""cancel_context ContextVar 传播测试。
+"""cancel_context ContextVar 传播测试。
 
 无需 mock，直接测试 contextvar get/set/reset。
 
@@ -21,7 +21,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent._cancel_context import current_cancel_event
+from teage_liu.agent._cancel_context import current_cancel_event
 
 
 class TestCancelContext(unittest.TestCase):

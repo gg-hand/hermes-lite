@@ -37,8 +37,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.cron_tool_registry import CronToolRegistry  # noqa: E402
-from hermes.tasks.cron_tool_loader import (  # noqa: E402
+from teage_liu.agent.cron_tool_registry import CronToolRegistry  # noqa: E402
+from teage_liu.tasks.cron_tool_loader import (  # noqa: E402
     CronToolError,
     CronToolNotFoundError,
     CronToolParseError,
@@ -50,10 +50,10 @@ from hermes.tasks.cron_tool_loader import (  # noqa: E402
     list_tools,
     load_tool,
 )
-from hermes.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
-from hermes.agent.context_builder import ContextBuilder  # noqa: E402
-from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
-from hermes.agent.tool_error import ToolNotFoundError  # noqa: E402
+from teage_liu.agent.cron_tool_writer import register_write_cron_tool  # noqa: E402
+from teage_liu.agent.context_builder import ContextBuilder  # noqa: E402
+from teage_liu.agent.cron_isolator import CronIsolator  # noqa: E402
+from teage_liu.agent.tool_error import ToolNotFoundError  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -804,8 +804,8 @@ class TestCacheConstraintEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.cron_tool_registry = CronToolRegistry(base_dir=self.sandbox.base_dir)
         self.react_loop = _MockReactLoopForCache()
         # 构造 Orchestrator（绕过完整初始化，只设置需要的属性）
-        from hermes.orchestrator import Orchestrator
-        from hermes.orchestrator.enhanced_context import EnhancedContextBuilder
+        from teage_liu.orchestrator import Orchestrator
+        from teage_liu.orchestrator.enhanced_context import EnhancedContextBuilder
         self.orch = Orchestrator.__new__(Orchestrator)
         self.orch.tool_registry = self.global_registry
         self.orch.react_loop = self.react_loop
@@ -1023,7 +1023,7 @@ class TestReactLoopDispatch(unittest.TestCase):
     """ReactLoop._execute_tool_with_dispatch 优先派发 cron_tool_registry。"""
 
     def setUp(self):
-        from hermes.agent.react_loop import ReactLoop
+        from teage_liu.agent.react_loop import ReactLoop
         self.loop = ReactLoop.__new__(ReactLoop)
         # 不设置 cron_tool_registry（模拟未注入）
         self.loop.cron_tool_registry = None
@@ -1136,13 +1136,13 @@ class TestEndToEndIntegration(unittest.TestCase):
         sched = {"active_tools_snapshot": ["search"]}
         cron_sched = _MockCronSchedulerForCache({"e2e": sched})
 
-        from hermes.orchestrator import Orchestrator
+        from teage_liu.orchestrator import Orchestrator
         orch = Orchestrator.__new__(Orchestrator)
         orch.tool_registry = global_reg
         orch.cron_scheduler = cron_sched
         orch.cron_tool_registry = registry
 
-        from hermes.agent.react_loop import ReactLoop
+        from teage_liu.agent.react_loop import ReactLoop
         react_loop = ReactLoop.__new__(ReactLoop)
         react_loop.cron_tool_registry = None
         react_loop.tool_registry = global_reg
@@ -1177,7 +1177,7 @@ class TestCronToolMetaPrefixSeparation(unittest.TestCase):
 
     def test_meta_has_dir_name_and_registered_name_fields(self):
         """CronToolMeta 新增 dir_name / registered_name 字段，默认空串。"""
-        from hermes.tasks.cron_tool_loader import CronToolMeta
+        from teage_liu.tasks.cron_tool_loader import CronToolMeta
         meta = CronToolMeta(
             name="blog_monitor", version="1.0.0", description="d",
             author="a", input_schema={},
@@ -1187,7 +1187,7 @@ class TestCronToolMetaPrefixSeparation(unittest.TestCase):
 
     def test_get_registered_name_fallback_to_name(self):
         """registered_name 未设置时回退到 name。"""
-        from hermes.tasks.cron_tool_loader import CronToolMeta
+        from teage_liu.tasks.cron_tool_loader import CronToolMeta
         meta = CronToolMeta(
             name="blog_monitor", version="1.0.0", description="d",
             author="a", input_schema={},
@@ -1196,7 +1196,7 @@ class TestCronToolMetaPrefixSeparation(unittest.TestCase):
 
     def test_get_registered_name_returns_prefixed(self):
         """registered_name 设置后返回带前缀名。"""
-        from hermes.tasks.cron_tool_loader import CronToolMeta
+        from teage_liu.tasks.cron_tool_loader import CronToolMeta
         meta = CronToolMeta(
             name="blog_monitor", version="1.0.0", description="d",
             author="a", input_schema={},

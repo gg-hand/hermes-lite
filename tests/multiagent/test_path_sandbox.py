@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.path_sandbox import (
+from teage_liu.multiagent.path_sandbox import (
     PathSandboxError,
     sanitize_dict_paths,
     sanitize_path,

@@ -1,4 +1,4 @@
-﻿"""Orchestrator._build_cron_enhanced_context exclude_types 透传测试
+"""Orchestrator._build_cron_enhanced_context exclude_types 透传测试
 （ops-reliability-uplift Task 5.7）。
 
 验证：
@@ -33,11 +33,11 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.orchestrator import Orchestrator  # noqa: E402
-from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
-from hermes.memory.cron_isolation import CronIsolation  # noqa: E402
-from hermes.agent.context_builder import ContextBuilder  # noqa: E402
-from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
+from teage_liu.orchestrator import Orchestrator  # noqa: E402
+from teage_liu.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from teage_liu.memory.cron_isolation import CronIsolation  # noqa: E402
+from teage_liu.agent.context_builder import ContextBuilder  # noqa: E402
+from teage_liu.agent.cron_isolator import CronIsolator  # noqa: E402
 
 
 def _make_orchestrator(

@@ -1,4 +1,4 @@
-﻿"""FileContextInjector 单元测试。
+"""FileContextInjector 单元测试。
 
 覆盖：文本/图片/混合注入、空会话、截断、session 隔离。
 
@@ -21,8 +21,8 @@ from tests._mock_deps import install_mocks
 from tests.test_helpers import minimal_png
 install_mocks()
 
-from hermes.files.upload_manager import UploadManager
-from hermes.files.context_injector import FileContextInjector
+from teage_liu.files.upload_manager import UploadManager
+from teage_liu.files.context_injector import FileContextInjector
 
 
 def _make_env():

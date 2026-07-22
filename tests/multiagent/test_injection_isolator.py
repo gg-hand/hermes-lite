@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.blackboard import Blackboard, read_audit_records
-from hermes.multiagent.injection_isolator import InjectionIsolator
+from teage_liu.multiagent.blackboard import Blackboard, read_audit_records
+from teage_liu.multiagent.injection_isolator import InjectionIsolator
 
 
 @pytest_asyncio.fixture

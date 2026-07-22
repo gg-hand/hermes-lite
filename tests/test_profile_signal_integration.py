@@ -1,4 +1,4 @@
-﻿"""用户画像意识建模机制集成测试。
+"""用户画像意识建模机制集成测试。
 
 覆盖 P0 计划中 L1/L3 改造的端到端链路：
 - L1 profile_update 工具：add 走信号池累积，replace/delete 直接入 pending 队列
@@ -30,12 +30,12 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent._cancel_context import current_session_id
-from hermes.agent.tools.memory_tools import _register_update_profile
-from hermes.agent.tool_registry import ToolRegistry
-from hermes.memory.consolidation import ConsolidationEngine
-from hermes.memory.memory_md import MemoryMdManager
-from hermes.memory.signal_pool import SignalPool
+from teage_liu.agent._cancel_context import current_session_id
+from teage_liu.agent.tools.memory_tools import _register_update_profile
+from teage_liu.agent.tool_registry import ToolRegistry
+from teage_liu.memory.consolidation import ConsolidationEngine
+from teage_liu.memory.memory_md import MemoryMdManager
+from teage_liu.memory.signal_pool import SignalPool
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,7 @@ class TestMarkWrittenAfterApply(_IntegrationTestBase):
         # 手动构造一条 triggered 信号（模拟达阈值后的状态）
         # 关键词使用 _extract_keywords 真实产出，确保 mark_written_by_contents
         # 的 Jaccard 匹配能命中
-        from hermes.memory.signal_pool import Signal, _extract_keywords, _now_iso
+        from teage_liu.memory.signal_pool import Signal, _extract_keywords, _now_iso
 
         with pool._lock:
             pool._signals.append(
@@ -580,7 +580,7 @@ class TestMarkWrittenAfterApply(_IntegrationTestBase):
         pool = self._make_signal_pool()
         engine = self._make_engine_with_manager(pool)
 
-        from hermes.memory.signal_pool import Signal, _now_iso
+        from teage_liu.memory.signal_pool import Signal, _now_iso
 
         with pool._lock:
             # 两条 triggered 信号，仅一条会在本次 apply 中写入
@@ -958,7 +958,7 @@ class TestEndToEndProfileWriting(_IntegrationTestBase):
         consolidate 立即写入画像，避免永远卡在池中。
         """
         import json as _json
-        from hermes.memory.signal_pool import Signal as _Signal
+        from teage_liu.memory.signal_pool import Signal as _Signal
 
         # 模拟启动加载时已有 triggered 信号（绕过 _add_single 路径）
         triggered_signal = _Signal(
@@ -1076,7 +1076,7 @@ class TestCronSessionIsolation(_IntegrationTestBase):
 
     def test_cron_add_does_not_enter_signal_pool(self) -> None:
         """cron 会话 add 操作不进入信号池累积。"""
-        from hermes.agent._cancel_context import current_session_id
+        from teage_liu.agent._cancel_context import current_session_id
 
         token = current_session_id.set("cron:test_schedule_1")
         try:
@@ -1098,7 +1098,7 @@ class TestCronSessionIsolation(_IntegrationTestBase):
 
     def test_cron_replace_delete_does_not_enqueue(self) -> None:
         """cron 会话 replace/delete 操作不入 pending 队列。"""
-        from hermes.agent._cancel_context import current_session_id
+        from teage_liu.agent._cancel_context import current_session_id
 
         token = current_session_id.set("cron:test_schedule_2")
         try:
@@ -1120,7 +1120,7 @@ class TestCronSessionIsolation(_IntegrationTestBase):
 
     def test_normal_session_still_updates_profile(self) -> None:
         """普通会话（非 cron: 前缀）仍正常更新画像（回归保护）。"""
-        from hermes.agent._cancel_context import current_session_id
+        from teage_liu.agent._cancel_context import current_session_id
 
         token = current_session_id.set("normal_session_xyz")
         try:

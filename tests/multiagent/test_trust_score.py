@@ -17,10 +17,10 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.blackboard import Blackboard, read_audit_records
-from hermes.multiagent.schema_validator import SchemaValidator
-from hermes.multiagent.trust_score import TrustScoreManager
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.blackboard import Blackboard, read_audit_records
+from teage_liu.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.trust_score import TrustScoreManager
 
 
 def _make_worker_card(agent_id: str, trust_score: int = 100) -> dict:

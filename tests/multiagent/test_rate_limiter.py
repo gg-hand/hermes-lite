@@ -2,7 +2,7 @@
 import time
 import pytest
 
-from hermes.multiagent.rate_limiter import RateLimiter
+from teage_liu.multiagent.rate_limiter import RateLimiter
 
 
 class TestRateLimiter:

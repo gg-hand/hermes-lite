@@ -1,4 +1,4 @@
-﻿﻿# tests/test_depends_functions.py
+# tests/test_depends_functions.py
 """测试 app.py Depends 函数正确返回容器组件。
 
 spec 2026-07-13 阶段 2：添加 11+ 个 Depends 函数供路由类型安全注入。
@@ -8,12 +8,12 @@ import sys
 import os
 from unittest.mock import MagicMock
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
 class TestDependsFunctions:
 
     def test_get_container_or_raise_uninitialized(self):
         """容器未初始化时 get_container_or_raise 抛 RuntimeError。"""
-        from hermes.app import get_container
+        from teage_liu.app import get_container
         # 确保容器未初始化
         import app
         app._container = None

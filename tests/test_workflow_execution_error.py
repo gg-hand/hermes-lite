@@ -14,7 +14,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent.tool_error import (
+from teage_liu.agent.tool_error import (
     HookAbortError, ValidationError, WorkflowExecutionError, ToolError, ErrorStage,
 )
 

@@ -1,4 +1,4 @@
-﻿﻿"""SSE 事件透传测试（Phase 6 Task 7）。
+"""SSE 事件透传测试（Phase 6 Task 7）。
 
 验证 ``src/server.py`` 的 ``POST /chat/stream`` 端点正确透传 round_start /
 todo_init / todo_update / todo_complete / tool 等事件，并对 done 事件补充
@@ -33,9 +33,9 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.server import app  # noqa: E402
+from teage_liu.server import app  # noqa: E402
 # Task 11: server.py 全局变量已删除，通过 app.dependency_overrides 注入 mock
-from hermes.app import (  # noqa: E402
+from teage_liu.app import (  # noqa: E402
     get_orchestrator,
     get_session_logger,
     get_stream_manager,

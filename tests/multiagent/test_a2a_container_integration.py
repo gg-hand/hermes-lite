@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 
-from hermes.container import CONFIG_TO_COMPONENTS
+from teage_liu.container import CONFIG_TO_COMPONENTS
 
 
 class TestA2AContainerIntegration:
@@ -14,7 +14,7 @@ class TestA2AContainerIntegration:
 
     def test_a2a_router_registered_when_enabled(self, tmp_path: Path):
         """a2a.enabled=True 时注册路由。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {
             "a2a": {
@@ -38,7 +38,7 @@ class TestA2AContainerIntegration:
 
     def test_a2a_not_registered_when_disabled(self, tmp_path: Path):
         """a2a.enabled=False 时不注册路由。"""
-        from hermes.app import init_container, register_components, get_container
+        from teage_liu.app import init_container, register_components, get_container
 
         config = {"a2a": {"enabled": False}}
         init_container(config)
@@ -50,5 +50,5 @@ class TestA2AContainerIntegration:
 
     def test_a2a_in_restart_required_keys(self):
         """a2a 路径变更需重启。"""
-        from hermes.app import _RESTART_REQUIRED_KEYS
+        from teage_liu.app import _RESTART_REQUIRED_KEYS
         assert any("a2a" in key for key in _RESTART_REQUIRED_KEYS)

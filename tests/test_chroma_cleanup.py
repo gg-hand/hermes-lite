@@ -26,7 +26,7 @@ install_mocks()
 # 使用 mock chroma 避免下载 ONNX 模型
 import tests._mock_deps  # noqa: E402,F401  # 触发 mock 安装
 
-from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from teage_liu.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 class TestChromaCleanup(unittest.TestCase):

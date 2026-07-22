@@ -23,7 +23,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.react_loop import ReactLoop  # noqa: E402
+from teage_liu.agent.react_loop import ReactLoop  # noqa: E402
 
 
 def _make_llm_response_with_usage(
@@ -146,28 +146,28 @@ class TestExtractTokenCount:
 
     def test_extract_with_full_usage(self):
         """usage 包含 input_tokens 和 output_tokens 时返回两者之和。"""
-        from hermes.orchestrator.chat_handler import _extract_token_count
+        from teage_liu.orchestrator.chat_handler import _extract_token_count
         usage = {"input_tokens": 100, "output_tokens": 50}
         assert _extract_token_count(usage) == 150
 
     def test_extract_with_none(self):
         """usage 为 None 时返回 0。"""
-        from hermes.orchestrator.chat_handler import _extract_token_count
+        from teage_liu.orchestrator.chat_handler import _extract_token_count
         assert _extract_token_count(None) == 0
 
     def test_extract_with_empty_dict(self):
         """usage 为空 dict 时返回 0。"""
-        from hermes.orchestrator.chat_handler import _extract_token_count
+        from teage_liu.orchestrator.chat_handler import _extract_token_count
         assert _extract_token_count({}) == 0
 
     def test_extract_with_missing_fields(self):
         """usage 缺少某个字段时用 0 兜底。"""
-        from hermes.orchestrator.chat_handler import _extract_token_count
+        from teage_liu.orchestrator.chat_handler import _extract_token_count
         assert _extract_token_count({"input_tokens": 100}) == 100
         assert _extract_token_count({"output_tokens": 50}) == 50
 
     def test_extract_with_non_dict_input(self):
         """usage 不是 dict 时返回 0（容错）。"""
-        from hermes.orchestrator.chat_handler import _extract_token_count
+        from teage_liu.orchestrator.chat_handler import _extract_token_count
         assert _extract_token_count("not a dict") == 0
         assert _extract_token_count(123) == 0

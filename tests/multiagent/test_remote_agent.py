@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest_asyncio.fixture
@@ -44,7 +44,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_adapter_initialization(self, local_bb: Path, remote_config):
         """适配器正确初始化。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
         assert adapter._agent_id == "remote_worker_001"
         assert adapter._a2a_client is not None
@@ -52,7 +52,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_register_to_remote(self, local_bb: Path, remote_config):
         """注册到远程 blackboard。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -65,7 +65,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_heartbeat_loop_calls_remote(self, local_bb: Path, remote_config):
         """心跳调用远程 heartbeat 方法。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -79,7 +79,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_read_remote_messages(self, local_bb: Path, remote_config):
         """读取远程消息。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -94,7 +94,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_append_remote_message_with_signature(self, local_bb: Path, remote_config):
         """向远程 blackboard 追加消息（带签名）。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         private_key = Ed25519PrivateKey.generate()
@@ -122,7 +122,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_acquire_remote_lock(self, local_bb: Path, remote_config):
         """获取远程锁。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 
@@ -138,7 +138,7 @@ class TestRemoteAgentAdapter:
     @pytest.mark.asyncio
     async def test_start_stop_lifecycle(self, local_bb: Path, remote_config):
         """适配器 start/stop 生命周期。"""
-        from hermes.multiagent.remote_agent_adapter import RemoteAgentAdapter
+        from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
 
         adapter = RemoteAgentAdapter(local_bb, remote_config, agent_id="remote_worker_001")
 

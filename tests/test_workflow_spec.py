@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from hermes.tasks.workflow.spec import (
+from teage_liu.tasks.workflow.spec import (
     ALLOWED_ON_FAILURE_ACTIONS,
     ALLOWED_STEP_TYPES,
     OnFailure,

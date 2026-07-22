@@ -1,4 +1,4 @@
-﻿﻿# tests/test_background_loops.py
+# tests/test_background_loops.py
 """测试 background_loops.py 参数注入改造。
 
 spec 2026-07-13 阶段 2：3 个循环改参数注入 + asyncio.Event。
@@ -11,13 +11,13 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
 class TestBackgroundLoopsSignatures:
 
     def test_cleanup_loop_accepts_params(self):
         """cleanup_loop 接受 session_logger/metrics_store/orchestrator 参数。"""
         import inspect
-        from hermes.background_loops import cleanup_loop
+        from teage_liu.background_loops import cleanup_loop
         sig = inspect.signature(cleanup_loop)
         params = list(sig.parameters.keys())
         assert "session_logger" in params
@@ -27,7 +27,7 @@ class TestBackgroundLoopsSignatures:
     def test_file_cleanup_loop_accepts_param(self):
         """file_cleanup_loop 接受 upload_manager 参数。"""
         import inspect
-        from hermes.background_loops import file_cleanup_loop
+        from teage_liu.background_loops import file_cleanup_loop
         sig = inspect.signature(file_cleanup_loop)
         params = list(sig.parameters.keys())
         assert "upload_manager" in params
@@ -35,7 +35,7 @@ class TestBackgroundLoopsSignatures:
     def test_metrics_persist_loop_accepts_params(self):
         """metrics_persist_loop 接受 metrics_collector/metrics_store/reset_event 参数。"""
         import inspect
-        from hermes.background_loops import metrics_persist_loop
+        from teage_liu.background_loops import metrics_persist_loop
         sig = inspect.signature(metrics_persist_loop)
         params = list(sig.parameters.keys())
         assert "metrics_collector" in params
@@ -45,7 +45,7 @@ class TestBackgroundLoopsSignatures:
     def test_get_server_globals_deleted(self):
         """_get_server_globals 函数应已删除。"""
         try:
-            from hermes.background_loops import _get_server_globals
+            from teage_liu.background_loops import _get_server_globals
             assert False, "_get_server_globals 应已删除"
         except (ImportError, AttributeError):
             pass  # 预期行为
@@ -63,7 +63,7 @@ class TestMetricsPersistLoopEvent:
     @pytest.mark.asyncio
     async def test_reset_event_triggers_baseline_reset(self):
         """reset_event.set() 触发 baseline 重置。"""
-        from hermes.background_loops import metrics_persist_loop
+        from teage_liu.background_loops import metrics_persist_loop
 
         mock_collector = MagicMock()
         mock_collector.snapshot.return_value = {"llm_calls_total": 0}

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
 
 
 @pytest.fixture

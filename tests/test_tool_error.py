@@ -1,4 +1,4 @@
-﻿"""统一工具错误异常层次测试（Phase A）。
+"""统一工具错误异常层次测试（Phase A）。
 
 覆盖：
 - ``ToolError`` 基类与 17 个子类的构造与默认值
@@ -15,9 +15,9 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "teage_liu"))
 
-from hermes.agent.tool_error import (  # noqa: E402
+from teage_liu.agent.tool_error import (  # noqa: E402
     EXECUTION_ERROR_CATEGORIES,
     PRE_EXECUTION_ERROR_CATEGORIES,
     AntiCrawlerError,
@@ -42,7 +42,7 @@ from hermes.agent.tool_error import (  # noqa: E402
     from_cron_error,
     from_exception,
 )
-from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
+from teage_liu.agent.tool_registry import ToolRegistry  # noqa: E402
 
 
 class TestToolErrorHierarchy(unittest.TestCase):

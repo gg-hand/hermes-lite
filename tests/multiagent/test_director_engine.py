@@ -18,9 +18,9 @@ import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from hermes.multiagent.blackboard import Blackboard, atomic_write
-from hermes.multiagent.director_engine import DirectorEngine, DirectorHealthState
-from hermes.multiagent.exceptions import LockAcquisitionError
+from teage_liu.multiagent.blackboard import Blackboard, atomic_write
+from teage_liu.multiagent.director_engine import DirectorEngine, DirectorHealthState
+from teage_liu.multiagent.exceptions import LockAcquisitionError
 
 
 @pytest_asyncio.fixture
@@ -191,8 +191,8 @@ class TestDirectorWorkerHeartbeatCheck:
         engine = DirectorEngine(bb_root, director_config, agent_id="director_001")
         await engine.start()
 
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.schema_validator import SchemaValidator
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
         registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
         await registry.register({
             "agent_id": "worker_001",
@@ -235,7 +235,7 @@ class TestDirectorTurnManagement:
         await engine.start()
 
         # 设置 director.md 含 turn_policy.order
-        from hermes.multiagent.blackboard import read_director_md
+        from teage_liu.multiagent.blackboard import read_director_md
         director_md = await read_director_md(bb_root)
         director_md["turn_policy"] = {
             "mode": "round_robin",
@@ -264,8 +264,8 @@ class TestSignatureVerifier:
     @pytest.mark.asyncio
     async def test_signature_verify_ok(self, bb_root: Path, director_config, tmp_path):
         """签名验证通过 → VerifyResult.ok。"""
-        from hermes.multiagent.signature import SignatureVerifier
-        from hermes.multiagent.exceptions import VerifyResult
+        from teage_liu.multiagent.signature import SignatureVerifier
+        from teage_liu.multiagent.exceptions import VerifyResult
 
         # 生成 Director 密钥对
         private_key = Ed25519PrivateKey.generate()
@@ -290,7 +290,7 @@ class TestSignatureVerifier:
     @pytest.mark.asyncio
     async def test_signature_verify_failed_single_degraded(self, bb_root: Path, director_config):
         """签名验证失败（单次）→ degraded。"""
-        from hermes.multiagent.signature import SignatureVerifier
+        from teage_liu.multiagent.signature import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="invalid_key")
 
@@ -303,7 +303,7 @@ class TestSignatureVerifier:
     @pytest.mark.asyncio
     async def test_signature_verify_failed_3_times_distrust(self, bb_root: Path, director_config):
         """连续 3 次失败 → distrust。"""
-        from hermes.multiagent.signature import SignatureVerifier
+        from teage_liu.multiagent.signature import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="invalid_key")
 
@@ -318,7 +318,7 @@ class TestSignatureVerifier:
     @pytest.mark.asyncio
     async def test_signature_missing_soft_constraint(self, bb_root: Path, director_config):
         """无签名字段 → degraded（软约束）。"""
-        from hermes.multiagent.signature import SignatureVerifier
+        from teage_liu.multiagent.signature import SignatureVerifier
 
         verifier = SignatureVerifier(bb_root, public_key_pem="some_key")
         status = {"epoch": 1}  # 无 director_signature 字段
@@ -330,7 +330,7 @@ class TestSignatureVerifier:
     @pytest.mark.asyncio
     async def test_signature_failure_count_reset_on_success(self, bb_root: Path, director_config, tmp_path):
         """验证通过后重置失败计数。"""
-        from hermes.multiagent.signature import SignatureVerifier
+        from teage_liu.multiagent.signature import SignatureVerifier
 
         private_key = Ed25519PrivateKey.generate()
         public_key = private_key.public_key()

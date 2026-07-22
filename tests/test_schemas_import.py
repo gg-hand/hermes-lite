@@ -1,10 +1,10 @@
-﻿"""验证所有 schemas 模块可正确导入（Task 6）。"""
+"""验证所有 schemas 模块可正确导入（Task 6）。"""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "teage_liu"))
 
 
 def test_chat_schemas():
-    from hermes.schemas.chat import ChatRequest, CancelRequest, ChatResponse
+    from teage_liu.schemas.chat import ChatRequest, CancelRequest, ChatResponse
     req = ChatRequest(message="test", session_id="s1")
     assert req.message == "test"
     cancel = CancelRequest(session_id="s1")
@@ -14,7 +14,7 @@ def test_chat_schemas():
 
 
 def test_common_schemas():
-    from hermes.schemas.common import (
+    from teage_liu.schemas.common import (
         HealthResponse, SessionItem, SessionListResponse,
         SessionTitleUpdate, MessageItem, MessageListResponse,
         DeleteSessionResponse, FlushResponse,
@@ -30,7 +30,7 @@ def test_common_schemas():
 
 
 def test_config_schemas():
-    from hermes.schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
+    from teage_liu.schemas.config import ConfigResponse, ConfigUpdateRequest, ConfigUpdateResponse
     resp = ConfigResponse(config={"key": "val"})
     assert resp.config == {"key": "val"}
     req = ConfigUpdateRequest(config={"key": "val"})
@@ -40,7 +40,7 @@ def test_config_schemas():
 
 
 def test_approvals_schemas():
-    from hermes.schemas.approvals import (
+    from teage_liu.schemas.approvals import (
         ApprovalResolveRequest, ApprovalResolveResponse,
         ApprovalListItem, ApprovalListResponse,
     )
@@ -55,7 +55,7 @@ def test_approvals_schemas():
 
 
 def test_schedules_schemas():
-    from hermes.schemas.schedules import (
+    from teage_liu.schemas.schedules import (
         ScheduleCreateRequest, ScheduleUpdateRequest,
         ScheduleListResponse, ScheduleResponse,
     )
@@ -70,7 +70,7 @@ def test_schedules_schemas():
 
 
 def test_files_schemas():
-    from hermes.schemas.files import (
+    from teage_liu.schemas.files import (
         FileUploadResponse, FileItem, FileListResponse, FileDeleteResponse,
     )
     up = FileUploadResponse(file_id="f1")
@@ -87,7 +87,7 @@ def test_files_schemas():
 
 
 def test_proposals_schemas():
-    from hermes.schemas.proposals import ProposalModifyRequest
+    from teage_liu.schemas.proposals import ProposalModifyRequest
     req = ProposalModifyRequest()
     assert req.schedule_config_updates is None
     assert req.requested_tools is None

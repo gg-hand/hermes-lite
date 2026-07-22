@@ -1,4 +1,4 @@
-﻿"""惊讶门控（写入侧过滤）单元测试 — Phase 7 Task 2。
+"""惊讶门控（写入侧过滤）单元测试 — Phase 7 Task 2。
 
 覆盖 spec ``implement-phase7-memory-enhancement`` 中惊讶门控的所有场景：
 - surprise_gate_enabled=False 时走原有去重逻辑（向后兼容）
@@ -41,7 +41,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.memory.consolidation import ConsolidationEngine  # noqa: E402
+from teage_liu.memory.consolidation import ConsolidationEngine  # noqa: E402
 
 
 def _make_llm_response(text: str) -> MagicMock:
@@ -713,7 +713,7 @@ class TestSurpriseGateLogging(unittest.TestCase):
         engine.add_info({"role": "user", "content": "msg"})
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="DEBUG"
+            "teage_liu.memory.consolidation", level="DEBUG"
         ) as cm:
             engine.consolidate()
 
@@ -748,7 +748,7 @@ class TestSurpriseGateLogging(unittest.TestCase):
         engine.add_info({"role": "user", "content": "msg"})
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="DEBUG"
+            "teage_liu.memory.consolidation", level="DEBUG"
         ) as cm:
             engine.consolidate()
 
@@ -780,7 +780,7 @@ class TestSurpriseGateLogging(unittest.TestCase):
         engine.add_info({"role": "user", "content": "msg"})
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="DEBUG"
+            "teage_liu.memory.consolidation", level="DEBUG"
         ) as cm:
             engine.consolidate()
 
@@ -814,7 +814,7 @@ class TestSurpriseGateLogging(unittest.TestCase):
         engine.add_info({"role": "user", "content": "msg"})
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="INFO"
+            "teage_liu.memory.consolidation", level="INFO"
         ) as cm:
             engine.consolidate()
 

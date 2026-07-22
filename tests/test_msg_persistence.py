@@ -1,4 +1,4 @@
-﻿"""MessagePersistence 测试:消息持久化、中断通知、历史清理、沉淀触发。
+"""MessagePersistence 测试:消息持久化、中断通知、历史清理、沉淀触发。
 
 从 Orchestrator 提取的持久化职责:
 - persist_new_messages: 将 React 循环新增 messages 持久化到 history_buffer
@@ -10,11 +10,11 @@
 - maybe_flush_on_switch: 会话切换时自动 flush 旧会话
 """
 import sys, os, asyncio
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "teage_liu"))
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from hermes.agent.msg_persistence import MessagePersistence
+from teage_liu.agent.msg_persistence import MessagePersistence
 
 
 class TestPersistNewMessages:

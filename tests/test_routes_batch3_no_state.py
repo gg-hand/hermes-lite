@@ -1,10 +1,10 @@
-﻿﻿# tests/test_routes_batch3_no_state.py
+# tests/test_routes_batch3_no_state.py
 """测试 routes 批次 3 无 import state + 软重启改用容器 API。"""
 from __future__ import annotations
 import sys
 import os
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
 class TestRoutesBatch3NoState:
 
     def test_schedules_no_import_state(self):

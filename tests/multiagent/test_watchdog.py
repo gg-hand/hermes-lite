@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.watchdog_watcher import WatchdogWatcher
+from teage_liu.multiagent.watchdog_watcher import WatchdogWatcher
 
 
 @pytest.fixture

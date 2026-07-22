@@ -1,4 +1,4 @@
-﻿"""MemoryRetriever namespace + cron_id 过滤召回测试（Phase 8 Task 1.3）。
+"""MemoryRetriever namespace + cron_id 过滤召回测试（Phase 8 Task 1.3）。
 
 验证：
 - ``retrieve`` 默认 ``namespace="user"`` 只召回用户命名空间记忆（向后兼容）
@@ -30,8 +30,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.memory.retrieval import MemoryRetriever  # noqa: E402
-from hermes.storage.chroma_store import ChromaMemoryStore  # noqa: E402
+from teage_liu.memory.retrieval import MemoryRetriever  # noqa: E402
+from teage_liu.storage.chroma_store import ChromaMemoryStore  # noqa: E402
 
 
 def _make_retriever(store: ChromaMemoryStore, top_k: int = 5) -> MemoryRetriever:

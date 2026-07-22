@@ -35,7 +35,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.tasks.run_summary import (  # noqa: E402
+from teage_liu.tasks.run_summary import (  # noqa: E402
     RunSummary,
     RunsJsonlStore,
     build_default_llm_summary,
@@ -535,22 +535,22 @@ class TestRunSummaryNewFields(unittest.TestCase):
     """Q11/Q8: RunSummary 新增 retry_count / notified / notification_channels。"""
 
     def test_retry_count_defaults_zero(self):
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         rs = RunSummary(schedule_id="s1", run_id="r1")
         self.assertEqual(rs.retry_count, 0)
 
     def test_notified_defaults_false(self):
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         rs = RunSummary(schedule_id="s1", run_id="r1")
         self.assertFalse(rs.notified)
 
     def test_notification_channels_defaults_empty(self):
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         rs = RunSummary(schedule_id="s1", run_id="r1")
         self.assertEqual(rs.notification_channels, [])
 
     def test_new_fields_roundtrip(self):
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         rs = RunSummary(
             schedule_id="s1", run_id="r1",
             retry_count=3, notified=True, notification_channels=["email", "webhook"],
@@ -566,7 +566,7 @@ class TestRunSummaryNewFields(unittest.TestCase):
 
     def test_from_dict_missing_new_fields_uses_defaults(self):
         """旧记录无新字段时使用默认值（向后兼容）。"""
-        from hermes.tasks.run_summary import RunSummary
+        from teage_liu.tasks.run_summary import RunSummary
         d = {"schedule_id": "s1", "run_id": "r1"}
         rs = RunSummary.from_dict(d)
         self.assertEqual(rs.retry_count, 0)
@@ -578,7 +578,7 @@ class TestRunsJsonlStoreReadByRunId(unittest.TestCase):
     """Q13: RunsJsonlStore.read_by_run_id 查询单次执行记录。"""
 
     def test_read_by_run_id_returns_dict_when_found(self):
-        from hermes.tasks.run_summary import RunSummary, RunsJsonlStore
+        from teage_liu.tasks.run_summary import RunSummary, RunsJsonlStore
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             store = RunsJsonlStore(base_dir=tmp)
@@ -594,7 +594,7 @@ class TestRunsJsonlStoreReadByRunId(unittest.TestCase):
             self.assertEqual(result["schedule_id"], "s1")
 
     def test_read_by_run_id_returns_none_when_not_found(self):
-        from hermes.tasks.run_summary import RunsJsonlStore
+        from teage_liu.tasks.run_summary import RunsJsonlStore
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             store = RunsJsonlStore(base_dir=tmp)

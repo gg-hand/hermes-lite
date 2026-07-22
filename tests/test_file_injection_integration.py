@@ -1,4 +1,4 @@
-﻿"""文件注入到 orchestrator _build_enhanced_context 的集成测试。
+"""文件注入到 orchestrator _build_enhanced_context 的集成测试。
 
 验证 Task 1-3 的端到端链路：FileContextInjector 输出经 ContextManager.get_file_injection
 被 orchestrator 正确拼装到 messages[0]，覆盖 pending/done/图片/cron/空会话场景。
@@ -24,13 +24,13 @@ from tests._mock_deps import install_mocks
 from tests.test_helpers import minimal_png
 install_mocks()
 
-from hermes.files.upload_manager import UploadManager
-from hermes.files.context_injector import FileContextInjector
-from hermes.memory.context_manager import ContextManager
-from hermes.agent.context_builder import ContextBuilder
-from hermes.agent.cron_isolator import CronIsolator
-from hermes.orchestrator import Orchestrator
-from hermes.orchestrator.enhanced_context import EnhancedContextBuilder
+from teage_liu.files.upload_manager import UploadManager
+from teage_liu.files.context_injector import FileContextInjector
+from teage_liu.memory.context_manager import ContextManager
+from teage_liu.agent.context_builder import ContextBuilder
+from teage_liu.agent.cron_isolator import CronIsolator
+from teage_liu.orchestrator import Orchestrator
+from teage_liu.orchestrator.enhanced_context import EnhancedContextBuilder
 
 
 def _make_env():

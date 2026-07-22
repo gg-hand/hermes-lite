@@ -10,13 +10,13 @@ from pathlib import Path
 import aiofiles
 import pytest
 
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-from hermes.multiagent.blackboard import atomic_write, validate_path_safety
-from hermes.multiagent.exceptions import PathSafetyError
-from hermes.multiagent.file_lock import LockManager
-from hermes.multiagent.recovery import RecoveryCoordinator
-from hermes.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+from teage_liu.multiagent.blackboard import atomic_write, validate_path_safety
+from teage_liu.multiagent.exceptions import PathSafetyError
+from teage_liu.multiagent.file_lock import LockManager
+from teage_liu.multiagent.recovery import RecoveryCoordinator
+from teage_liu.multiagent.schema_validator import SchemaValidator
 
 
 @pytest.fixture

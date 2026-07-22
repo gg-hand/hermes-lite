@@ -25,7 +25,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent.audit import AuditLogger
+from teage_liu.agent.audit import AuditLogger
 
 
 class TestAuditRotation(unittest.TestCase):

@@ -1,4 +1,4 @@
-﻿"""TodoList 会话级内存对象单元测试。
+"""TodoList 会话级内存对象单元测试。
 
 验证 ``src/tasks/todo_list.py`` 的 ``Step`` / ``TodoList`` /
 ``TodoListRegistry``：初始化 / 状态机 / 自动推进 / 依赖编排 /
@@ -24,7 +24,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.tasks.todo_list import Step, TodoList, TodoListRegistry  # noqa: E402
+from teage_liu.tasks.todo_list import Step, TodoList, TodoListRegistry  # noqa: E402
 
 
 class TestTodoList(unittest.TestCase):

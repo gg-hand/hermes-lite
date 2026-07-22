@@ -108,7 +108,7 @@ WorkingDirectory=/opt/hermes-lite
 EnvironmentFile=/opt/hermes-lite/.env
 
 # 启动命令
-ExecStart=/opt/hermes-lite/.venv/bin/uvicorn hermes.app:app \
+ExecStart=/opt/hermes-lite/.venv/bin/uvicorn teage_liu.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --workers 1 \

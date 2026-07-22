@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.file_lock import LockManager
-from hermes.multiagent.exceptions import (
+from teage_liu.multiagent.file_lock import LockManager
+from teage_liu.multiagent.exceptions import (
     FencingTokenMismatchError,
     LockAcquisitionError,
     CASVersionMismatchError,

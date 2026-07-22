@@ -1,4 +1,4 @@
-﻿"""HistoryBuffer JSONL 持久化层单元测试 — Phase 10 SubTask 1.x。
+"""HistoryBuffer JSONL 持久化层单元测试 — Phase 10 SubTask 1.x。
 
 验证新增的磁盘持久化行为，覆盖以下场景：
 
@@ -33,7 +33,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.storage.history_buffer import HistoryBuffer  # noqa: E402
+from teage_liu.storage.history_buffer import HistoryBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from hermes.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.agent_registry import AgentRegistry
 
 
 @pytest.fixture
 def registry(bb_root: Path) -> AgentRegistry:
-    from hermes.multiagent.schema_validator import SchemaValidator
+    from teage_liu.multiagent.schema_validator import SchemaValidator
     # 使用 enabled=True 以便 test_observer_requires_heartbeat_fields 能通过 schema 校验触发
     return AgentRegistry(bb_root, SchemaValidator())
 

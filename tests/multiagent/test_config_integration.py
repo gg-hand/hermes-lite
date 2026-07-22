@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes.config import load_config
-from hermes.container import Container, CONFIG_TO_COMPONENTS
-from hermes.config_helpers import _RESTART_REQUIRED_KEYS, _validate_config_schema
+from teage_liu.config import load_config
+from teage_liu.container import Container, CONFIG_TO_COMPONENTS
+from teage_liu.config_helpers import _RESTART_REQUIRED_KEYS, _validate_config_schema
 
 
 def test_config_multiagent_section_parsed(tmp_path: Path):
@@ -118,13 +118,13 @@ def test_container_registers_multiagent_components(tmp_path: Path):
     }
     container = Container(config)
     # 注册 multiagent 组件
-    from hermes.multiagent.blackboard import atomic_write, validate_path_safety
-    from hermes.multiagent.schema_validator import SchemaValidator
-    from hermes.multiagent.file_lock import LockManager
-    from hermes.multiagent.audit_logger import MultiAgentAuditLogger
-    from hermes.multiagent.agent_registry import AgentRegistry
-    from hermes.multiagent.watchdog_watcher import WatchdogWatcher
-    from hermes.multiagent.recovery import RecoveryCoordinator
+    from teage_liu.multiagent.blackboard import atomic_write, validate_path_safety
+    from teage_liu.multiagent.schema_validator import SchemaValidator
+    from teage_liu.multiagent.file_lock import LockManager
+    from teage_liu.multiagent.audit_logger import MultiAgentAuditLogger
+    from teage_liu.multiagent.agent_registry import AgentRegistry
+    from teage_liu.multiagent.watchdog_watcher import WatchdogWatcher
+    from teage_liu.multiagent.recovery import RecoveryCoordinator
 
     bb_root = Path(config["multiagent"]["blackboard_dir"])
     bb_root.mkdir(parents=True, exist_ok=True)

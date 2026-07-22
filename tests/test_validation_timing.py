@@ -19,12 +19,12 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-# 先 import hermes.server.app 触发完整 app 装配，避免循环导入
-from hermes.server import app  # noqa: E402,F401
-from hermes.routes.schedules import create_schedule  # noqa: E402
-from hermes.schemas.schedules import ScheduleCreateRequest  # noqa: E402
-from hermes.tasks.scheduler import CronScheduler  # noqa: E402
-from hermes.tasks.workflow.spec import WorkflowSpec, StepSpec  # noqa: E402,F401
+# 先 import teage_liu.server.app 触发完整 app 装配，避免循环导入
+from teage_liu.server import app  # noqa: E402,F401
+from teage_liu.routes.schedules import create_schedule  # noqa: E402
+from teage_liu.schemas.schedules import ScheduleCreateRequest  # noqa: E402
+from teage_liu.tasks.scheduler import CronScheduler  # noqa: E402
+from teage_liu.tasks.workflow.spec import WorkflowSpec, StepSpec  # noqa: E402,F401
 
 
 class TestValidationTimingCreateSchedule(unittest.TestCase):
@@ -110,7 +110,7 @@ class TestLoadPersistedValidationWarning(unittest.TestCase):
             scheduler = CronScheduler(schedules_file=sched_file)
             # 捕获 WARNING 日志
             with self.assertLogs(
-                "hermes.tasks.scheduler", level="WARNING"
+                "teage_liu.tasks.scheduler", level="WARNING"
             ) as cm:
                 scheduler._load_persisted()
             # schedule 仍被加载（不阻断启动）

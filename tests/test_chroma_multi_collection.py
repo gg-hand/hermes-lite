@@ -22,7 +22,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.storage.chroma_store import ChromaMemoryStore
+from teage_liu.storage.chroma_store import ChromaMemoryStore
 
 
 @pytest.fixture

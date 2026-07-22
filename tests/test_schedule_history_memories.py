@@ -1,4 +1,4 @@
-﻿﻿"""调度执行历史 + 调度隔离记忆端点单元测试（Phase 8 Task 1.8 + 1.9）。
+"""调度执行历史 + 调度隔离记忆端点单元测试（Phase 8 Task 1.8 + 1.9）。
 
 验证 ``src/server.py`` 新增的 3 个端点：
 - ``GET /schedules/{id}/history?limit=10``：按 session_id="cron:{id}" 取最近 N
@@ -41,7 +41,7 @@ if _PROJECT_ROOT not in sys.path:
 
 # 添加 src/ 到 sys.path，使 `from app import ...` 与 routes/*.py 使用同一模块对象
 # （FastAPI dependency_overrides 按函数对象身份匹配，导入路径不一致会导致 override 失效）
-_SRC_DIR = os.path.join(_PROJECT_ROOT, "hermes")
+_SRC_DIR = os.path.join(_PROJECT_ROOT, "teage_liu")
 from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
@@ -49,14 +49,14 @@ install_mocks()
 # 注意：必须从 `app`（而非 `src.app`）导入 get_* 函数，因为 routes/*.py 使用
 # `from app import get_xxx`，FastAPI dependency_overrides 按函数对象身份匹配。
 # 若导入路径不一致，override 不会生效。
-from hermes.app import (  # noqa: E402
+from teage_liu.app import (  # noqa: E402
     get_cron_scheduler,
     get_orchestrator,
     get_session_logger,
 )
-from hermes.server import app  # noqa: E402
-from hermes.storage.sqlite_log import SessionLogger  # noqa: E402
-from hermes.tasks.scheduler import CronScheduler  # noqa: E402
+from teage_liu.server import app  # noqa: E402
+from teage_liu.storage.sqlite_log import SessionLogger  # noqa: E402
+from teage_liu.tasks.scheduler import CronScheduler  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 

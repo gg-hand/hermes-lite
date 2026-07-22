@@ -1,4 +1,4 @@
-﻿"""SignalPool 信号池单元测试。
+"""SignalPool 信号池单元测试。
 
 覆盖：
 - 基本入池/去重/阈值触发
@@ -32,7 +32,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.memory.signal_pool import (
+from teage_liu.memory.signal_pool import (
     Signal,
     SignalPool,
     _extract_keywords,

@@ -20,17 +20,17 @@ class TestLifespanNoUndefinedNames:
     """验证 lifespan 模块中所有使用的名称都有定义。"""
 
     def _get_lifespan_path(self):
-        return os.path.join(_PROJECT_ROOT, "hermes", "lifespan.py")
+        return os.path.join(_PROJECT_ROOT, "teage_liu", "lifespan.py")
 
     def test_skill_mcp_available_defined(self):
         """SKILL_MCP_AVAILABLE 必须被定义。"""
-        from hermes import lifespan as mod
+        from teage_liu import lifespan as mod
         assert hasattr(mod, "SKILL_MCP_AVAILABLE")
         assert mod.SKILL_MCP_AVAILABLE is True
 
     def test_cron_available_defined(self):
         """CRON_AVAILABLE 必须被定义。"""
-        from hermes import lifespan as mod
+        from teage_liu import lifespan as mod
         assert hasattr(mod, "CRON_AVAILABLE")
         assert mod.CRON_AVAILABLE is True
 
@@ -72,7 +72,7 @@ class TestLifespanNoUndefinedNames:
                 if node.id not in allowed:
                     undefined.add(node.id)
 
-        # 过滤掉通过 from hermes.app import ... 在函数内部导入的名称
+        # 过滤掉通过 from teage_liu.app import ... 在函数内部导入的名称
         # （AST 会把它们视为 Load，但它们在运行时通过 import 定义）
         # 这里我们简单验证关键的几个标志已被定义
         assert "SKILL_MCP_AVAILABLE" in defined, (
@@ -87,8 +87,8 @@ class TestLifespanModuleImportable:
     """验证 lifespan 模块可无错导入。"""
 
     def test_lifespan_import_no_error(self):
-        """import hermes.lifespan 不应抛 NameError 或任何异常。"""
+        """import teage_liu.lifespan 不应抛 NameError 或任何异常。"""
         import importlib
-        mod = importlib.import_module("hermes.lifespan")
+        mod = importlib.import_module("teage_liu.lifespan")
         assert hasattr(mod, "lifespan")
         assert callable(mod.lifespan)

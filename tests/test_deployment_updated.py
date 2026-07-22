@@ -1,11 +1,11 @@
-"""测试部署脚本和 conftest 已更新为 hermes 包入口（Task 15）。
+"""测试部署脚本和 conftest 已更新为 teage_liu 包入口（Task 15）。
 
 验证：
-- tests/conftest.py 存在并设置 hermes 包路径
-- sidecar.rs（若存在）使用 ``python -m hermes``
-- deploy.sh / start.sh / restart.sh / restart.ps1 / hermes-lite.service
-  不再引用 ``src/server.py`` 或 ``src.server:app``，统一为 ``hermes.app:app``
-  或 ``python -m hermes``
+- tests/conftest.py 存在并设置 teage_liu 包路径
+- sidecar.rs（若存在）使用 ``python -m teage_liu``
+- deploy.sh / start.sh / restart.sh / restart.ps1 / teage-liu.service
+  不再引用 ``src/server.py`` 或 ``src.server:app``，统一为 ``teage_liu.app:app``
+  或 ``python -m teage_liu``
 """
 from __future__ import annotations
 
@@ -24,25 +24,25 @@ class TestConftestExists:
         """tests/conftest.py 存在。"""
         assert os.path.exists(os.path.join(_ROOT, "tests", "conftest.py"))
 
-    def test_conftest_sets_hermes_path(self):
-        """conftest.py 设置 hermes 包路径。"""
+    def test_conftest_sets_teage_liu_path(self):
+        """conftest.py 设置 teage_liu 包路径。"""
         if not os.path.exists(os.path.join(_ROOT, "tests", "conftest.py")):
             return
         content = _read(os.path.join(_ROOT, "tests", "conftest.py"))
-        assert "hermes" in content
+        assert "teage_liu" in content
         assert "sys.path" in content
 
 
 class TestSidecarUpdated:
-    def test_sidecar_uses_hermes_module(self):
-        """sidecar.rs 使用 python -m hermes（若文件存在）。"""
+    def test_sidecar_uses_teage_liu_module(self):
+        """sidecar.rs 使用 python -m teage_liu（若文件存在）。"""
         sidecar_path = os.path.join(
             _ROOT, "desktop", "src-tauri", "src", "sidecar.rs"
         )
         if not os.path.exists(sidecar_path):
             return  # 桌面端在独立分支管理，dev 分支可能不存在
         content = _read(sidecar_path)
-        assert "-m hermes" in content or "python\" \"-m\" \"hermes" in content
+        assert "-m teage_liu" in content or "python\" \"-m\" \"teage_liu" in content
         assert "src/server.py" not in content
         assert "src.server:app" not in content
 
@@ -60,9 +60,9 @@ class TestDeployScriptsUpdated:
         assert "src.server:app" not in content, (
             f"{filename} 仍引用 src.server:app"
         )
-        # 应使用新的 hermes 入口
-        assert ("hermes.app:app" in content) or ("-m hermes" in content), (
-            f"{filename} 未使用 hermes.app:app 或 python -m hermes"
+        # 应使用新的 teage_liu 入口
+        assert ("teage_liu.app:app" in content) or ("-m teage_liu" in content), (
+            f"{filename} 未使用 teage_liu.app:app 或 python -m teage_liu"
         )
 
     def test_deploy_sh(self):
@@ -81,14 +81,14 @@ class TestDeployScriptsUpdated:
         self._check_script("hermes-lite.service")
 
 
-class TestHermesModuleEntry:
-    def test_hermes_main_module_exists(self):
-        """hermes/__main__.py 存在，支持 python -m hermes。"""
-        assert os.path.exists(os.path.join(_ROOT, "hermes", "__main__.py"))
+class TestTeageLiuModuleEntry:
+    def test_teage_liu_main_module_exists(self):
+        """teage_liu/__main__.py 存在，支持 python -m teage_liu。"""
+        assert os.path.exists(os.path.join(_ROOT, "teage_liu", "__main__.py"))
 
-    def test_hermes_app_importable(self):
-        """hermes.app:app 可导入（uvicorn hermes.app:app 可用）。"""
+    def test_teage_liu_app_importable(self):
+        """teage_liu.app:app 可导入（uvicorn teage_liu.app:app 可用）。"""
         import importlib
 
-        mod = importlib.import_module("hermes.app")
+        mod = importlib.import_module("teage_liu.app")
         assert hasattr(mod, "app")

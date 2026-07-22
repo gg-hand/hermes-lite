@@ -1,4 +1,4 @@
-﻿"""P0-2 异步 Consolidation 测试 — 验证并发安全与数据完整性。
+"""P0-2 异步 Consolidation 测试 — 验证并发安全与数据完整性。
 
 运行方式:
     python -m unittest tests.test_consolidation_async -v
@@ -28,7 +28,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.memory.consolidation import ConsolidationEngine
+from teage_liu.memory.consolidation import ConsolidationEngine
 
 
 def _make_llm_response(text: str) -> MagicMock:

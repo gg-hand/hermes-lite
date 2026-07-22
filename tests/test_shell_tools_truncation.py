@@ -21,8 +21,8 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.agent.tools import shell_tools
-from hermes.agent.tools.shell_tools import execute_command
+from teage_liu.agent.tools import shell_tools
+from teage_liu.agent.tools.shell_tools import execute_command
 
 
 class TestOutputTruncation(unittest.TestCase):

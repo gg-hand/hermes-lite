@@ -27,7 +27,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.intent_classifier import (  # noqa: E402
+from teage_liu.agent.intent_classifier import (  # noqa: E402
     IntentClassificationResult,
     IntentType,
     _MAX_INTENT_TOKENS,
@@ -495,7 +495,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
 
     def test_orchestrator_imports_intent_classifier(self) -> None:
         """Orchestrator 模块应导入 intent_classifier 符号。"""
-        from hermes import orchestrator
+        from teage_liu import orchestrator
 
         # 验证导入符号存在（None 也算，因为 import 失败时降级为 None）
         self.assertTrue(hasattr(orchestrator, "IntentType"))
@@ -504,7 +504,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
 
     def test_orchestrator_intent_classifier_not_none(self) -> None:
         """正常环境下 intent_classifier 符号不为 None（导入成功）。"""
-        from hermes import orchestrator
+        from teage_liu import orchestrator
 
         self.assertIsNotNone(orchestrator.IntentType)
         self.assertIsNotNone(orchestrator.IntentClassificationResult)
@@ -514,7 +514,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """chat() 方法源码应引用 classify_intent（验证集成点存在）。"""
         import inspect
 
-        from hermes.orchestrator.chat_handler import ChatHandler
+        from teage_liu.orchestrator.chat_handler import ChatHandler
 
         chat_source = inspect.getsource(ChatHandler.chat)
         self.assertIn("classify_intent", chat_source)
@@ -524,7 +524,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """chat_stream() 方法源码应引用 classify_intent（验证集成点存在）。"""
         import inspect
 
-        from hermes.orchestrator.chat_handler import ChatHandler
+        from teage_liu.orchestrator.chat_handler import ChatHandler
 
         chat_stream_source = inspect.getsource(ChatHandler.chat_stream)
         self.assertIn("classify_intent", chat_stream_source)
@@ -532,7 +532,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
 
     def test_orchestrator_has_current_intent_result_attr(self) -> None:
         """P1 修复：Orchestrator 实例应有 _current_intent_result 属性，默认 None。"""
-        from hermes.orchestrator import Orchestrator
+        from teage_liu.orchestrator import Orchestrator
 
         # 检查类定义中包含 _current_intent_result 初始化
         import inspect
@@ -543,7 +543,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """P1 修复：chat() 方法应将 intent_result 保存到 self._current_intent_result。"""
         import inspect
 
-        from hermes.orchestrator.chat_handler import ChatHandler
+        from teage_liu.orchestrator.chat_handler import ChatHandler
 
         chat_source = inspect.getsource(ChatHandler.chat)
         self.assertIn("orch._current_intent_result", chat_source)
@@ -552,7 +552,7 @@ class TestIntegrationWithOrchestrator(unittest.IsolatedAsyncioTestCase):
         """P1 修复：chat_stream() 方法应将 intent_result 保存到 self._current_intent_result。"""
         import inspect
 
-        from hermes.orchestrator.chat_handler import ChatHandler
+        from teage_liu.orchestrator.chat_handler import ChatHandler
 
         chat_stream_source = inspect.getsource(ChatHandler.chat_stream)
         self.assertIn("orch._current_intent_result", chat_stream_source)

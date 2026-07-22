@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     atomic_write,
     read_audit_records,
 )
-from hermes.multiagent.turn_manager import TurnManager
+from teage_liu.multiagent.turn_manager import TurnManager
 
 
 @pytest_asyncio.fixture

@@ -1,4 +1,4 @@
-﻿"""TodoList 状态注入 messages[0] 测试。
+"""TodoList 状态注入 messages[0] 测试。
 
 Phase 9 Task 5: 验证 ``Orchestrator._format_todo_for_injection`` 与
 ``_build_enhanced_context`` 的 TodoList 状态注入行为。
@@ -37,13 +37,13 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.llm.prompts import SYSTEM_PROMPT  # noqa: E402
-from hermes.memory.context_manager import ContextManager  # noqa: E402
-from hermes.agent.context_builder import ContextBuilder  # noqa: E402
-from hermes.agent.cron_isolator import CronIsolator  # noqa: E402
-from hermes.orchestrator import Orchestrator  # noqa: E402
-from hermes.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
-from hermes.tasks.todo_list import TodoListRegistry  # noqa: E402
+from teage_liu.llm.prompts import SYSTEM_PROMPT  # noqa: E402
+from teage_liu.memory.context_manager import ContextManager  # noqa: E402
+from teage_liu.agent.context_builder import ContextBuilder  # noqa: E402
+from teage_liu.agent.cron_isolator import CronIsolator  # noqa: E402
+from teage_liu.orchestrator import Orchestrator  # noqa: E402
+from teage_liu.orchestrator.enhanced_context import EnhancedContextBuilder  # noqa: E402
+from teage_liu.tasks.todo_list import TodoListRegistry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

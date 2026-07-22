@@ -1,4 +1,4 @@
-﻿"""MetricsCollector 单元测试。"""
+"""MetricsCollector 单元测试。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.monitoring.metrics import MetricsCollector  # noqa: E402
+from teage_liu.monitoring.metrics import MetricsCollector  # noqa: E402
 
 
 class TestMetricsCollector(unittest.TestCase):

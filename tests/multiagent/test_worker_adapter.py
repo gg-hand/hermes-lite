@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.blackboard import (
+from teage_liu.multiagent.blackboard import (
     Blackboard,
     atomic_write,
     cas_write_status,
@@ -26,8 +26,8 @@ from hermes.multiagent.blackboard import (
     read_json,
     read_yaml_frontmatter,
 )
-from hermes.multiagent.exceptions import NotMyTurnError
-from hermes.multiagent.worker_adapter import AutonomousModeController, WorkerAdapter
+from teage_liu.multiagent.exceptions import NotMyTurnError
+from teage_liu.multiagent.worker_adapter import AutonomousModeController, WorkerAdapter
 
 
 @pytest_asyncio.fixture
@@ -126,8 +126,8 @@ class TestWorkerRegistration:
         # 等待 2 次心跳
         await asyncio.sleep(0.25)
 
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.schema_validator import SchemaValidator
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
 
         registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
         agents = await registry.list_active_agents()
@@ -147,7 +147,7 @@ class TestWorkerRegistration:
         await adapter.start()
 
         # 获取一个锁
-        from hermes.multiagent.file_lock import LockManager
+        from teage_liu.multiagent.file_lock import LockManager
 
         lock_manager = LockManager(bb_root, agent_id="worker_001")
         await lock_manager.acquire("messages", holder="worker_001", ttl_seconds=30)
@@ -298,8 +298,8 @@ class TestAutonomousMode:
         await adapter.start()
 
         # adapter.start() 已注册 worker_001，补充注册 worker_002 / worker_003
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.schema_validator import SchemaValidator
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
 
         registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
         await registry.register(_make_worker_card("worker_002"))

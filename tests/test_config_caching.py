@@ -28,7 +28,7 @@ from tests._mock_deps import install_mocks
 install_mocks()
 
 import yaml
-from hermes.config import load_config, clear_config_cache
+from teage_liu.config import load_config, clear_config_cache
 
 
 class TestConfigCachingContract(unittest.TestCase):
@@ -79,7 +79,7 @@ class TestConfigCachingContract(unittest.TestCase):
         self._write_config({"key": "new_value", "nested": {"inner": 99}})
 
         # 主动失效缓存
-        from hermes import config as config_module
+        from teage_liu import config as config_module
         if hasattr(config_module, '_config_cache'):
             config_module._config_cache = None
 

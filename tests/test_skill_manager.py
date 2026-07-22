@@ -1,4 +1,4 @@
-﻿"""SkillManager 测试:技能激活/停用/构建上下文。
+"""SkillManager 测试:技能激活/停用/构建上下文。
 
 从 Orchestrator 提取的技能管理职责:
 - activate: 标记 Skill 为已激活（去重，保留首次激活顺序）
@@ -7,11 +7,11 @@
 - per-session 隔离: 不同会话的激活状态独立
 """
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "teage_liu"))
 
 import pytest
 from unittest.mock import MagicMock
-from hermes.agent.skill_manager import SkillManager
+from teage_liu.agent.skill_manager import SkillManager
 
 
 class TestSkillManagerBasics:

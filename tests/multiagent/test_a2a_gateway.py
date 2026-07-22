@@ -8,7 +8,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.blackboard import Blackboard
 
 
 @pytest_asyncio.fixture
@@ -34,7 +34,7 @@ def gateway_config() -> dict:
 
 
 def _make_app(bb_root: Path, config: dict) -> FastAPI:
-    from hermes.multiagent.a2a_gateway import create_a2a_router
+    from teage_liu.multiagent.a2a_gateway import create_a2a_router
     app = FastAPI()
     app.include_router(create_a2a_router(bb_root, config))
     return app
@@ -73,8 +73,8 @@ class TestA2AGatewayEndpoints:
     @pytest.mark.asyncio
     async def test_jsonrpc_list_agents(self, bb_root: Path, gateway_config):
         """JSON-RPC list_agents 返回 active agents 列表。"""
-        from hermes.multiagent.agent_registry import AgentRegistry
-        from hermes.multiagent.schema_validator import SchemaValidator
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
 
         registry = AgentRegistry(bb_root, SchemaValidator())
         agent_card = {
@@ -116,7 +116,7 @@ class TestA2AGatewayEndpoints:
     @pytest.mark.asyncio
     async def test_jsonrpc_read_messages(self, bb_root: Path, gateway_config):
         """JSON-RPC read_messages 返回 messages.md 内容。"""
-        from hermes.multiagent.blackboard import append_message
+        from teage_liu.multiagent.blackboard import append_message
 
         await append_message(bb_root, {
             "seq": 1, "from": "remote_001", "to": "*",

@@ -16,11 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from hermes.multiagent.agent_registry import AgentRegistry
-from hermes.multiagent.blackboard import Blackboard
-from hermes.multiagent.injection_isolator import InjectionIsolator
-from hermes.multiagent.schema_validator import SchemaValidator
-from hermes.multiagent.worker_adapter import WorkerAdapter
+from teage_liu.multiagent.agent_registry import AgentRegistry
+from teage_liu.multiagent.blackboard import Blackboard
+from teage_liu.multiagent.injection_isolator import InjectionIsolator
+from teage_liu.multiagent.schema_validator import SchemaValidator
+from teage_liu.multiagent.worker_adapter import WorkerAdapter
 
 
 def _make_worker_card(agent_id: str) -> dict:
@@ -149,7 +149,7 @@ class TestIntegration2CapabilitiesCheck:
         self, bb_root: Path, multiagent_config
     ):
         """调用未声明的工具 → CapabilityNotInCardError。"""
-        from hermes.multiagent.exceptions import CapabilityNotInCardError
+        from teage_liu.multiagent.exceptions import CapabilityNotInCardError
 
         # 模拟 ToolExecutor
         class MockToolExecutor:
@@ -175,7 +175,7 @@ class TestIntegration2CapabilitiesCheck:
         self, bb_root: Path, multiagent_config
     ):
         """调用已声明的工具 → 通过。"""
-        from hermes.multiagent.exceptions import CapabilityNotInCardError
+        from teage_liu.multiagent.exceptions import CapabilityNotInCardError
 
         class MockToolExecutor:
             def __init__(self):
@@ -204,7 +204,7 @@ class TestIntegration3_4SessionHooks:
         self, bb_root: Path, multiagent_config
     ):
         """SessionManager.add_multiagent_hook 注册钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
 
         sm = SessionManager(MagicMock())
 
@@ -220,7 +220,7 @@ class TestIntegration3_4SessionHooks:
         self, bb_root: Path, multiagent_config
     ):
         """create_session 时调用 on_start 钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
 
         sm = SessionManager(MagicMock())
 
@@ -239,7 +239,7 @@ class TestIntegration3_4SessionHooks:
         self, bb_root: Path, multiagent_config
     ):
         """destroy_session 时调用 on_end 钩子。"""
-        from hermes.agent.session_manager import SessionManager
+        from teage_liu.agent.session_manager import SessionManager
 
         sm = SessionManager(MagicMock())
 

@@ -1,4 +1,4 @@
-﻿"""ContextManager 单元测试 — 验证 build_prompt 结构与缓存区字节级稳定性。
+"""ContextManager 单元测试 — 验证 build_prompt 结构与缓存区字节级稳定性。
 
 运行方式：
     python -m unittest tests.test_context_manager -v
@@ -23,8 +23,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.llm.prompts import SYSTEM_PROMPT  # noqa: E402
-from hermes.memory.context_manager import ContextManager  # noqa: E402
+from teage_liu.llm.prompts import SYSTEM_PROMPT  # noqa: E402
+from teage_liu.memory.context_manager import ContextManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +352,7 @@ class TestSegmentedProfileInjection(unittest.TestCase):
         # 提取 body（去掉标题行）
         body = injection.replace("## Agent 自画像\n", "")
         # 验证 token 数 ≤200（用 _estimate_tokens 估算）
-        from hermes.memory.context_manager import _estimate_tokens
+        from teage_liu.memory.context_manager import _estimate_tokens
         token_count = _estimate_tokens(body)
         self.assertLessEqual(
             token_count, 200,
@@ -380,12 +380,12 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
     """验证 memory_md.py 分段独立计数逻辑。"""
 
     def _make_manager(self, tmp_path):
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
         return MemoryMdManager(file_path=str(tmp_path / "memory.md"))
 
     def test_segment_limits_constants(self):
         """分段常量值正确。"""
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
         self.assertEqual(MemoryMdManager.MAX_USER_PROFILE_CHARS, 5000)
         self.assertEqual(MemoryMdManager.MAX_AGENT_PROFILE_CHARS, 2000)
         self.assertEqual(MemoryMdManager.MAX_COMMUNICATION_CHARS, 1000)
@@ -393,7 +393,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
 
     def test_categorize_section(self):
         """section 归类正确。"""
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
         self.assertEqual(MemoryMdManager._categorize_section("Agent 自画像"), "agent")
         self.assertEqual(MemoryMdManager._categorize_section("沟通偏好"), "communication")
         self.assertEqual(MemoryMdManager._categorize_section("基本信息"), "user")
@@ -402,7 +402,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
 
     def test_compute_segment_lengths(self):
         """_compute_segment_lengths 正确分段计算。"""
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
         mgr = MemoryMdManager(file_path="data/memory.md")
         text = (
             "# 用户画像\n\n"
@@ -424,7 +424,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """Agent 段超限时拒绝 agent 段 add，user 段 add 不受影响。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -460,7 +460,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """沟通偏好段超限时拒绝 communication 段 add。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -486,7 +486,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """replace 操作不受分段上限限制。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -507,7 +507,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """read_system_profile 排除 Agent 自画像和沟通偏好段。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -527,7 +527,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """read_section_body 正确返回指定 section 的 body。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -545,7 +545,7 @@ class TestMemoryMdSegmentedCounting(unittest.TestCase):
         """内容层保持自由叙述式（无固定字段结构）。"""
         import tempfile
         from pathlib import Path
-        from hermes.memory.memory_md import MemoryMdManager
+        from teage_liu.memory.memory_md import MemoryMdManager
 
         with tempfile.TemporaryDirectory() as tmp:
             mgr = MemoryMdManager(file_path=str(Path(tmp) / "memory.md"))
@@ -643,7 +643,7 @@ class TestLessonsInjection(unittest.TestCase):
 
     def test_token_budget_hard_cap(self):
         """SubTask 4.4: 教训段 token 上限硬约束（≤300 token）。"""
-        from hermes.memory.context_manager import _MAX_LESSONS_TOKENS, _estimate_tokens
+        from teage_liu.memory.context_manager import _MAX_LESSONS_TOKENS, _estimate_tokens
         # 构造 10 条超长案例，确保总 token 远超 300
         cases = []
         for i in range(10):
@@ -693,7 +693,7 @@ class TestLessonsInjection(unittest.TestCase):
             self._write_cases_jsonl(jsonl_path, cases)
             cm = ContextManager(failure_cases_path=jsonl_path)
             # mock embedding 返回空，触发置信度降级排序
-            with patch("hermes.memory.context_manager._compute_embedding", return_value=[]):
+            with patch("teage_liu.memory.context_manager._compute_embedding", return_value=[]):
                 result = cm._get_lessons_injection("测试")
             self.assertIn("高置信", result)
             self.assertNotIn("低置信", result)
@@ -716,7 +716,7 @@ class TestLessonsInjection(unittest.TestCase):
             self._write_cases_jsonl(jsonl_path, cases)
             cm = ContextManager(failure_cases_path=jsonl_path)
             # mock user_input embedding 为 [1.0, 0.0]，与"相关"案例最相似
-            with patch("hermes.memory.context_manager._compute_embedding",
+            with patch("teage_liu.memory.context_manager._compute_embedding",
                        return_value=[1.0, 0.0]):
                 # mock memory_retriever 返回空，跳过惊讶门控
                 cm.memory_retriever = None
@@ -746,7 +746,7 @@ class TestLessonsInjection(unittest.TestCase):
             )
             # user_input embedding 和 memory embedding 都返回 [1.0, 0.0]
             # 与案例 embedding [1.0, 0.0] 相似度为 1.0 > 0.92，应被门控
-            with patch("hermes.memory.context_manager._compute_embedding",
+            with patch("teage_liu.memory.context_manager._compute_embedding",
                        return_value=[1.0, 0.0]):
                 result = cm._get_lessons_injection("python")
             self.assertEqual(result, "")
@@ -780,14 +780,14 @@ class TestLessonsInjection(unittest.TestCase):
                 if call_count[0] == 1:
                     return [1.0, 0.0]  # user_input → python
                 return [0.0, 1.0]  # memory → java
-            with patch("hermes.memory.context_manager._compute_embedding",
+            with patch("teage_liu.memory.context_manager._compute_embedding",
                        side_effect=mock_embed):
                 result = cm._get_lessons_injection("python")
             self.assertIn("python案例", result)
 
     def test_priority_trimming_agent_profile_first(self):
         """SubTask 4.5: 超预算时优先裁剪 Agent 自画像。"""
-        from hermes.memory.context_manager import _MAX_INJECTION_CHARS
+        from teage_liu.memory.context_manager import _MAX_INJECTION_CHARS
 
         class BigAgentProfileManager:
             """返回超长 Agent 自画像的 mock。"""
@@ -820,7 +820,7 @@ class TestLessonsInjection(unittest.TestCase):
 
     def test_priority_trimming_communication_second(self):
         """SubTask 4.5: Agent 自画像裁剪后仍超预算时裁剪沟通偏好。"""
-        from hermes.memory.context_manager import _MAX_INJECTION_CHARS
+        from teage_liu.memory.context_manager import _MAX_INJECTION_CHARS
 
         class BigBothManager:
             """Agent 自画像和沟通偏好都超长。"""
@@ -871,7 +871,7 @@ class TestLessonsInjection(unittest.TestCase):
                 if call_count[0] == 1:
                     return [1.0, 0.0]
                 return [0.0, 1.0]
-            with patch("hermes.memory.context_manager._compute_embedding",
+            with patch("teage_liu.memory.context_manager._compute_embedding",
                        side_effect=mock_embed):
                 prompt = cm.build_prompt("test", "python 问题")
             injection = prompt["messages"][0]["content"]
@@ -908,7 +908,7 @@ class TestLessonsInjection(unittest.TestCase):
                 if call_count[0] == 1:
                     return [1.0, 0.0]
                 return [0.0, 1.0]
-            with patch("hermes.memory.context_manager._compute_embedding",
+            with patch("teage_liu.memory.context_manager._compute_embedding",
                        side_effect=mock_embed):
                 prompt = cm.build_prompt("test", "python 问题")
             # system_text 不应包含教训内容

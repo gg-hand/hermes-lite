@@ -1,10 +1,10 @@
-﻿﻿# tests/test_state_deleted.py
+# tests/test_state_deleted.py
 """测试 state.py 已删除 + server.py 无全局组件变量。"""
 from __future__ import annotations
 import sys
 import os
 
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "hermes")
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "teage_liu")
 class TestStateDeleted:
 
     def test_state_py_deleted(self):

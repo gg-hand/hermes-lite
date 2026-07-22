@@ -1,4 +1,4 @@
-﻿"""AuditLogger 单元测试。"""
+"""AuditLogger 单元测试。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.audit import AuditLogger  # noqa: E402
+from teage_liu.agent.audit import AuditLogger  # noqa: E402
 
 
 class TestAuditLogger(unittest.TestCase):

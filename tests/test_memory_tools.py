@@ -1,4 +1,4 @@
-﻿"""记忆管理工具（search/delete/update_memory）单元测试 — Phase 7 Task 3。
+"""记忆管理工具（search/delete/update_memory）单元测试 — Phase 7 Task 3。
 
 覆盖 spec ``implement-phase7-memory-enhancement`` Task 3 的所有场景：
 - search_memory 工具返回正确格式（含 id / content / similarity / metadata，
@@ -49,10 +49,10 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent.tools.memory_tools import register_memory_tools  # noqa: E402
-from hermes.agent.policy import DEFAULT_RULES, PolicyEngine  # noqa: E402
-from hermes.agent.tool_registry import ToolRegistry  # noqa: E402
-from hermes.memory.consolidation import ConsolidationEngine  # noqa: E402
+from teage_liu.agent.tools.memory_tools import register_memory_tools  # noqa: E402
+from teage_liu.agent.policy import DEFAULT_RULES, PolicyEngine  # noqa: E402
+from teage_liu.agent.tool_registry import ToolRegistry  # noqa: E402
+from teage_liu.memory.consolidation import ConsolidationEngine  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +713,7 @@ class TestEnqueueMemoryOpLogging(unittest.TestCase):
         )
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="INFO"
+            "teage_liu.memory.consolidation", level="INFO"
         ) as cm:
             engine.enqueue_memory_op("delete", "mem-id-123")
 
@@ -740,7 +740,7 @@ class TestEnqueueMemoryOpLogging(unittest.TestCase):
         )
 
         with self.assertLogs(
-            "hermes.memory.consolidation", level="INFO"
+            "teage_liu.memory.consolidation", level="INFO"
         ) as cm:
             engine.enqueue_memory_op(
                 "update", "mem-id-456", "新内容长度为 7"

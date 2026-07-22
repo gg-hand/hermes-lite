@@ -98,7 +98,7 @@ echo ""
 echo "[3/3] 启动 Hermes Lite 服务..."
 
 # 后台启动并记录 PID
-nohup python -m uvicorn hermes.app:app \
+nohup python -m uvicorn teage_liu.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers 1 \

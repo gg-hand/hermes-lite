@@ -33,8 +33,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.tasks.cron_expr import CronExpr  # noqa: E402
-from hermes.tasks.scheduler import CronScheduler  # noqa: E402
+from teage_liu.tasks.cron_expr import CronExpr  # noqa: E402
+from teage_liu.tasks.scheduler import CronScheduler  # noqa: E402
 
 
 class MockOrchestrator:
@@ -299,7 +299,7 @@ class TestExecuteWorkflowDualTrack(unittest.TestCase):
         self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
         self.runs_dir = os.path.join(self.tmpdir, "schedules")
         # 使用临时目录避免污染 data/schedules
-        from hermes.tasks.run_summary import RunsJsonlStore
+        from teage_liu.tasks.run_summary import RunsJsonlStore
         self._RunsJsonlStore = RunsJsonlStore
 
     def tearDown(self):
@@ -333,14 +333,14 @@ class TestExecuteWorkflowDualTrack(unittest.TestCase):
         orch = WorkflowMockOrchestrator()
 
         # patch WorkflowEngine.execute 验证调用路径
-        from hermes.tasks import scheduler as sched_mod
+        from teage_liu.tasks import scheduler as sched_mod
         original_execute = sched_mod.WorkflowEngine.execute
         captured = {"called": False, "spec_name": None}
 
         def fake_execute(self_engine, spec, context):
             captured["called"] = True
             captured["spec_name"] = spec.name
-            from hermes.tasks.workflow import WorkflowResult, StepTrace
+            from teage_liu.tasks.workflow import WorkflowResult, StepTrace
             result = WorkflowResult(
                 success=True,
                 assistant_response="engine result",
@@ -385,8 +385,8 @@ class TestExecuteWorkflowDualTrack(unittest.TestCase):
         orch = WorkflowMockOrchestrator()
 
         # 注册 mock 模板到 BUILTIN_TEMPLATES
-        from hermes.tasks import scheduler as sched_mod
-        from hermes.tasks.workflow import WorkflowResult, WorkflowTemplate
+        from teage_liu.tasks import scheduler as sched_mod
+        from teage_liu.tasks.workflow import WorkflowResult, WorkflowTemplate
 
         class MockTemplate(WorkflowTemplate):
             name = "test_mock_template"
@@ -454,7 +454,7 @@ class TestRunIdAndStepTracesPersistence(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.sched_file = os.path.join(self.tmpdir, "schedules.yaml")
         self.runs_dir = os.path.join(self.tmpdir, "schedules")
-        from hermes.tasks.run_summary import RunsJsonlStore
+        from teage_liu.tasks.run_summary import RunsJsonlStore
         self._RunsJsonlStore = RunsJsonlStore
 
     def tearDown(self):
@@ -486,8 +486,8 @@ class TestRunIdAndStepTracesPersistence(unittest.TestCase):
         })
         orch = WorkflowMockOrchestrator()
 
-        from hermes.tasks import scheduler as sched_mod
-        from hermes.tasks.workflow import WorkflowResult, StepTrace
+        from teage_liu.tasks import scheduler as sched_mod
+        from teage_liu.tasks.workflow import WorkflowResult, StepTrace
 
         captured = {"context": None, "run_id": None}
 
@@ -542,8 +542,8 @@ class TestRunIdAndStepTracesPersistence(unittest.TestCase):
         })
         orch = WorkflowMockOrchestrator()
 
-        from hermes.tasks import scheduler as sched_mod
-        from hermes.tasks.workflow import WorkflowResult, StepTrace
+        from teage_liu.tasks import scheduler as sched_mod
+        from teage_liu.tasks.workflow import WorkflowResult, StepTrace
 
         def fake_execute(self_engine, spec, context):
             result = WorkflowResult(
@@ -665,7 +665,7 @@ class TestTriggerClearsHistory(unittest.TestCase):
             "name": "测试", "cron": "* * * * *", "task": "执行任务", "enabled": True,
         })
         # 使用真实 HistoryBuffer，配置持久化路径
-        from hermes.storage.history_buffer import HistoryBuffer
+        from teage_liu.storage.history_buffer import HistoryBuffer
         persist_dir = os.path.join(self.tmpdir, "history")
         os.makedirs(persist_dir, exist_ok=True)
         history_buf = HistoryBuffer(max_turns=20, persistence_dir=persist_dir)

@@ -14,9 +14,9 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from hermes.tasks.hooks.validate_hook import ValidateHook
-from hermes.tasks.workflow.validator import validate_workflow_spec
-from hermes.tasks.workflow.spec import WorkflowSpec, StepSpec
+from teage_liu.tasks.hooks.validate_hook import ValidateHook
+from teage_liu.tasks.workflow.validator import validate_workflow_spec
+from teage_liu.tasks.workflow.spec import WorkflowSpec, StepSpec
 
 
 class TestValidateWorkflowSpec(unittest.TestCase):

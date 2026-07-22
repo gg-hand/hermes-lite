@@ -15,7 +15,7 @@ from tests._mock_deps import install_mocks
 
 install_mocks()
 
-from hermes.tasks.hooks.base import ScheduleHookBase, RetryDecision
+from teage_liu.tasks.hooks.base import ScheduleHookBase, RetryDecision
 
 
 class TestScheduleHookBase(unittest.TestCase):

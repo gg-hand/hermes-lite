@@ -1,4 +1,4 @@
-﻿"""SessionManager 测试:会话创建、标题生成。
+"""SessionManager 测试:会话创建、标题生成。
 
 从 Orchestrator 提取的会话管理职责:
 - ensure_session: 确保 session_logger 中存在会话记录
@@ -6,11 +6,11 @@
 - 标题缓存: _titled_sessions 避免重复查 DB
 """
 import sys, os, asyncio
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "teage_liu"))
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from hermes.agent.session_manager import SessionManager
+from teage_liu.agent.session_manager import SessionManager
 
 
 class TestSessionManagerBasics:

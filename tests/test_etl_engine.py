@@ -1,4 +1,4 @@
-﻿"""ETLEngine 集成测试。
+"""ETLEngine 集成测试。
 
 覆盖：文本 ETL、图片 ETL、失败处理、混合检索、解析缓存、全链路删除。
 
@@ -22,10 +22,10 @@ from tests._mock_deps import install_mocks
 from tests.test_helpers import minimal_png
 install_mocks()
 
-from hermes.files.upload_manager import UploadManager
-from hermes.files.parser import WaterfallParser
-from hermes.files.chunker import DocumentChunker
-from hermes.files.etl_engine import ETLEngine
+from teage_liu.files.upload_manager import UploadManager
+from teage_liu.files.parser import WaterfallParser
+from teage_liu.files.chunker import DocumentChunker
+from teage_liu.files.etl_engine import ETLEngine
 
 
 def _make_env():
@@ -160,7 +160,7 @@ class TestETLProcessImage(unittest.TestCase):
         """图片无文字时仍标记为 done，img_text 为空字符串。"""
         fid, _ = self.um.save("meme.png", minimal_png(), "s1")
         # mock pytesseract 返回空字符串 → parser 抛 ParseError → ETL 捕获并标记 done
-        with patch("hermes.files.parser.pytesseract.image_to_string", return_value=""):
+        with patch("teage_liu.files.parser.pytesseract.image_to_string", return_value=""):
             result = self.engine.process_file(fid, "s1")
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["chunk_count"], 0)

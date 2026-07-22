@@ -14,9 +14,9 @@ if _PROJECT_ROOT not in sys.path:
 from tests._mock_deps import install_mocks
 install_mocks()
 
-from hermes.tasks.hooks.base import RetryDecision
-from hermes.tasks.hooks.retry_hook import RetryHook, _is_permanent_error
-from hermes.agent.tool_error import (
+from teage_liu.tasks.hooks.base import RetryDecision
+from teage_liu.tasks.hooks.retry_hook import RetryHook, _is_permanent_error
+from teage_liu.agent.tool_error import (
     ToolNotFoundError, ParamError, HookAbortError, ValidationError,
     AuthRequiredError, WorkflowExecutionError,
 )

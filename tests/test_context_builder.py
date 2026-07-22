@@ -1,4 +1,4 @@
-﻿"""ContextBuilder 测试:环境信息 + TODO 格式化 + 续接消息。
+"""ContextBuilder 测试:环境信息 + TODO 格式化 + 续接消息。
 
 从 Orchestrator 提取的上下文构建辅助方法:
 - build_environment: 构建运行环境信息段（OS/Shell/Python/CWD）
@@ -7,10 +7,10 @@
 - build_continuation_message: 构造自动续接消息
 """
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hermes"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "teage_liu"))
 
 import pytest
-from hermes.agent.context_builder import ContextBuilder
+from teage_liu.agent.context_builder import ContextBuilder
 
 
 class TestBuildEnvironment:

@@ -1,4 +1,4 @@
-﻿"""plan_task / update_todo 工具注册与 handler 单元测试。
+"""plan_task / update_todo 工具注册与 handler 单元测试。
 
 验证 ``src/agent/tools/plan_tools.py`` 的 ``register_plan_tools``：
 - 注册 2 个 Core Tier 工具（plan_task / update_todo）
@@ -26,9 +26,9 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.agent import tools as builtin_tools  # noqa: E402
-from hermes.agent.tools import BUILTIN_TOOLS  # noqa: E402
-from hermes.agent.tools.plan_tools import register_plan_tools  # noqa: E402
+from teage_liu.agent import tools as builtin_tools  # noqa: E402
+from teage_liu.agent.tools import BUILTIN_TOOLS  # noqa: E402
+from teage_liu.agent.tools.plan_tools import register_plan_tools  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ class TestOldToolsRemoved(unittest.TestCase):
     def test_old_task_tools_removed(self) -> None:
         """register_task_tools 应已从模块删除（import 失败）。"""
         with self.assertRaises(ImportError):
-            from hermes.agent.tools import register_task_tools  # noqa: F401
+            from teage_liu.agent.tools import register_task_tools  # noqa: F401
 
     # 11. enter_plan_mode / exit_plan_mode 已从模块删除
     def test_enter_plan_mode_removed(self) -> None:

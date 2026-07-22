@@ -1,9 +1,9 @@
-﻿"""中断功能集成测试 — 跨组件交互验证。"""
+"""中断功能集成测试 — 跨组件交互验证。"""
 import threading
 import pytest
-from hermes.stream_manager import StreamManager, StreamCancelled
-from hermes.breakpoint_detector import BreakpointDetector
-from hermes.llm.client import _is_retryable
+from teage_liu.stream_manager import StreamManager, StreamCancelled
+from teage_liu.breakpoint_detector import BreakpointDetector
+from teage_liu.llm.client import _is_retryable
 
 
 class TestInterruptIntegration:

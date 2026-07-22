@@ -37,8 +37,8 @@ from tests._mock_deps import install_mocks  # noqa: E402
 
 install_mocks()
 
-from hermes.tasks.run_summary import RunSummary  # noqa: E402
-from hermes.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
+from teage_liu.tasks.run_summary import RunSummary  # noqa: E402
+from teage_liu.tasks.scheduler import CronScheduler, Schedule  # noqa: E402
 
 
 def _make_scheduler(runs_store: MagicMock) -> CronScheduler:
