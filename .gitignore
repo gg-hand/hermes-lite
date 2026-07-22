@@ -23,6 +23,7 @@ data/*
 # ── 调试 / 临时文件 ──
 scratch/
 tmp/
+tmp_shots/
 debug_*.py
 debug_*.txt
 fix*.py
