@@ -143,8 +143,9 @@ async def lifespan(app: FastAPI):
                     bb_root=bb_root,
                     config=config,
                     agent_id=worker_agent_id,
+                    orchestrator=c.get("orchestrator"),
                 ),
-                deps=[], hot_reloadable=True,
+                deps=["orchestrator"], hot_reloadable=True,
             )
 
         # 启动时恢复检查
@@ -209,6 +210,12 @@ async def lifespan(app: FastAPI):
     proposal_store = container.get("proposal_store")
     health_checker = container.get("health_checker")
     etl_engine = container.get("etl_engine")
+
+    # 3.5 将核心组件同步到 app.state，供未迁移到 DI 的路由（如 cron_tools/runs/*）使用
+    # 注意：新路由应优先使用 Depends(get_cron_scheduler) DI 注入，app.state 仅作向后兼容
+    app.state.cron_scheduler = cron_scheduler
+    app.state.orchestrator = orchestrator
+    app.state.proposal_store = proposal_store
 
     # 4. 异步预热
     await _warmup_onnx()

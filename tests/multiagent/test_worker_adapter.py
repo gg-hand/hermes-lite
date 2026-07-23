@@ -83,6 +83,16 @@ def _make_worker_card(agent_id: str = "worker_001") -> dict:
     }
 
 
+class FakeOrchestrator:
+    """模拟 Orchestrator 用于测试。"""
+    def __init__(self):
+        self.calls = []
+
+    async def chat(self, session_id: str, user_input: str, **kwargs) -> str:
+        self.calls.append((session_id, user_input))
+        return f"已处理: {user_input}"
+
+
 class TestWorkerRegistration:
     """Worker 注册流程测试。"""
 
@@ -98,7 +108,7 @@ class TestWorkerRegistration:
         card, _ = read_yaml_frontmatter(card_path)
         assert card["agent_id"] == "worker_001"
         assert card["role"] == "worker"
-        assert card["status"] == "registering"
+        assert card["status"] == "active"
         assert "file_read" in card["capabilities"]
 
         await adapter.stop()
@@ -418,3 +428,33 @@ class TestWorkerTurnCheck:
         await adapter._before_speak("worker_001", message)  # 不抛异常
 
         await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_injects_orchestrator_and_activates(bb_root, worker_config):
+    """WorkerAdapter 接受 orchestrator 参数，注册后状态推进到 active。"""
+    from teage_liu.multiagent.blackboard import Blackboard
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    fake_orch = FakeOrchestrator()
+    worker = WorkerAdapter(
+        bb_root=bb_root, config=worker_config,
+        agent_id="worker_001", orchestrator=fake_orch,
+    )
+    await worker.start()
+    try:
+        assert worker._orchestrator is fake_orch
+
+        # 验证 agent 状态为 active
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
+        registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
+        agents = await registry.list_active_agents()
+        worker_agents = [a for a in agents if a.get("agent_id") == "worker_001"]
+        assert len(worker_agents) == 1
+        assert worker_agents[0]["status"] == "active"
+    finally:
+        await worker.stop()

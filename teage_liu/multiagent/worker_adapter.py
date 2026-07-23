@@ -212,6 +212,7 @@ class WorkerAdapter:
         bb_root: Path,
         config: dict,
         agent_id: str = "worker_001",
+        orchestrator=None,
     ):
         self._bb_root = bb_root
         self._config = config.get("multiagent", {}).get("worker", {})
@@ -226,6 +227,11 @@ class WorkerAdapter:
         # 简单属性供测试直接设置（兼容测试的 _autonomous_mode / _autonomous_epoch）
         self._autonomous_mode = False
         self._autonomous_epoch = 0
+
+        # v3: orchestrator 注入 + 任务轮询 + 已执行任务幂等记录
+        self._orchestrator = orchestrator
+        self._task_poll_task: asyncio.Task | None = None
+        self._executed_op_ids: set[str] = set()
 
     async def start(self) -> None:
         """启动 Worker。"""
@@ -244,6 +250,16 @@ class WorkerAdapter:
 
         logger.info("Worker %s 启动", self._agent_id)
 
+        # 5. 启动任务轮询循环（仅当 orchestrator 可用时）
+        if self._orchestrator is not None:
+            poll_interval = self._config.get("task_poll_interval_seconds", 2)
+            # v3 新增：重启恢复 _executed_op_ids，防止重复执行
+            await self._recover_executed_op_ids()
+            self._task_poll_task = asyncio.create_task(
+                self._task_poll_loop(poll_interval)
+            )
+            logger.info("Worker %s 任务轮询已启动（interval=%ss）", self._agent_id, poll_interval)
+
     async def stop(self) -> None:
         """优雅退出。"""
         self._running = False
@@ -258,6 +274,14 @@ class WorkerAdapter:
                     pass
         self._heartbeat_task = None
         self._director_monitor_task = None
+
+        if self._task_poll_task and not self._task_poll_task.done():
+            self._task_poll_task.cancel()
+            try:
+                await self._task_poll_task
+            except asyncio.CancelledError:
+                pass
+        self._task_poll_task = None
 
         # 释放所有持有的锁
         await self._release_my_locks()
@@ -349,6 +373,13 @@ class WorkerAdapter:
             },
         )
 
+        # v3: 注册完成后推进到 active（不再停留在 registering）
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
+
+        registry = AgentRegistry(self._bb_root, SchemaValidator(enabled=False))
+        await registry.update_agent_status(self._agent_id, "active")
+
     async def _heartbeat_loop(self, interval: float) -> None:
         """心跳循环。"""
         try:
@@ -383,6 +414,101 @@ class WorkerAdapter:
         except asyncio.CancelledError:
             logger.info("Worker %s Director 监测循环被取消", self._agent_id)
             raise
+
+    async def _task_poll_loop(self, interval: float) -> None:
+        """周期轮询 messages.md，拾取给自己的 assign 消息并执行。"""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._poll_once()
+        except asyncio.CancelledError:
+            logger.info("Worker %s 任务轮询已取消", self._agent_id)
+            raise
+
+    async def _poll_once(self) -> None:
+        """单次轮询：扫描给自己的 assign 消息，执行未完成的任务。"""
+        from teage_liu.multiagent.blackboard import read_messages
+
+        messages = await read_messages(self._bb_root)
+        for msg in messages:
+            if msg.get("type") != "assign":
+                continue
+            if msg.get("to") != self._agent_id and msg.get("assigned_to") != self._agent_id:
+                continue
+            task_op_id = msg.get("task_op_id", "")
+            if not task_op_id:
+                continue
+            if task_op_id in self._executed_op_ids:
+                continue
+            await self._execute_task(msg)
+
+    async def _execute_task(self, task_msg: dict) -> None:
+        """执行单个任务：调用 orchestrator.chat 并写入 result 消息。"""
+        from teage_liu.multiagent.blackboard import append_message
+
+        task_op_id = task_msg.get("task_op_id", "")
+        content = task_msg.get("content", "")
+        assign_seq = task_msg.get("seq")
+
+        # 写入 processing 状态消息
+        processing_msg = {
+            "from": self._agent_id,
+            "to": "*",
+            "timestamp": _now_iso(),
+            "type": "status",
+            "content": f"开始处理任务: {content[:100]}",
+            "reply_to": assign_seq,
+            "task_op_id": task_op_id,
+            "status": "processing",
+            "epoch": 0,
+        }
+        await append_message(self._bb_root, processing_msg, validate=True)
+
+        # 调用 Orchestrator 执行任务
+        result_status = "completed"
+        result_content = ""
+        try:
+            session_id = f"task_{task_op_id}"
+            result_content = await self._orchestrator.chat(session_id, content)
+        except Exception as e:
+            result_status = "failed"
+            result_content = f"任务执行失败: {e}"
+            logger.exception("Worker %s 执行任务 task_op_id=%s 失败", self._agent_id, task_op_id)
+
+        # 标记为已执行
+        self._executed_op_ids.add(task_op_id)
+
+        # 写入 result 消息
+        result_msg = {
+            "from": self._agent_id,
+            "to": "*",
+            "timestamp": _now_iso(),
+            "type": "result",
+            "content": result_content,
+            "reply_to": assign_seq,
+            "task_op_id": task_op_id,
+            "status": result_status,
+            "epoch": 0,
+        }
+        await append_message(self._bb_root, result_msg, validate=True)
+        logger.info("Worker %s 完成任务 task_op_id=%s, status=%s",
+                    self._agent_id, task_op_id, result_status)
+
+    async def _recover_executed_op_ids(self) -> None:
+        """重启恢复：扫描 messages.md 中已有的 result 消息，将 task_op_id 加入 _executed_op_ids。"""
+        from teage_liu.multiagent.blackboard import read_messages
+
+        messages = await read_messages(self._bb_root)
+        for msg in messages:
+            if msg.get("type") == "result":
+                task_op_id = msg.get("task_op_id")
+                if task_op_id:
+                    self._executed_op_ids.add(task_op_id)
+        if self._executed_op_ids:
+            logger.info(
+                "Worker %s 重启恢复：从 messages.md 恢复 %d 个已执行的 task_op_id",
+                self._agent_id, len(self._executed_op_ids),
+            )
 
     async def _check_director_health(self) -> str:
         """检查 Director 心跳健康状态。
