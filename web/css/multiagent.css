@@ -1,313 +1,199 @@
-/* multiagent.css — multiagent UI 样式（Plan 4 Task 4）
-   设计原则：毛玻璃按钮、圆角处理、元素间距适当拉大，与现有 chat 界面风格一致
-   Director 状态四色：绿(healthy)/黄(degraded)/橙(autonomous)/红(fault)
-*/
+/* ============================================================
+   multiagent.css — Director 工作台样式
+   依赖: tokens.css(变量)
+   ============================================================ */
 
-/* ===== 状态指示器（顶部右侧） ===== */
-.multiagent-indicator {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  font-size: 13px;
-  color: #e5e7eb;
-  z-index: 1000;
-  transition: all 0.3s ease;
-}
-
-.multiagent-indicator .indicator-dot {
+/* ========== nav-item 状态圆点 ========== */
+.nav-status-dot {
+  margin-left: auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--text-muted);
+  flex-shrink: 0;
 }
+.nav-status-dot.state-healthy { background: var(--success, #22c55e); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+.nav-status-dot.state-degraded { background: var(--warning, #eab308); }
+.nav-status-dot.state-autonomous { background: #f97316; }
+.nav-status-dot.state-fault { background: var(--danger, #ef4444); }
+.nav-status-dot.state-disabled { background: var(--text-muted); }
+.nav-status-dot.state-unknown { background: var(--text-muted); }
 
-.multiagent-indicator.state-healthy {
-  color: #22c55e;
-  background: rgba(34, 197, 94, 0.1);
-  border-color: rgba(34, 197, 94, 0.3);
-}
-.multiagent-indicator.state-degraded {
-  color: #eab308;
-  background: rgba(234, 179, 8, 0.1);
-  border-color: rgba(234, 179, 8, 0.3);
-}
-.multiagent-indicator.state-autonomous {
-  color: #f97316;
-  background: rgba(249, 115, 22, 0.1);
-  border-color: rgba(249, 115, 22, 0.3);
-}
-.multiagent-indicator.state-fault {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.3);
-}
-.multiagent-indicator.state-unknown {
-  color: #6b7280;
-  background: rgba(107, 114, 128, 0.1);
-  border-color: rgba(107, 114, 128, 0.3);
-}
-.multiagent-indicator.state-disabled {
-  color: #9ca3af;
-  background: rgba(156, 163, 175, 0.1);
-  border-color: rgba(156, 163, 175, 0.2);
-}
-.multiagent-indicator.autonomous-active {
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
-}
-
-/* ===== Agent 列表面板（右侧） ===== */
-.multiagent-agents-panel {
-  position: fixed;
-  top: 60px;
-  right: 12px;
-  width: 280px;
-  max-height: 60vh;
-  background: rgba(17, 24, 39, 0.85);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  overflow: hidden;
-  z-index: 999;
+/* ========== 工作台头部 ========== */
+.wb-header {
   display: flex;
-  flex-direction: column;
-}
-
-.multiagent-agents-panel .panel-header {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-
-.multiagent-agents-panel .panel-header h4 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: #f3f4f6;
+.wb-avatar {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover, var(--accent)));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; flex-shrink: 0;
 }
+.wb-title-group { min-width: 0; }
+.wb-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.wb-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.wb-state {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full, 9999px);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.wb-state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.wb-state.state-healthy { color: var(--success, #22c55e); border-color: rgba(34,197,94,0.3); background: rgba(34,197,94,0.08); }
+.wb-state.state-healthy .wb-state-dot { background: var(--success, #22c55e); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+.wb-state.state-fault { color: var(--danger, #ef4444); border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.08); }
+.wb-state.state-fault .wb-state-dot { background: var(--danger, #ef4444); }
 
-.multiagent-agents-panel .panel-toggle {
-  background: transparent;
-  border: none;
-  color: #9ca3af;
+/* ========== 工作台 Tabs ========== */
+.wb-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.wb-tab {
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
   cursor: pointer;
-  font-size: 16px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: background 0.2s;
-}
-
-.multiagent-agents-panel .panel-toggle:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #f3f4f6;
-}
-
-.multiagent-agents-panel .panel-body {
-  overflow-y: auto;
-  padding: 8px;
-}
-
-/* ===== Agent 卡片 ===== */
-.multiagent-agents-panel .agents-list .agent-card {
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 8px;
-  transition: background 0.2s;
-}
-
-.multiagent-agents-panel .agents-list .agent-card:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.agent-card .agent-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.agent-card .agent-id {
-  font-size: 13px;
-  font-weight: 600;
-  color: #f3f4f6;
-}
-
-.agent-card .agent-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  text-transform: uppercase;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-family: inherit;
   font-weight: 500;
+  transition: color var(--transition, 0.15s);
 }
+.wb-tab:hover { color: var(--text-secondary); }
+.wb-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-.agent-card .agent-status.status-active {
-  background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
-}
-
-.agent-card .agent-status.status-degraded {
-  background: rgba(234, 179, 8, 0.15);
-  color: #eab308;
-}
-
-.agent-card .agent-status.status-offline {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
-}
-
-.agent-card .agent-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: #9ca3af;
-  margin-bottom: 8px;
-}
-
-.agent-card .agent-role {
-  font-weight: 500;
-}
-
-.agent-card .trust-score {
-  position: relative;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.agent-card .trust-score-bar {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.agent-card .trust-score-text {
-  position: absolute;
-  right: 0;
-  top: -16px;
-  font-size: 10px;
-  color: #6b7280;
-}
-
-/* ===== 告警横幅 ===== */
-.multiagent-alert-banner {
-  position: fixed;
-  top: 60px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-size: 14px;
-  color: #f3f4f6;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  z-index: 1001;
-  animation: fadeInDown 0.3s ease;
-  max-width: 80vw;
-  text-align: center;
-}
-
-.multiagent-alert-banner.alert-info {
-  background: rgba(59, 130, 246, 0.2);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-}
-
-.multiagent-alert-banner.alert-success {
-  background: rgba(34, 197, 94, 0.2);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-}
-
-.multiagent-alert-banner.alert-warning {
-  background: rgba(249, 115, 22, 0.2);
-  border: 1px solid rgba(249, 115, 22, 0.3);
-}
-
-.multiagent-alert-banner.alert-error {
-  background: rgba(239, 68, 68, 0.2);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-@keyframes fadeInDown {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-}
-
-/* ===== 设置模态框中的 multiagent 段 ===== */
-#multiagent-settings-container .form-section {
-  padding: 16px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-#multiagent-settings-container .form-section-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #f3f4f6;
-}
-
-#multiagent-settings-container .switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-#multiagent-settings-container .switch-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #e5e7eb;
-}
-
-#multiagent-settings-container .hint {
-  font-size: 11px;
-  color: #9ca3af;
-  margin-top: 4px;
-}
-
-#multiagent-settings-container .form-row {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-#multiagent-settings-container .form-group {
+/* ========== 工作台内容区 ========== */
+.wb-body {
   flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  min-height: 0;
+}
+.wb-pane { display: none; }
+.wb-pane.active { display: block; }
+
+.wb-status-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: var(--glass-bg, rgba(255,255,255,0.03));
+  border: 1px solid var(--glass-border, var(--border));
+  border-radius: var(--radius-lg);
+  margin-bottom: 14px;
+}
+.wb-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.wb-status-dot.state-healthy { background: var(--success, #22c55e); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
+.wb-status-label { font-size: 12px; color: var(--text-secondary); }
+.wb-status-val { font-size: 12px; font-weight: 600; margin-left: auto; color: var(--text-muted); }
+.wb-status-val.state-healthy { color: var(--success, #22c55e); }
+
+.wb-section { margin-bottom: 16px; }
+.wb-section h5 {
+  font-size: 11px; font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.wb-step {
+  display: flex; gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.wb-num {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: rgba(168,85,247,0.15);
+  color: var(--accent);
+  font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.wb-txt { font-size: 12px; color: var(--text-secondary); line-height: 1.55; }
+.wb-txt b { color: var(--text-primary); font-weight: 600; }
+.wb-txt code {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--accent);
 }
 
-#multiagent-settings-container .form-group label {
-  display: block;
-  font-size: 12px;
-  color: #d1d5db;
-  margin-bottom: 4px;
+/* Agent 名册 */
+.agents-list { display: flex; flex-direction: column; gap: 6px; }
+.wb-empty { font-size: 12px; color: var(--text-muted); text-align: center; padding: 20px; }
+.agent-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--border);
+}
+.agent-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.agent-id { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.agent-status { font-size: 10px; padding: 2px 7px; border-radius: 9999px; font-weight: 600; }
+.agent-status.status-active, .agent-status.status-online { background: rgba(34,197,94,0.15); color: var(--success, #22c55e); }
+.agent-status.status-offline { background: rgba(138,125,111,0.15); color: var(--text-muted); }
+.agent-meta { display: flex; gap: 12px; font-size: 10px; color: var(--text-muted); }
+.trust-score { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.trust-score-bar { height: 4px; border-radius: 2px; flex: 1; }
+.trust-score-text { font-size: 10px; color: var(--text-muted); }
+
+/* 接入说明卡片 */
+.wb-card {
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.wb-card-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
+.wb-req-list { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.wb-req-list li {
+  font-size: 11px; color: var(--text-secondary);
+  padding-left: 14px; position: relative; line-height: 1.55;
+}
+.wb-req-list li::before { content: "›"; position: absolute; left: 2px; color: var(--accent); }
+.wb-req-list code {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  background: var(--bg-secondary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--accent);
 }
 
-#multiagent-settings-container .no-agents {
-  text-align: center;
-  color: #6b7280;
-  font-size: 12px;
-  padding: 16px;
+/* ========== 工作台底部 ========== */
+.wb-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  display: flex; gap: 8px;
+  flex-shrink: 0;
 }
+.wb-btn {
+  flex: 1; padding: 8px;
+  border-radius: var(--radius-lg);
+  font-size: 12px; font-family: inherit;
+  cursor: pointer; font-weight: 600;
+  transition: all var(--transition, 0.15s);
+  border: none;
+}
+.wb-btn-primary { background: var(--accent); color: var(--accent-contrast, #fff); }
+.wb-btn-primary:hover { background: var(--accent-hover, var(--accent)); }
+.wb-btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.wb-btn-ghost:hover { background: var(--glass-bg, rgba(255,255,255,0.05)); color: var(--text-primary); }

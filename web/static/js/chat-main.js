@@ -290,6 +290,28 @@ function bindEvents() {
     });
   }
 
+  // 工作台 tab 切换
+  document.querySelectorAll('.wb-tab[data-wb-tab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.wbTab;
+      document.querySelectorAll('.wb-tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.querySelectorAll('.wb-pane').forEach(p => p.classList.toggle('active', p.dataset.wbPane === target));
+    });
+  });
+  // 工作台收起按钮
+  const wbCollapseBtn = document.getElementById('wbCollapseBtn');
+  if (wbCollapseBtn) {
+    wbCollapseBtn.addEventListener('click', () => {
+      const main = document.querySelector('main.main');
+      const pane = document.getElementById('collabPane');
+      if (main && pane) {
+        main.classList.remove('director-on');
+        pane.hidden = true;
+        if (btnDirector) btnDirector.classList.remove('active');
+      }
+    });
+  }
+
   // 记忆面板
   if (memorySearchBtnEl) {
     memorySearchBtnEl.addEventListener('click', () => {
