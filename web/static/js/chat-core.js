@@ -2029,3 +2029,7 @@ function _formatTime(ts) {
            d.getSeconds().toString().padStart(2,'0');
   } catch (e) { return ts.substring(11, 19); }
 }
+
+// 暴露到 window 供控制台调试和事件监听器调用
+window.createTaskBlock = createTaskBlock;
+window.updateTaskBlock = updateTaskBlock;

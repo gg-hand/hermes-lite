@@ -47,6 +47,27 @@ class LocalDirectorManager(DirectorManager):
         self._config = config
         self._process: subprocess.Popen | None = None
         self._pid_file = os.path.join(bb_root, "director.pid")
+        # 清理上次运行的 stale PID 文件
+        if os.path.exists(self._pid_file):
+            stale_pid = self._read_pid_file()
+            if stale_pid:
+                try:
+                    if sys.platform == "win32":
+                        result = subprocess.run(
+                            ["tasklist", "/FI", f"PID eq {stale_pid}"],
+                            capture_output=True, text=True, timeout=5,
+                            creationflags=0x08000000,
+                        )
+                        if str(stale_pid) not in result.stdout:
+                            os.remove(self._pid_file)
+                            logger.info("清理 stale Director PID 文件 (PID=%s)", stale_pid)
+                    else:
+                        os.kill(stale_pid, 0)
+                except Exception:
+                    try:
+                        os.remove(self._pid_file)
+                    except Exception:
+                        pass
 
     async def start(self) -> dict:
         if await self._is_running():

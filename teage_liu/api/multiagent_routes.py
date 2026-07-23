@@ -271,10 +271,6 @@ def create_multiagent_router(container) -> APIRouter:
     @router.post("/agents/register")
     async def register_agent(payload: dict) -> dict:
         """远程 agent 注册，写入 agent_card.md。"""
-        import uuid as _uuid
-
-        from teage_liu.multiagent.agent_registry import register_agent as _register
-
         agent_id = (payload.get("agent_id") or "").strip()
         if not agent_id:
             raise HTTPException(status_code=400, detail="agent_id 不能为空")
