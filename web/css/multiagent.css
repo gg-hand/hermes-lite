@@ -321,3 +321,39 @@
 .dispatch-card .modal-footer .wb-btn { flex: 1; }
 .msg.collab.collab-error .bubble { border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.06); }
 .msg.collab.collab-success .bubble { border-color: rgba(34,197,94,0.25); background: rgba(34,197,94,0.06); }
+
+/* ========== 消息记录 ========== */
+.wb-msg-log-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.wb-msg-log-toggle {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 0;
+  font-family: inherit;
+}
+.wb-msg-log-toggle:hover { color: var(--accent-hover, var(--accent)); }
+.wb-msg-log {
+  margin-top: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wb-msg-item {
+  padding: 6px 8px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.wb-msg-meta { display: flex; gap: 6px; margin-bottom: 2px; }
+.wb-msg-from { font-weight: 600; color: var(--accent); }
+.wb-msg-type { color: var(--text-muted); }
+.wb-msg-time { color: var(--text-muted); margin-left: auto; }
+.wb-msg-content { color: var(--text-secondary); line-height: 1.4; word-break: break-word; }

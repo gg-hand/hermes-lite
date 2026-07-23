@@ -176,12 +176,53 @@
     }, ALERT_TIMEOUT_MS);
   }
 
+  /**
+   * 渲染消息记录到工作台。
+   * @param {Array} messages - 消息列表
+   */
+  function renderMessageLog(messages) {
+    var container = document.getElementById("msgLogContainer");
+    if (!container) return;
+
+    if (!messages || messages.length === 0) {
+      container.innerHTML = '<p class="wb-empty">暂无消息记录</p>';
+      return;
+    }
+
+    container.innerHTML = messages
+      .slice(-50)
+      .map(function (msg) {
+        var ts = msg.ts || "";
+        var tsShort = ts.length > 19 ? ts.substring(11, 19) : ts;
+        return (
+          '<div class="wb-msg-item">' +
+          '<div class="wb-msg-meta">' +
+          '<span class="wb-msg-from">' +
+          escapeHtml(msg.from || "?") +
+          "</span>" +
+          '<span class="wb-msg-type">' +
+          escapeHtml(msg.type || "") +
+          "</span>" +
+          '<span class="wb-msg-time">' +
+          escapeHtml(tsShort) +
+          "</span>" +
+          "</div>" +
+          '<div class="wb-msg-content">' +
+          escapeHtml((msg.content || "").substring(0, 200)) +
+          "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
   // 导出全局
   window.MultiagentRender = {
     initContainers: initContainers,
     updateStatus: updateStatus,
     renderAgents: renderAgents,
     showAlert: showAlert,
+    renderMessageLog: renderMessageLog,
   };
 
   // 页面加载完成后检查 multiagent 状态

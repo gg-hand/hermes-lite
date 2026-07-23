@@ -415,6 +415,64 @@ function bindEvents() {
     });
   }
 
+  // 监听 SSE 协作消息事件 → 渲染 collab 气泡
+  window.addEventListener('multiagent-message', function(e) {
+    var data = e.detail || {};
+    var messages = data.messages || (data.message ? [data.message] : []);
+    messages.forEach(function(msg) {
+      if (!msg || !msg.content) return;
+      var role = '';
+      var icon = 'ℹ️';
+      switch (msg.type) {
+        case 'task':
+          icon = '🎯';
+          role = (msg.from || 'Director') + ' · 分派';
+          break;
+        case 'result':
+          icon = '✅';
+          role = (msg.from || 'Agent') + ' · 结果';
+          break;
+        case 'relay':
+          icon = '🔁';
+          role = (msg.from || 'Agent') + ' · 接力';
+          break;
+        default:
+          icon = 'ℹ️';
+          role = msg.from || '系统';
+      }
+      if (typeof appendCollabMessage === 'function') {
+        appendCollabMessage(icon + ' ' + role, msg.content);
+      }
+    });
+  });
+
+  // 消息记录展开/加载
+  var msgLogToggle = document.getElementById('msgLogToggle');
+  var msgLogContainer = document.getElementById('msgLogContainer');
+  if (msgLogToggle && msgLogContainer) {
+    var msgLogLoaded = false;
+    msgLogToggle.addEventListener('click', function() {
+      var isHidden = msgLogContainer.style.display === 'none';
+      msgLogContainer.style.display = isHidden ? 'block' : 'none';
+      msgLogToggle.textContent = isHidden ? '消息记录 ▾' : '消息记录 ▸';
+      if (isHidden && !msgLogLoaded) {
+        msgLogContainer.innerHTML = '<p class="wb-empty">加载中…</p>';
+        fetch('/api/multiagent/messages?limit=50')
+          .then(function(r) { return r.ok ? r.json() : { messages: [] }; })
+          .then(function(data) {
+            var msgs = data.messages || [];
+            msgLogLoaded = true;
+            if (window.MultiagentRender && window.MultiagentRender.renderMessageLog) {
+              window.MultiagentRender.renderMessageLog(msgs);
+            }
+          })
+          .catch(function() {
+            msgLogContainer.innerHTML = '<p class="wb-empty">加载失败</p>';
+          });
+      }
+    });
+  }
+
   // 记忆面板
   if (memorySearchBtnEl) {
     memorySearchBtnEl.addEventListener('click', () => {
