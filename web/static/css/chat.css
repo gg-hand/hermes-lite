@@ -1542,6 +1542,46 @@ pre:hover .copy-btn { opacity: 1; }
   line-height: 16px;
 }
 
+/* ========== 多 Agent 分栏布局 ========== */
+.main {
+  flex-direction: column;
+}
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.collab-pane {
+  display: none;
+  flex: 0 0 0%;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.main.director-on {
+  flex-direction: row;
+}
+.main.director-on .chat-pane {
+  flex: 1;
+}
+.main.director-on .collab-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+/* 窄屏：聊天区 55%，面板 45% */
+@media (max-width: 1100px) {
+  .main.director-on .chat-pane { flex: 0 0 55%; }
+  .main.director-on .collab-pane { flex: 0 0 45%; }
+}
+/* 移动端：面板全屏覆盖 */
+@media (max-width: 769px) {
+  .main.director-on .chat-pane { display: none; }
+  .main.director-on .collab-pane { flex: 1; }
+}
+
 /* 极窄屏 480：小屏手机 */
 @media (max-width: 480px) {
   .message {
