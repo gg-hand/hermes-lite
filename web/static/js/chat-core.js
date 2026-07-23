@@ -1816,14 +1816,44 @@ window.TeageChatCore = {
  * @param {string} originalText - 原始输入文本（含 @director 前缀）
  */
 async function dispatchToDirector(task, originalText) {
-  // 显示用户原始消息
   appendMessage('user', originalText);
   scrollMessagesToBottom(true);
   messageInputEl.value = '';
   autoResize();
 
-  // 显示 Director 接收气泡
-  var collabEl = appendCollabMessage('🎯 Director', '已接收任务，正在分派…');
+  // 先检查 Director 状态
+  var directorRunning = false;
+  try {
+    var statusRes = await fetch(API_BASE + '/api/multiagent/director/status');
+    if (statusRes.ok) {
+      var statusData = await statusRes.json();
+      directorRunning = statusData.running;
+    }
+  } catch (e) { /* 忽略，继续尝试 dispatch */ }
+
+  // 创建任务块
+  var collabEl = appendCollabMessage('🎯 Director', directorRunning ? '已接收任务，正在分派…' : 'Director 未运行，任务已暂存。');
+
+  if (!directorRunning) {
+    var startBtn = document.createElement('button');
+    startBtn.className = 'wb-btn wb-btn-sm wb-btn-primary';
+    startBtn.textContent = '启动 Director';
+    startBtn.style.marginTop = '4px';
+    startBtn.addEventListener('click', async function() {
+      startBtn.disabled = true;
+      startBtn.textContent = '启动中…';
+      try {
+        var r = await fetch(API_BASE + '/api/multiagent/director/start', { method: 'POST' });
+        var d = await r.json();
+        if (d.ok) {
+          updateCollabMessage(collabEl, '🎯 Director', 'Director 已启动，正在分派…', 'success');
+          showToast('Director 已启动', 'success');
+        }
+      } catch (e) { showToast('启动失败', 'error'); }
+      startBtn.remove();
+    });
+    collabEl.appendChild(startBtn);
+  }
 
   try {
     var res = await fetch(API_BASE + '/api/multiagent/dispatch', {
@@ -1840,7 +1870,10 @@ async function dispatchToDirector(task, originalText) {
 
     var data = await res.json();
     if (data.ok) {
-      updateCollabMessage(collabEl, '🎯 Director', '已分派，等待 agent 响应… (op_id: ' + data.op_id.slice(0, 8) + ')', 'success');
+      // 创建折叠任务块
+      createTaskBlock(data.op_id, task);
+      // 移除临时 collab 气泡（任务块替代它）
+      if (collabEl && collabEl.parentNode) collabEl.remove();
       showToast(data.message || '任务已分派', 'success');
     } else {
       throw new Error(data.detail || '分派失败');
@@ -1885,4 +1918,114 @@ function updateCollabMessage(el, role, content, level) {
   var bubbleEl = el.querySelector('.bubble');
   if (roleEl) roleEl.textContent = role;
   if (bubbleEl) bubbleEl.textContent = content;
+}
+
+// ========== 任务块（折叠时间线） ==========
+
+var taskBlocks = {};
+
+/**
+ * 创建折叠任务块。
+ * @param {string} op_id - 任务 ID
+ * @param {string} taskText - 任务描述
+ */
+function createTaskBlock(op_id, taskText) {
+  var messagesEl = document.getElementById('messages');
+  if (!messagesEl) return;
+
+  var block = document.createElement('div');
+  block.className = 'msg task-block';
+  block.dataset.opId = op_id;
+  block.innerHTML =
+    '<div class="task-block-header">' +
+      '<span class="task-block-icon">🎯</span>' +
+      '<span class="task-block-title">' + escapeHtml(taskText.substring(0, 60)) + '</span>' +
+      '<span class="task-block-badge badge-pending">⏳ pending</span>' +
+      '<span class="task-block-toggle">▸</span>' +
+    '</div>' +
+    '<div class="task-block-timeline" style="display:none">' +
+      '<div class="timeline-entry" data-ts="' + Date.now() + '">' +
+        '<span class="timeline-time">' + _formatTime(new Date().toISOString()) + '</span>' +
+        '<span class="timeline-from">user</span>' +
+        '<span class="timeline-content">提交任务</span>' +
+      '</div>' +
+    '</div>';
+
+  // 点击 header 切换折叠
+  var header = block.querySelector('.task-block-header');
+  var timeline = block.querySelector('.task-block-timeline');
+  var toggle = block.querySelector('.task-block-toggle');
+  header.addEventListener('click', function() {
+    var isHidden = timeline.style.display === 'none';
+    timeline.style.display = isHidden ? 'block' : 'none';
+    toggle.textContent = isHidden ? '▾' : '▸';
+  });
+
+  messagesEl.appendChild(block);
+  scrollMessagesToBottom(true);
+
+  taskBlocks[op_id] = { el: block, status: 'pending', timeline: timeline };
+}
+
+/**
+ * 更新任务块状态和时间线。
+ * @param {string} op_id - 任务 ID
+ * @param {object} event - 事件数据 { status, from, content, ts, assigned_to }
+ */
+function updateTaskBlock(op_id, event) {
+  var entry = taskBlocks[op_id];
+  if (!entry) return;
+
+  // 更新徽章
+  var badge = entry.el.querySelector('.task-block-badge');
+  if (badge && event.status) {
+    var badgeMap = {
+      pending: { text: '⏳ pending', cls: 'badge-pending' },
+      assigned: { text: '📤 assigned', cls: 'badge-assigned' },
+      processing: { text: '⚙️ processing', cls: 'badge-processing' },
+      completed: { text: '✅ completed', cls: 'badge-completed' },
+      failed: { text: '❌ failed', cls: 'badge-failed' },
+      timeout: { text: '⏱️ timeout', cls: 'badge-timeout' },
+    };
+    var b = badgeMap[event.status] || badgeMap.pending;
+    badge.textContent = b.text;
+    badge.className = 'task-block-badge ' + b.cls;
+    // 闪烁提示
+    badge.classList.add('badge-flash');
+    setTimeout(function() { badge.classList.remove('badge-flash'); }, 2000);
+  }
+
+  // 添加时间线条目
+  if (entry.timeline && event.content) {
+    var line = document.createElement('div');
+    line.className = 'timeline-entry';
+    line.innerHTML =
+      '<span class="timeline-time">' + _formatTime(event.ts || '') + '</span>' +
+      '<span class="timeline-from">' + escapeHtml(event.from || '') + '</span>' +
+      '<span class="timeline-content">' + escapeHtml(event.content.substring(0, 200)) + '</span>';
+    entry.timeline.appendChild(line);
+  }
+
+  // 自动展开 3 秒
+  if (entry.timeline.style.display === 'none') {
+    var toggle = entry.el.querySelector('.task-block-toggle');
+    entry.timeline.style.display = 'block';
+    if (toggle) toggle.textContent = '▾';
+    setTimeout(function() {
+      if (entry.timeline.style.display === 'block' && event.status !== 'processing') {
+        entry.timeline.style.display = 'none';
+        if (toggle) toggle.textContent = '▸';
+      }
+    }, 3000);
+  }
+}
+
+function _formatTime(ts) {
+  if (!ts) return '';
+  try {
+    var d = new Date(ts);
+    return d.getHours().toString().padStart(2,'0') + ':' +
+           d.getMinutes().toString().padStart(2,'0') + ':' +
+           d.getSeconds().toString().padStart(2,'0');
+  } catch (e) { return ts.substring(11, 19); }
 }
