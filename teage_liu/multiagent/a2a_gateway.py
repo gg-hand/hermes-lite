@@ -247,7 +247,8 @@ async def _append_message(
     # 此处简化为：signature 非空即视为通过（生产环境需复用 SignatureVerifier）
     # 若需严格校验，调用方应预先注册 agent 公钥，并通过 SignatureVerifier 验证
 
-    await append_message(bb_root, message)
+    # v3: 启用 schema 验证，确保远程 agent 写入也合规
+    await append_message(bb_root, message, validate=True)
     await append_audit(bb_root, {
         "ts": _now_iso(),
         "actor": signer_id,
