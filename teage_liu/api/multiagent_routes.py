@@ -34,6 +34,28 @@ from fastapi.responses import StreamingResponse
 logger = logging.getLogger(__name__)
 
 
+def _infer_task_status(msg: dict) -> str:
+    """根据消息类型和来源推断任务状态。"""
+    msg_type = msg.get("type", "")
+    msg_from = msg.get("from", "")
+    explicit = msg.get("status")
+    if explicit:
+        return explicit
+
+    if msg_type == "task" and msg_from == "user":
+        return "pending"
+    if msg_type == "status" and msg_from == "director":
+        return "assigned"
+    if msg_type == "status" and msg_from != "user" and msg_from != "director":
+        return "processing"
+    if msg_type == "result":
+        content = (msg.get("content") or "").lower()
+        if any(kw in content for kw in ["失败", "error", "failed", "异常"]):
+            return "failed"
+        return "completed"
+    return "unknown"
+
+
 def create_multiagent_router(container) -> APIRouter:
     """创建 multiagent 路由器。
 
@@ -214,6 +236,36 @@ def create_multiagent_router(container) -> APIRouter:
     @router.get("/director/status")
     async def director_status() -> dict:
         return await director_manager.status()
+
+    @router.get("/tasks/{op_id}")
+    async def get_task_status(op_id: str) -> dict:
+        """查询指定任务的状态流转历史。"""
+        from teage_liu.multiagent.blackboard import read_messages
+
+        messages = await read_messages(bb_root)
+        task_msgs = [m for m in messages if m.get("op_id") == op_id]
+        if not task_msgs:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        # 推断状态
+        latest = task_msgs[-1]
+        inferred_status = _infer_task_status(latest)
+
+        return {
+            "op_id": op_id,
+            "status": inferred_status,
+            "assigned_to": latest.get("assigned_to"),
+            "timeline": [
+                {
+                    "ts": m.get("ts", ""),
+                    "from": m.get("from", ""),
+                    "type": m.get("type", ""),
+                    "status": m.get("status") or _infer_task_status(m),
+                    "content": (m.get("content") or "")[:200],
+                }
+                for m in task_msgs
+            ],
+        }
 
     @router.get("/sse")
     async def sse_stream(request: Request) -> StreamingResponse:
