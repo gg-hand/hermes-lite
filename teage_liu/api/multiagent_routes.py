@@ -53,6 +53,10 @@ def create_multiagent_router(container) -> APIRouter:
         async def not_found(path: str):
             raise HTTPException(status_code=404, detail="multiagent disabled")
 
+        @router.post("/{path:path}")
+        async def not_found_post(path: str):
+            raise HTTPException(status_code=404, detail="multiagent disabled")
+
         return router
 
     bb_dir = multiagent_cfg.get("blackboard_dir", "data/blackboard")
@@ -124,6 +128,71 @@ def create_multiagent_router(container) -> APIRouter:
 
         data = await read_director_md(bb_root)
         return data or {}
+
+    @router.post("/dispatch")
+    async def dispatch_task(payload: dict) -> dict:
+        """提交任务到黑板，Director 引擎自动 pickup。
+
+        请求体：
+            task: 任务描述（必填）
+            target_agents: 目标 agent_id 列表（可选，空则广播）
+            mode: 协作模式（可选，dispatch/relay/debate，默认 dispatch）
+
+        返回：
+            ok: 是否成功
+            op_id: 操作 ID
+            message: 描述信息
+        """
+        import uuid
+
+        from teage_liu.multiagent.blackboard import append_audit, append_message
+
+        task = (payload.get("task") or "").strip()
+        if not task:
+            raise HTTPException(status_code=400, detail="task 不能为空")
+
+        target_agents = payload.get("target_agents") or []
+        mode = payload.get("mode") or "dispatch"
+
+        op_id = str(uuid.uuid4())
+        ts = datetime.now(timezone.utc).isoformat()
+
+        message = {
+            "op_id": op_id,
+            "from": "user",
+            "type": "task",
+            "content": task,
+            "target_agents": target_agents,
+            "mode": mode,
+            "ts": ts,
+        }
+
+        await append_message(bb_root, message)
+
+        await append_audit(
+            bb_root,
+            {
+                "ts": ts,
+                "actor": "user",
+                "action": "dispatch_task",
+                "target": ", ".join(target_agents) if target_agents else "broadcast",
+                "op_id": op_id,
+                "details": {"task": task[:200], "mode": mode},
+                "prev_hash": "",
+                "hash": "",
+                "signature": "",
+            },
+        )
+
+        logger.info("任务已分派: op_id=%s, task=%s, targets=%s", op_id, task[:50], target_agents)
+
+        return {
+            "ok": True,
+            "op_id": op_id,
+            "message": "任务已提交到黑板"
+            if not target_agents
+            else f"任务已分派给 {', '.join(target_agents)}",
+        }
 
     @router.get("/sse")
     async def sse_stream(request: Request) -> StreamingResponse:
