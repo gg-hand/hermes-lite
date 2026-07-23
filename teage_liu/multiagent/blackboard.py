@@ -283,11 +283,28 @@ async def read_director_md(bb_root: Path) -> dict | None:
     return frontmatter
 
 
-async def append_message(bb_root: Path, message: dict) -> None:
+async def append_message(bb_root: Path, message: dict, validate: bool = False) -> None:
     """追加消息到 messages.md（YAML frontmatter 格式）。
 
     每条消息写为独立 frontmatter 块，便于后续按 frontmatter 解析。
+
+    Args:
+        bb_root: 黑板根目录
+        message: 消息字典。若缺失 seq 字段，自动分配（last_seq + 1）
+        validate: 是否调用 SchemaValidator 验证消息格式（默认 False 兼容现有）
     """
+    # 自动分配 seq（如果缺失）
+    if "seq" not in message or message.get("seq") is None:
+        last_seq = await _read_last_message_seq(bb_root)
+        message = {**message, "seq": last_seq + 1}
+
+    # 可选 schema 验证
+    if validate:
+        from teage_liu.multiagent.schema_validator import SchemaValidator
+
+        validator = SchemaValidator(enabled=True)
+        validator.validate_messages_record(message)
+
     messages_path = bb_root / "messages.md"
     messages_path.parent.mkdir(parents=True, exist_ok=True)
     yaml_str = yaml.safe_dump(message, sort_keys=False, allow_unicode=True)
@@ -296,6 +313,39 @@ async def append_message(bb_root: Path, message: dict) -> None:
         await f.write(content)
         await f.flush()
         os.fsync(f.fileno())
+
+
+async def _read_last_message_seq(bb_root: Path) -> int:
+    """读取 messages.md 最后一条消息的 seq。
+
+    Returns:
+        最后一条消息的 seq；若文件为空或不存在返回 0
+    """
+    messages_path = bb_root / "messages.md"
+    if not messages_path.exists():
+        return 0
+
+    content = messages_path.read_text(encoding="utf-8")
+    if not content.strip():
+        return 0
+
+    parts = content.split("---\n")
+    last_seq = 0
+    for i in range(1, len(parts), 2):
+        if i >= len(parts):
+            break
+        frontmatter_str = parts[i]
+        if not frontmatter_str.strip():
+            continue
+        try:
+            frontmatter = yaml.safe_load(frontmatter_str)
+            if isinstance(frontmatter, dict):
+                seq = frontmatter.get("seq", 0)
+                if isinstance(seq, int) and seq > last_seq:
+                    last_seq = seq
+        except yaml.YAMLError:
+            continue
+    return last_seq
 
 
 async def read_messages(bb_root: Path) -> list[dict]:

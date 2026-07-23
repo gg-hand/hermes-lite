@@ -18,10 +18,28 @@ properties:
     type: string
   type:
     type: string
-    enum: [chat, system, broadcast, action, error]
+    enum: [chat, system, broadcast, action, error, task, assign, status, result]
   content:
     type: string
   reply_to:
     type: [integer, "null"]
   trust_score:
+    type: [integer, "null"]
+  task_op_id:
+    type: [string, "null"]
+    description: 任务幂等 ID（UUID），用于 task/assign/status/result 消息链关联
+  assigned_to:
+    type: [string, "null"]
+    description: 被分派的 worker agent_id（assign 消息使用）
+  status:
+    type: [string, "null"]
+    description: 任务状态（processing/completed/failed），status 和 result 消息使用
+  target_agents:
+    type: [array, "null"]
+    items: {type: string}
+    description: 任务指定的目标 agent_id 列表（task 消息使用）
+  mode:
+    type: [string, "null"]
+    description: 协作模式（dispatch/relay/debate），task 消息使用
+  epoch:
     type: [integer, "null"]

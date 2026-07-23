@@ -143,3 +143,90 @@ async def test_append_jsonl_no_tmp_residue(bb_root: Path):
     assert not (bb_root / "audit" / "audit.jsonl.tmp").exists()
     assert not (bb_root / "audit" / "audit.jsonl.append").exists()
 
+
+# =============================================================================
+# Task 0: append_message 自动分配 seq + 可选 schema 验证
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_append_message_auto_assigns_seq(bb_root):
+    """append_message 在 message 缺失 seq 时自动分配（last_seq + 1）。"""
+    from teage_liu.multiagent.blackboard import append_message, read_messages
+
+    await append_message(bb_root, {
+        "from": "user_dispatch",
+        "to": "*",
+        "timestamp": "2026-07-23T10:00:00+00:00",
+        "type": "task",
+        "content": "第一条任务",
+        "task_op_id": "task-001",
+    })
+
+    await append_message(bb_root, {
+        "from": "director_001",
+        "to": "worker_001",
+        "timestamp": "2026-07-23T10:00:01+00:00",
+        "type": "assign",
+        "content": "分派任务",
+        "reply_to": 1,
+        "task_op_id": "task-001",
+    })
+
+    messages = await read_messages(bb_root)
+    assert len(messages) == 2
+    assert messages[0]["seq"] == 1
+    assert messages[1]["seq"] == 2
+    assert messages[1]["reply_to"] == 1
+
+
+@pytest.mark.asyncio
+async def test_append_message_preserves_explicit_seq(bb_root):
+    """append_message 在 message 已有 seq 时保留原值。"""
+    from teage_liu.multiagent.blackboard import append_message, read_messages
+
+    await append_message(bb_root, {
+        "seq": 100,
+        "from": "user_dispatch",
+        "to": "*",
+        "timestamp": "2026-07-23T10:00:00+00:00",
+        "type": "task",
+        "content": "显式 seq",
+    })
+
+    messages = await read_messages(bb_root)
+    assert messages[0]["seq"] == 100
+
+
+@pytest.mark.asyncio
+async def test_append_message_with_validate_passes_compliant(bb_root):
+    """validate=True 时合规消息通过验证。"""
+    from teage_liu.multiagent.blackboard import append_message, read_messages
+
+    await append_message(bb_root, {
+        "from": "user_dispatch",
+        "to": "*",
+        "timestamp": "2026-07-23T10:00:00+00:00",
+        "type": "task",
+        "content": "合规消息",
+    }, validate=True)
+
+    messages = await read_messages(bb_root)
+    assert len(messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_append_message_with_validate_rejects_invalid(bb_root):
+    """validate=True 时非法 type 被拒绝。"""
+    from teage_liu.multiagent.blackboard import append_message
+    from jsonschema import ValidationError
+
+    with pytest.raises(ValidationError):
+        await append_message(bb_root, {
+            "from": "user_dispatch",
+            "to": "*",
+            "timestamp": "2026-07-23T10:00:00+00:00",
+            "type": "invalid_type",
+            "content": "非法消息",
+        }, validate=True)
+
