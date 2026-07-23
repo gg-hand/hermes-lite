@@ -276,6 +276,20 @@ function bindEvents() {
     btn.addEventListener('click', () => switchSidebarTab(btn.dataset.tab));
   });
 
+  // Director 面板开关
+  const btnDirector = document.getElementById('btnDirector');
+  if (btnDirector) {
+    btnDirector.addEventListener('click', () => {
+      const main = document.querySelector('main.main');
+      const pane = document.getElementById('collabPane');
+      if (!main || !pane) return;
+      const willOn = !main.classList.contains('director-on');
+      main.classList.toggle('director-on', willOn);
+      pane.hidden = !willOn;
+      btnDirector.classList.toggle('active', willOn);
+    });
+  }
+
   // 记忆面板
   if (memorySearchBtnEl) {
     memorySearchBtnEl.addEventListener('click', () => {
