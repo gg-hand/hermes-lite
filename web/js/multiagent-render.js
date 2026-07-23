@@ -1,16 +1,17 @@
-// multiagent-render.js — multiagent 状态渲染
-// Director 状态指示器（四色）+ Agent 列表 + 告警横幅
+// multiagent-render.js — Director 工作台状态渲染
+// 渲染目标：collab-pane 内的工作台元素 + nav-item 状态圆点
+// 告警：复用页面 #toast
 // 暴露 window.MultiagentRender = { initContainers, updateStatus, renderAgents, showAlert }
 (function () {
   "use strict";
 
   var STATE_COLORS = {
-    healthy: "#22c55e", // 绿
-    degraded: "#eab308", // 黄
-    autonomous: "#f97316", // 橙
-    fault: "#ef4444", // 红
-    unknown: "#6b7280", // 灰
-    disabled: "#9ca3af", // 浅灰
+    healthy: "#22c55e",
+    degraded: "#eab308",
+    autonomous: "#f97316",
+    fault: "#ef4444",
+    unknown: "#6b7280",
+    disabled: "#9ca3af",
   };
 
   var STATE_LABELS = {
@@ -35,60 +36,11 @@
   }
 
   /**
-   * 初始化 multiagent UI 容器（状态指示器、Agent 面板、告警横幅）。
-   * 幂等：已存在则跳过。
+   * 初始化工作台容器。幂等：collab-pane 内骨架已在 chat.html 中静态存在，此处仅做事件绑定。
    */
   function initContainers() {
-    // 状态指示器（顶部右侧）
-    if (!document.getElementById("multiagent-indicator")) {
-      var indicator = document.createElement("div");
-      indicator.id = "multiagent-indicator";
-      indicator.className = "multiagent-indicator state-disabled";
-      indicator.setAttribute("data-state", "disabled");
-      indicator.innerHTML =
-        '<span class="indicator-dot"></span>' +
-        '<span class="indicator-text">' +
-        STATE_LABELS.disabled +
-        "</span>";
-      document.body.appendChild(indicator);
-    }
-
-    // Agent 列表面板（右侧）
-    if (!document.getElementById("multiagent-agents-panel")) {
-      var panel = document.createElement("div");
-      panel.id = "multiagent-agents-panel";
-      panel.className = "multiagent-agents-panel";
-      panel.innerHTML =
-        '<div class="panel-header">' +
-        "<h4>协作 Agents</h4>" +
-        '<button class="panel-toggle" data-action="toggle-panel">−</button>' +
-        "</div>" +
-        '<div class="panel-body">' +
-        '<div class="agents-list"></div>' +
-        "</div>";
-      document.body.appendChild(panel);
-      // 绑定折叠按钮
-      var toggleBtn = panel.querySelector(".panel-toggle");
-      if (toggleBtn) {
-        toggleBtn.addEventListener("click", function () {
-          var body = panel.querySelector(".panel-body");
-          if (body) {
-            var isHidden = body.style.display === "none";
-            body.style.display = isHidden ? "" : "none";
-            toggleBtn.textContent = isHidden ? "−" : "+";
-          }
-        });
-      }
-    }
-
-    // 告警横幅（顶部居中）
-    if (!document.getElementById("multiagent-alert-banner")) {
-      var banner = document.createElement("div");
-      banner.id = "multiagent-alert-banner";
-      banner.className = "multiagent-alert-banner";
-      banner.style.display = "none";
-      document.body.appendChild(banner);
-    }
+    // 工作台骨架已在 chat.html 中静态定义，无需动态创建
+    // tab 切换和收起按钮的绑定在 chat-main.js 中完成
   }
 
   /**
@@ -96,54 +48,63 @@
    * @param {Object} status - /api/multiagent/status 返回的状态
    */
   function updateStatus(status) {
-    initContainers();
-
-    var indicator = document.getElementById("multiagent-indicator");
-    if (!indicator) return;
+    var navDot = document.getElementById("directorStatusDot");
+    var wbState = document.getElementById("wbState");
+    var wbStatusVal = document.getElementById("wbStatusVal");
+    var wbStatusDot = document.querySelector(".wb-status-dot");
 
     if (!status || !status.enabled) {
-      indicator.className = "multiagent-indicator state-disabled";
-      indicator.setAttribute("data-state", "disabled");
-      var textEl = indicator.querySelector(".indicator-text");
-      if (textEl) textEl.textContent = STATE_LABELS.disabled;
+      // 未启用态
+      if (navDot) { navDot.className = "nav-status-dot state-disabled"; }
+      if (wbState) {
+        wbState.className = "wb-state";
+        var stateText = wbState.querySelector(".wb-state-text");
+        if (stateText) stateText.textContent = STATE_LABELS.disabled;
+      }
+      if (wbStatusVal) { wbStatusVal.textContent = STATE_LABELS.disabled; wbStatusVal.className = "wb-status-val"; }
+      if (wbStatusDot) { wbStatusDot.className = "wb-status-dot"; }
       renderAgents([]);
       return;
     }
 
     var directorState = (status.director && status.director.state) || "unknown";
-    indicator.className = "multiagent-indicator state-" + directorState;
-    indicator.setAttribute("data-state", directorState);
-    var directorText = status.director && status.director.agent_id
-      ? "Director: " +
-        status.director.agent_id +
-        " (" +
-        (STATE_LABELS[directorState] || directorState) +
-        ")"
-      : STATE_LABELS[directorState] || directorState;
-    var textEl2 = indicator.querySelector(".indicator-text");
-    if (textEl2) textEl2.textContent = directorText;
+    var stateClass = "state-" + directorState;
+    var stateLabel = STATE_LABELS[directorState] || directorState;
+    var onlineCount = (status.agents || []).filter(function (a) {
+      return a.status === "active" || a.status === "online";
+    }).length;
+
+    // 更新 nav-item 状态圆点
+    if (navDot) { navDot.className = "nav-status-dot " + stateClass; }
+
+    // 更新工作台头部状态药丸
+    if (wbState) {
+      wbState.className = "wb-state " + stateClass;
+      var stateText2 = wbState.querySelector(".wb-state-text");
+      if (stateText2) stateText2.textContent = stateLabel;
+    }
+
+    // 更新指引 tab 状态条
+    if (wbStatusVal) {
+      wbStatusVal.textContent = stateLabel + " · " + onlineCount + " agents 在线";
+      wbStatusVal.className = "wb-status-val " + stateClass;
+    }
+    if (wbStatusDot) { wbStatusDot.className = "wb-status-dot " + stateClass; }
 
     // 更新 Agent 列表
     renderAgents(status.agents || []);
-
-    // 自治模式指示
-    if (status.autonomous_mode) {
-      indicator.className += " autonomous-active";
-    }
   }
 
   /**
-   * 渲染 Agent 列表。
+   * 渲染 Agent 列表到工作台名册 tab。
    * @param {Array} agents - agent 列表
    */
   function renderAgents(agents) {
-    var listContainer = document.querySelector(
-      "#multiagent-agents-panel .agents-list"
-    );
+    var listContainer = document.getElementById("agentsList");
     if (!listContainer) return;
 
     if (!agents || agents.length === 0) {
-      listContainer.innerHTML = '<p class="no-agents">暂无活跃 agents</p>';
+      listContainer.innerHTML = '<p class="wb-empty">暂无活跃 agents</p>';
       return;
     }
 
@@ -151,11 +112,7 @@
       .map(function (agent) {
         var trustScore = agent.trust_score || 100;
         var trustColor =
-          trustScore >= 60
-            ? "#22c55e"
-            : trustScore >= 30
-            ? "#eab308"
-            : "#ef4444";
+          trustScore >= 60 ? "#22c55e" : trustScore >= 30 ? "#eab308" : "#ef4444";
         return (
           '<div class="agent-card" data-agent-id="' +
           escapeHtml(agent.agent_id) +
@@ -195,25 +152,27 @@
   }
 
   /**
-   * 显示告警横幅，5 秒后自动消失。
+   * 显示告警，复用页面 #toast，5 秒后自动消失。
    * @param {string} message - 告警消息
    * @param {string} level - 告警级别（info/success/warning/error）
    */
   function showAlert(message, level) {
-    initContainers();
-    var banner = document.getElementById("multiagent-alert-banner");
-    if (!banner) return;
-    var lvl = level || "info";
-    banner.className = "multiagent-alert-banner alert-" + lvl;
-    banner.textContent = message;
-    banner.style.display = "block";
-    // 清除之前的定时器
-    if (banner._hideTimer) {
-      clearTimeout(banner._hideTimer);
+    var toast = document.getElementById("toast");
+    if (!toast) {
+      // fallback：如果 toast 不存在，用 console
+      console.log("[multiagent][" + (level || "info") + "] " + message);
+      return;
     }
-    banner._hideTimer = setTimeout(function () {
-      banner.style.display = "none";
-      banner._hideTimer = null;
+    var lvl = level || "info";
+    toast.className = "toast toast-" + lvl;
+    toast.textContent = message;
+    toast.classList.add("show");
+    if (toast._hideTimer) {
+      clearTimeout(toast._hideTimer);
+    }
+    toast._hideTimer = setTimeout(function () {
+      toast.classList.remove("show");
+      toast._hideTimer = null;
     }, ALERT_TIMEOUT_MS);
   }
 
@@ -225,10 +184,8 @@
     showAlert: showAlert,
   };
 
-  // 页面加载完成后初始化 + 检查 multiagent 是否启用
+  // 页面加载完成后检查 multiagent 状态
   document.addEventListener("DOMContentLoaded", function () {
-    initContainers();
-    // 尝试获取 multiagent 状态，决定是否启动 SSE
     fetch("/api/multiagent/status")
       .then(function (resp) {
         if (resp.ok) {
@@ -243,7 +200,6 @@
         }
       })
       .catch(function () {
-        // multiagent 未启用，保持禁用状态
         updateStatus({ enabled: false });
       });
   });
