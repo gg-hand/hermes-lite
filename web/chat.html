@@ -178,6 +178,13 @@
     </div><!-- /.chat-pane -->
     <section class="collab-pane" id="collabPane" hidden>
       <div class="wb-header">
+        <div class="wb-director-control" id="directorControl">
+          <span class="wb-director-indicator" id="directorIndicator">○</span>
+          <span class="wb-director-state" id="directorState">未运行</span>
+          <button class="wb-btn wb-btn-sm wb-btn-primary" id="directorStartBtn">启动</button>
+          <button class="wb-btn wb-btn-sm wb-btn-ghost" id="directorStopBtn" style="display:none">停止</button>
+          <button class="wb-btn wb-btn-sm wb-btn-ghost" id="directorRestartBtn" style="display:none">重启</button>
+        </div>
         <div class="wb-avatar">◎</div>
         <div class="wb-title-group">
           <div class="wb-title">Director 工作台</div>
@@ -309,8 +316,6 @@
     <div class="modal-body" id="settingsBody">
       <div class="empty-state"><div class="empty-state-text">加载配置中...</div></div>
     </div>
-    <!-- multiagent 配置段容器（由 multiagent-settings.js 渲染，openSettings 时填充） -->
-    <div id="multiagent-settings-container"></div>
     <div class="modal-footer" style="display:flex;justify-content:space-between">
       <button class="btn btn-danger" id="restartServerBtn">重启服务</button>
       <div>

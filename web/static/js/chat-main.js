@@ -50,9 +50,9 @@ async function checkHealth() {
 // ========== 侧边栏底部调度快捷入口徽章 ==========
 async function loadSchedulerBadge() {
   try {
-    // 尝试从 /api/schedules/pending-count 拉取待办数
-    // 如果端点不存在，徽章保持 hidden（不影响功能）
-    const resp = await fetch('/api/schedules/pending-count');
+    // 从 /schedules/pending-count 拉取待确认提议数
+    // 如果端点不存在或失败，徽章保持 hidden（不影响功能）
+    const resp = await fetch('/schedules/pending-count');
     if (!resp.ok) return;
     const data = await resp.json();
     const count = data.count || 0;
@@ -311,6 +311,102 @@ function bindEvents() {
       }
     });
   }
+
+  // Director 控制
+  var directorIndicator = document.getElementById('directorIndicator');
+  var directorStateEl = document.getElementById('directorState');
+  var directorStartBtn = document.getElementById('directorStartBtn');
+  var directorStopBtn = document.getElementById('directorStopBtn');
+  var directorRestartBtn = document.getElementById('directorRestartBtn');
+
+  var DIRECTOR_STATE_MAP = {
+    healthy: { icon: '●', text: '运行中', cls: 'state-healthy' },
+    degraded: { icon: '●', text: '心跳过期', cls: 'state-degraded' },
+    starting: { icon: '●', text: '启动中', cls: 'state-starting' },
+    stopped: { icon: '○', text: '未运行', cls: 'state-stopped' },
+    crashed: { icon: '●', text: '已崩溃', cls: 'state-crashed' },
+  };
+
+  function updateDirectorStatus(status) {
+    if (!status || !directorIndicator) return;
+    var stateInfo = DIRECTOR_STATE_MAP[status.state] || DIRECTOR_STATE_MAP.stopped;
+    directorIndicator.textContent = stateInfo.icon;
+    directorIndicator.className = 'wb-director-indicator ' + stateInfo.cls;
+    if (directorStateEl) directorStateEl.textContent = stateInfo.text + (status.pid ? ' (PID:' + status.pid + ')' : '');
+
+    var running = status.running;
+    if (directorStartBtn) directorStartBtn.style.display = running ? 'none' : '';
+    if (directorStopBtn) directorStopBtn.style.display = running ? '' : 'none';
+    if (directorRestartBtn) directorRestartBtn.style.display = running ? '' : 'none';
+  }
+
+  function pollDirectorStatus() {
+    fetch('/api/multiagent/director/status')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) { if (data) updateDirectorStatus(data); })
+      .catch(function() {});
+  }
+
+  if (directorStartBtn) {
+    directorStartBtn.addEventListener('click', function() {
+      directorStartBtn.disabled = true;
+      directorStartBtn.textContent = '启动中…';
+      fetch('/api/multiagent/director/start', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) showToast('Director 已启动', 'success');
+          else showToast('启动失败: ' + (data.detail || ''), 'error');
+        })
+        .catch(function(err) { showToast('启动失败: ' + err.message, 'error'); })
+        .finally(function() {
+          directorStartBtn.disabled = false;
+          directorStartBtn.textContent = '启动';
+          pollDirectorStatus();
+        });
+    });
+  }
+
+  if (directorStopBtn) {
+    directorStopBtn.addEventListener('click', function() {
+      directorStopBtn.disabled = true;
+      fetch('/api/multiagent/director/stop', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) showToast('Director 已停止', 'success');
+          else showToast('停止失败: ' + (data.detail || ''), 'error');
+        })
+        .catch(function(err) { showToast('停止失败: ' + err.message, 'error'); })
+        .finally(function() {
+          directorStopBtn.disabled = false;
+          pollDirectorStatus();
+        });
+    });
+  }
+
+  if (directorRestartBtn) {
+    directorRestartBtn.addEventListener('click', function() {
+      directorRestartBtn.disabled = true;
+      directorRestartBtn.textContent = '重启中…';
+      fetch('/api/multiagent/director/stop', { method: 'POST' })
+        .then(function() { return new Promise(function(r){ setTimeout(r, 1000); }); })
+        .then(function() { return fetch('/api/multiagent/director/start', { method: 'POST' }); })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) showToast('Director 已重启', 'success');
+          else showToast('重启失败', 'error');
+        })
+        .catch(function(err) { showToast('重启失败: ' + err.message, 'error'); })
+        .finally(function() {
+          directorRestartBtn.disabled = false;
+          directorRestartBtn.textContent = '重启';
+          pollDirectorStatus();
+        });
+    });
+  }
+
+  // 初始轮询 + 每 10 秒轮询
+  pollDirectorStatus();
+  setInterval(pollDirectorStatus, 10000);
 
   // 分派任务对话框
   var dispatchBtn = document.getElementById('wbDispatchBtn');

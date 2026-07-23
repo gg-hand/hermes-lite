@@ -357,3 +357,30 @@
 .wb-msg-type { color: var(--text-muted); }
 .wb-msg-time { color: var(--text-muted); margin-left: auto; }
 .wb-msg-content { color: var(--text-secondary); line-height: 1.4; word-break: break-word; }
+
+/* ========== Director 控制区 ========== */
+.wb-director-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.wb-director-indicator {
+  font-size: 10px;
+  line-height: 1;
+}
+.wb-director-indicator.state-healthy { color: #22c55e; }
+.wb-director-indicator.state-degraded { color: #f59e0b; }
+.wb-director-indicator.state-starting { color: #3b82f6; }
+.wb-director-indicator.state-stopped { color: var(--text-muted); }
+.wb-director-indicator.state-crashed { color: #ef4444; }
+.wb-director-state { color: var(--text-secondary); flex: 1; }
+.wb-btn-sm {
+  padding: 2px 8px;
+  font-size: 10px;
+  border-radius: var(--radius-md);
+}
