@@ -1463,6 +1463,17 @@ async function sendMessage(textOverride) {
   const text = textOverride || messageInputEl.value.trim();
   if (!text) return;
 
+  // @director 指令检测：走多 agent 分派路径
+  var lowerText = text.toLowerCase();
+  if (lowerText.startsWith('@director ') || lowerText.startsWith('@director\u3000')) {
+    var taskText = text.slice(text.indexOf(' ') + 1).trim();
+    if (!taskText) {
+      showToast('请在 @director 后输入任务描述', 'warning');
+      return;
+    }
+    return dispatchToDirector(taskText, text);
+  }
+
   if (streamState === StreamState.STREAMING) {
     gracefulInterrupt(text);
     return;
@@ -1796,3 +1807,82 @@ window.TeageChatCore = {
   sendMessage,
   renderToolValue,
 };
+
+// ========== 多 Agent 分派 ==========
+
+/**
+ * 通过 @director 指令分派任务到多 agent 黑板。
+ * @param {string} task - 任务描述
+ * @param {string} originalText - 原始输入文本（含 @director 前缀）
+ */
+async function dispatchToDirector(task, originalText) {
+  // 显示用户原始消息
+  appendMessage('user', originalText);
+  scrollMessagesToBottom(true);
+  messageInputEl.value = '';
+  autoResize();
+
+  // 显示 Director 接收气泡
+  var collabEl = appendCollabMessage('🎯 Director', '已接收任务，正在分派…');
+
+  try {
+    var res = await fetch(API_BASE + '/api/multiagent/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: task, target_agents: [], mode: 'dispatch' }),
+    });
+
+    if (res.status === 404) {
+      updateCollabMessage(collabEl, '🎯 Director', '❌ 多 agent 未启用，请在设置中开启', 'error');
+      showToast('多 agent 未启用，请在设置中开启', 'warning');
+      return;
+    }
+
+    var data = await res.json();
+    if (data.ok) {
+      updateCollabMessage(collabEl, '🎯 Director', '已分派，等待 agent 响应… (op_id: ' + data.op_id.slice(0, 8) + ')', 'success');
+      showToast(data.message || '任务已分派', 'success');
+    } else {
+      throw new Error(data.detail || '分派失败');
+    }
+  } catch (err) {
+    updateCollabMessage(collabEl, '🎯 Director', '❌ 分派失败: ' + err.message, 'error');
+    showToast('分派失败: ' + err.message, 'error');
+  }
+}
+
+/**
+ * 追加协作消息气泡到聊天流。
+ * @param {string} role - 角色标签（如 "🎯 Director"）
+ * @param {string} content - 消息内容
+ * @returns {HTMLElement} 气泡元素（可用于后续更新）
+ */
+function appendCollabMessage(role, content) {
+  var messagesEl = document.getElementById('messages');
+  if (!messagesEl) return null;
+
+  var msg = document.createElement('div');
+  msg.className = 'msg collab';
+  msg.innerHTML =
+    '<div class="role">' + escapeHtml(role) + '</div>' +
+    '<div class="bubble">' + escapeHtml(content) + '</div>';
+  messagesEl.appendChild(msg);
+  scrollMessagesToBottom(true);
+  return msg;
+}
+
+/**
+ * 更新已有协作气泡的内容。
+ * @param {HTMLElement} el - appendCollabMessage 返回的元素
+ * @param {string} role - 角色标签
+ * @param {string} content - 新内容
+ * @param {string} level - 级别（success/error/info）
+ */
+function updateCollabMessage(el, role, content, level) {
+  if (!el) return;
+  if (level) el.classList.add('collab-' + level);
+  var roleEl = el.querySelector('.role');
+  var bubbleEl = el.querySelector('.bubble');
+  if (roleEl) roleEl.textContent = role;
+  if (bubbleEl) bubbleEl.textContent = content;
+}
