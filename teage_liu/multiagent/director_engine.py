@@ -313,6 +313,7 @@ class DirectorEngine:
                 await self._update_director_tick()
                 await self._check_worker_heartbeats()
                 await self._check_turn_timeout()
+                await self._dispatch_tasks()
                 await self._flush_pending_messages()
                 await self._arbitrate_conflicts()
         except asyncio.CancelledError:
@@ -543,6 +544,73 @@ class DirectorEngine:
                 "signature": "",
             },
         )
+
+    async def _dispatch_tasks(self) -> None:
+        """扫描 messages.md 中未分派的 task 消息，分派给 active worker。"""
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.blackboard import append_message, read_messages
+        from teage_liu.multiagent.schema_validator import SchemaValidator
+
+        messages = await read_messages(self._bb_root)
+
+        assigned_op_ids = {
+            m.get("task_op_id") for m in messages
+            if m.get("type") == "assign" and m.get("task_op_id")
+        }
+
+        pending_tasks = [
+            m for m in messages
+            if m.get("type") == "task"
+            and m.get("task_op_id") not in assigned_op_ids
+        ]
+
+        if not pending_tasks:
+            return
+
+        registry = AgentRegistry(self._bb_root, SchemaValidator(enabled=False))
+        active_agents = await registry.list_active_agents()
+        active_workers = [
+            a for a in active_agents
+            if a.get("role") == "worker" and a.get("status") == "active"
+        ]
+        if not active_workers:
+            logger.warning("Director: 无 active worker，%d 个任务等待分派", len(pending_tasks))
+            return
+
+        active_workers.sort(key=lambda a: a.get("agent_id", ""))
+        active_worker_ids = [a["agent_id"] for a in active_workers]
+
+        for task_msg in pending_tasks:
+            task_op_id = task_msg.get("task_op_id", "")
+            target_agents = task_msg.get("target_agents") or []
+
+            chosen = None
+            for tid in target_agents:
+                if tid in active_worker_ids:
+                    chosen = tid
+                    break
+            if chosen is None and not target_agents:
+                chosen = active_worker_ids[0]
+            if chosen is None:
+                logger.warning(
+                    "Director: task task_op_id=%s 的 target_agents=%s 均不在线，跳过",
+                    task_op_id, target_agents,
+                )
+                continue
+
+            assign_msg = {
+                "from": self._agent_id,
+                "to": chosen,
+                "timestamp": _now_iso(),
+                "type": "assign",
+                "content": task_msg.get("content", ""),
+                "reply_to": task_msg.get("seq"),
+                "task_op_id": task_op_id,
+                "assigned_to": chosen,
+                "epoch": self._current_epoch,
+            }
+            await append_message(self._bb_root, assign_msg, validate=True)
+            logger.info("Director: 任务 task_op_id=%s 已分派给 %s", task_op_id, chosen)
 
     async def _check_turn_timeout(self) -> None:
         """检查轮次超时并推进。"""

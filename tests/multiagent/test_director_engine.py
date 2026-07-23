@@ -358,3 +358,172 @@ class TestSignatureVerifier:
         # 再失败 1 次应从 1 开始（不累计）
         bad_result = await verifier.verify_director_write(bad_status, writer_agent_id="director_001")
         assert bad_result.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_director_dispatches_task_to_active_worker(bb_root):
+    """Director._dispatch_tasks 扫描 type=task 消息并写入 type=assign 消息。"""
+    from teage_liu.multiagent.blackboard import (
+        Blackboard, append_message, read_messages,
+    )
+    from teage_liu.multiagent.director_engine import DirectorEngine
+    import yaml
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    card = {
+        "agent_id": "worker_001", "role": "worker", "status": "active",
+        "protocol_version": "1.0.0", "agent_version": "1.0.0",
+        "capabilities": ["file_read"],
+        "last_heartbeat": "2026-07-23T10:00:00+00:00",
+        "heartbeat_interval_seconds": 10,
+        "trust_score": 100,
+    }
+    (bb_root / "agents" / "worker_001.md").write_text(
+        f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
+        encoding="utf-8",
+    )
+
+    director_md = {
+        "protocol_version": "1.0.0", "director_version": "1.0.0",
+        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
+        "last_director_tick": "2026-07-23T10:00:00+00:00",
+        "director_id": "director_001", "director_implementation": "script",
+        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
+        "turn_policy": {"mode": "freeform", "order": []},
+    }
+    (bb_root / "director.md").write_text(
+        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
+        encoding="utf-8",
+    )
+
+    await append_message(bb_root, {
+        "from": "user_dispatch", "to": "*",
+        "timestamp": "2026-07-23T10:00:01+00:00",
+        "type": "task", "content": "帮我读取 data/test.txt 文件",
+        "task_op_id": "task-001", "target_agents": [], "mode": "dispatch",
+    })
+
+    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
+    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
+    await director._dispatch_tasks()
+
+    messages = await read_messages(bb_root)
+    assign_msgs = [m for m in messages if m.get("type") == "assign"]
+    assert len(assign_msgs) == 1, f"期望 1 条 assign 消息，实际 {len(assign_msgs)}"
+    assign_msg = assign_msgs[0]
+    assert assign_msg["from"] == "director_001"
+    assert assign_msg["to"] == "worker_001"
+    assert assign_msg["assigned_to"] == "worker_001"
+    assert assign_msg["task_op_id"] == "task-001"
+    assert assign_msg["reply_to"] == 1
+    assert assign_msg["content"] == "帮我读取 data/test.txt 文件"
+
+
+@pytest.mark.asyncio
+async def test_director_dispatch_respects_target_agents(bb_root):
+    """当 task.target_agents 指定时，Director 分派给指定 agent。"""
+    from teage_liu.multiagent.blackboard import (
+        Blackboard, append_message, read_messages,
+    )
+    from teage_liu.multiagent.director_engine import DirectorEngine
+    import yaml
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    for aid in ["worker_001", "worker_002"]:
+        card = {
+            "agent_id": aid, "role": "worker", "status": "active",
+            "protocol_version": "1.0.0", "agent_version": "1.0.0",
+            "capabilities": [], "last_heartbeat": "2026-07-23T10:00:00+00:00",
+            "heartbeat_interval_seconds": 10, "trust_score": 100,
+        }
+        (bb_root / "agents" / f"{aid}.md").write_text(
+            f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
+            encoding="utf-8",
+        )
+
+    director_md = {
+        "protocol_version": "1.0.0", "director_version": "1.0.0",
+        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
+        "last_director_tick": "2026-07-23T10:00:00+00:00",
+        "director_id": "director_001", "director_implementation": "script",
+        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
+        "turn_policy": {"mode": "freeform", "order": []},
+    }
+    (bb_root / "director.md").write_text(
+        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
+        encoding="utf-8",
+    )
+
+    await append_message(bb_root, {
+        "from": "user_dispatch", "to": "*",
+        "timestamp": "2026-07-23T10:00:01+00:00",
+        "type": "task", "content": "专门给 worker_002 的任务",
+        "task_op_id": "task-002", "target_agents": ["worker_002"], "mode": "dispatch",
+    })
+
+    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
+    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
+    await director._dispatch_tasks()
+
+    messages = await read_messages(bb_root)
+    assign_msgs = [m for m in messages if m.get("type") == "assign"]
+    assert len(assign_msgs) == 1
+    assert assign_msgs[0]["assigned_to"] == "worker_002"
+
+
+@pytest.mark.asyncio
+async def test_director_dispatch_is_idempotent(bb_root):
+    """同一 task_op_id 的 task 不会被分派两次。"""
+    from teage_liu.multiagent.blackboard import (
+        Blackboard, append_message, read_messages,
+    )
+    from teage_liu.multiagent.director_engine import DirectorEngine
+    import yaml
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    card = {
+        "agent_id": "worker_001", "role": "worker", "status": "active",
+        "protocol_version": "1.0.0", "agent_version": "1.0.0",
+        "capabilities": [], "last_heartbeat": "2026-07-23T10:00:00+00:00",
+        "heartbeat_interval_seconds": 10, "trust_score": 100,
+    }
+    (bb_root / "agents" / "worker_001.md").write_text(
+        f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
+        encoding="utf-8",
+    )
+
+    director_md = {
+        "protocol_version": "1.0.0", "director_version": "1.0.0",
+        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
+        "last_director_tick": "2026-07-23T10:00:00+00:00",
+        "director_id": "director_001", "director_implementation": "script",
+        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
+        "turn_policy": {"mode": "freeform", "order": []},
+    }
+    (bb_root / "director.md").write_text(
+        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
+        encoding="utf-8",
+    )
+
+    await append_message(bb_root, {
+        "from": "user_dispatch", "to": "*",
+        "timestamp": "2026-07-23T10:00:01+00:00",
+        "type": "task", "content": "幂等测试",
+        "task_op_id": "task-003", "target_agents": [], "mode": "dispatch",
+    })
+
+    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
+    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
+
+    await director._dispatch_tasks()
+    await director._dispatch_tasks()
+
+    messages = await read_messages(bb_root)
+    assign_msgs = [m for m in messages if m.get("type") == "assign"]
+    assert len(assign_msgs) == 1, f"期望 1 条 assign（幂等），实际 {len(assign_msgs)}"
