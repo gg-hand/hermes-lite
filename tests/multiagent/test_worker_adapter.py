@@ -458,3 +458,117 @@ async def test_worker_injects_orchestrator_and_activates(bb_root, worker_config)
         assert worker_agents[0]["status"] == "active"
     finally:
         await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_polls_and_executes_assign_message(bb_root, worker_config):
+    """Worker._poll_once 拾取 assign 消息并执行，写入 status+result 消息。"""
+    from teage_liu.multiagent.blackboard import Blackboard, append_message, read_messages
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    fake_orch = FakeOrchestrator()
+    worker = WorkerAdapter(
+        bb_root=bb_root, config=worker_config,
+        agent_id="worker_001", orchestrator=fake_orch,
+    )
+    await worker.start()
+    try:
+        await append_message(bb_root, {
+            "from": "director_001", "to": "worker_001",
+            "timestamp": "2026-07-23T10:00:01+00:00",
+            "type": "assign", "content": "帮我读取文件",
+            "reply_to": 1, "task_op_id": "task-100",
+            "assigned_to": "worker_001", "epoch": 1,
+        })
+
+        await worker._poll_once()
+
+        assert len(fake_orch.calls) == 1
+        assert fake_orch.calls[0][1] == "帮我读取文件"
+
+        messages = await read_messages(bb_root)
+        status_msgs = [m for m in messages if m.get("type") == "status"]
+        result_msgs = [m for m in messages if m.get("type") == "result"]
+        assert len(status_msgs) == 1
+        assert status_msgs[0]["status"] == "processing"
+        assert len(result_msgs) == 1
+        assert result_msgs[0]["status"] == "completed"
+        assert result_msgs[0]["task_op_id"] == "task-100"
+    finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_task_execution_is_idempotent(bb_root, worker_config):
+    """同一 task_op_id 不会被 Worker 重复执行。"""
+    from teage_liu.multiagent.blackboard import Blackboard, append_message
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    fake_orch = FakeOrchestrator()
+    worker = WorkerAdapter(
+        bb_root=bb_root, config=worker_config,
+        agent_id="worker_001", orchestrator=fake_orch,
+    )
+    await worker.start()
+    try:
+        await append_message(bb_root, {
+            "from": "director_001", "to": "worker_001",
+            "timestamp": "2026-07-23T10:00:01+00:00",
+            "type": "assign", "content": "幂等测试",
+            "reply_to": 1, "task_op_id": "task-300",
+            "assigned_to": "worker_001", "epoch": 1,
+        })
+
+        await worker._poll_once()
+        await worker._poll_once()
+
+        assert len(fake_orch.calls) == 1
+    finally:
+        await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_recovers_executed_op_ids_on_restart(bb_root, worker_config):
+    """Worker 重启后通过扫描已有 result 消息恢复 _executed_op_ids。"""
+    from teage_liu.multiagent.blackboard import Blackboard, append_message
+
+    bb = Blackboard(bb_root)
+    await bb.init_blackboard()
+
+    # 第一次启动：执行一个任务
+    fake_orch_1 = FakeOrchestrator()
+    worker_1 = WorkerAdapter(
+        bb_root=bb_root, config=worker_config,
+        agent_id="worker_001", orchestrator=fake_orch_1,
+    )
+    await worker_1.start()
+    try:
+        await append_message(bb_root, {
+            "from": "director_001", "to": "worker_001",
+            "timestamp": "2026-07-23T10:00:01+00:00",
+            "type": "assign", "content": "重启恢复测试",
+            "reply_to": 1, "task_op_id": "task-restart-001",
+            "assigned_to": "worker_001", "epoch": 1,
+        })
+        await worker_1._poll_once()
+        assert len(fake_orch_1.calls) == 1
+    finally:
+        await worker_1.stop()
+
+    # 第二次启动（模拟重启）
+    fake_orch_2 = FakeOrchestrator()
+    worker_2 = WorkerAdapter(
+        bb_root=bb_root, config=worker_config,
+        agent_id="worker_001", orchestrator=fake_orch_2,
+    )
+    await worker_2.start()
+    try:
+        assert "task-restart-001" in worker_2._executed_op_ids
+        await worker_2._poll_once()
+        assert len(fake_orch_2.calls) == 0
+    finally:
+        await worker_2.stop()
