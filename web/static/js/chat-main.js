@@ -312,6 +312,109 @@ function bindEvents() {
     });
   }
 
+  // 分派任务对话框
+  var dispatchBtn = document.getElementById('wbDispatchBtn');
+  var dispatchModal = document.getElementById('dispatchModal');
+  var dispatchTaskInput = document.getElementById('dispatchTaskInput');
+  var dispatchAgentList = document.getElementById('dispatchAgentList');
+  var dispatchSubmitBtn = document.getElementById('dispatchSubmitBtn');
+  var selectedAgents = [];
+
+  function openDispatchDialog() {
+    if (!dispatchModal) return;
+    dispatchModal.style.display = 'flex';
+    dispatchAgentList.innerHTML = '<p class="wb-empty">加载中…</p>';
+    selectedAgents = [];
+    fetch('/api/multiagent/agents')
+      .then(function(r) { return r.ok ? r.json() : { agents: [] }; })
+      .then(function(data) {
+        var agents = data.agents || [];
+        if (agents.length === 0) {
+          dispatchAgentList.innerHTML = '<p class="wb-empty">暂无可用 agent（将广播）</p>';
+          return;
+        }
+        dispatchAgentList.innerHTML = agents.map(function(a) {
+          return '<span class="dispatch-agent-chip" data-agent-id="' + (a.agent_id || '') + '">' +
+                 (a.agent_id || 'unknown') + ' · ' + (a.role || 'worker') + '</span>';
+        }).join('');
+        dispatchAgentList.querySelectorAll('.dispatch-agent-chip').forEach(function(chip) {
+          chip.addEventListener('click', function() {
+            var id = chip.dataset.agentId;
+            chip.classList.toggle('selected');
+            if (chip.classList.contains('selected')) {
+              if (selectedAgents.indexOf(id) === -1) selectedAgents.push(id);
+            } else {
+              selectedAgents = selectedAgents.filter(function(x) { return x !== id; });
+            }
+          });
+        });
+      })
+      .catch(function() {
+        dispatchAgentList.innerHTML = '<p class="wb-empty">暂无可用 agent（将广播）</p>';
+      });
+  }
+
+  function closeDispatchDialog() {
+    if (dispatchModal) dispatchModal.style.display = 'none';
+    if (dispatchTaskInput) dispatchTaskInput.value = '';
+    selectedAgents = [];
+  }
+
+  if (dispatchBtn) {
+    dispatchBtn.addEventListener('click', openDispatchDialog);
+  }
+  var dispatchCloseBtn = document.getElementById('dispatchCloseBtn');
+  var dispatchCancelBtn = document.getElementById('dispatchCancelBtn');
+  if (dispatchCloseBtn) dispatchCloseBtn.addEventListener('click', closeDispatchDialog);
+  if (dispatchCancelBtn) dispatchCancelBtn.addEventListener('click', closeDispatchDialog);
+  if (dispatchModal) {
+    dispatchModal.addEventListener('click', function(e) {
+      if (e.target === dispatchModal) closeDispatchDialog();
+    });
+  }
+
+  if (dispatchSubmitBtn && dispatchTaskInput) {
+    dispatchTaskInput.addEventListener('input', function() {
+      dispatchSubmitBtn.disabled = !dispatchTaskInput.value.trim();
+    });
+    dispatchSubmitBtn.addEventListener('click', function() {
+      var task = dispatchTaskInput.value.trim();
+      if (!task) return;
+      var mode = 'dispatch';
+      var modeEl = document.querySelector('input[name="dispatchMode"]:checked');
+      if (modeEl) mode = modeEl.value;
+
+      dispatchSubmitBtn.disabled = true;
+      dispatchSubmitBtn.textContent = '分派中…';
+
+      fetch('/api/multiagent/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: task, target_agents: selectedAgents, mode: mode }),
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) {
+            closeDispatchDialog();
+            if (typeof appendCollabMessage === 'function') {
+              var target = selectedAgents.length > 0 ? selectedAgents.join(', ') : '广播';
+              appendCollabMessage('🎯 Director', '已分派给 ' + target + '（' + mode + '模式）');
+            }
+            if (typeof showToast === 'function') showToast(data.message || '任务已分派', 'success');
+          } else {
+            throw new Error(data.detail || '分派失败');
+          }
+        })
+        .catch(function(err) {
+          if (typeof showToast === 'function') showToast('分派失败: ' + err.message, 'error');
+        })
+        .finally(function() {
+          dispatchSubmitBtn.disabled = false;
+          dispatchSubmitBtn.textContent = '提交分派';
+        });
+    });
+  }
+
   // 记忆面板
   if (memorySearchBtnEl) {
     memorySearchBtnEl.addEventListener('click', () => {

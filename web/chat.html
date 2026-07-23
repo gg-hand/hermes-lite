@@ -259,6 +259,40 @@
   <span class="chat-footer-text">teage-liu v0.1.0</span>
 </div>
 
+<!-- 分派任务对话框 -->
+<div class="modal-overlay" id="dispatchModal" style="display:none">
+  <div class="modal-card dispatch-card">
+    <div class="modal-header">
+      <h3>分派任务</h3>
+      <button class="modal-close" id="dispatchCloseBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>任务描述</label>
+        <textarea class="form-input dispatch-task-input" id="dispatchTaskInput" rows="4" placeholder="描述你要分派给 agent 的任务…"></textarea>
+      </div>
+      <div class="form-group">
+        <label>目标 Agent（可多选，空则广播）</label>
+        <div class="dispatch-agent-list" id="dispatchAgentList">
+          <p class="wb-empty">加载中…</p>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>协作模式</label>
+        <div class="dispatch-mode-row">
+          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="dispatch" checked><span>分派</span></label>
+          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="relay"><span>接力</span></label>
+          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="debate"><span>辩论</span></label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="wb-btn wb-btn-ghost" id="dispatchCancelBtn">取消</button>
+      <button class="wb-btn wb-btn-primary" id="dispatchSubmitBtn" disabled>提交分派</button>
+    </div>
+  </div>
+</div>
+
 <!-- 设置弹窗（高级设置） -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
