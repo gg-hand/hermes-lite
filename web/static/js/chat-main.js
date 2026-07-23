@@ -542,6 +542,33 @@ function bindEvents() {
     });
   });
 
+  // 监听任务状态变更 → 更新任务块
+  window.addEventListener('multiagent-task-status', function(e) {
+    var d = e.detail || {};
+    if (typeof updateTaskBlock === 'function' && d.op_id) {
+      updateTaskBlock(d.op_id, {
+        status: d.status,
+        from: d.from,
+        content: d.content,
+        ts: d.ts,
+        assigned_to: d.assigned_to,
+      });
+    }
+  });
+
+  // 监听 agent 消息 → 更新任务块时间线
+  window.addEventListener('multiagent-agent-message', function(e) {
+    var d = e.detail || {};
+    if (typeof updateTaskBlock === 'function' && d.op_id) {
+      updateTaskBlock(d.op_id, {
+        status: d.status,
+        from: d.from,
+        content: d.content,
+        ts: d.ts,
+      });
+    }
+  });
+
   // 消息记录展开/加载
   var msgLogToggle = document.getElementById('msgLogToggle');
   var msgLogContainer = document.getElementById('msgLogContainer');
