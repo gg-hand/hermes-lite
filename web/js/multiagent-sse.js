@@ -9,6 +9,21 @@
   var currentStatus = null;
   var RECONNECT_DELAY_MS = 5000;
 
+  function _inferStatus(msg) {
+    var msgType = msg.type || "";
+    var msgFrom = msg.from || "";
+    if (msg.status) return msg.status;
+    if (msgType === "task" && msgFrom === "user") return "pending";
+    if (msgType === "status" && msgFrom === "director") return "assigned";
+    if (msgType === "status") return "processing";
+    if (msgType === "result") {
+      var c = (msg.content || "").toLowerCase();
+      if (c.indexOf("失败") >= 0 || c.indexOf("error") >= 0) return "failed";
+      return "completed";
+    }
+    return "unknown";
+  }
+
   /**
    * 启动 SSE 订阅。
    */
@@ -107,13 +122,52 @@
       }
     });
 
-    // message_append：新消息追加（触发聊天界面刷新）
+    // message_append：新消息追加
     eventSource.addEventListener("message_append", function (e) {
       try {
         var data = JSON.parse(e.data);
+        // 保留原有 multiagent-message 事件（向后兼容）
         window.dispatchEvent(
           new CustomEvent("multiagent-message", { detail: data })
         );
+
+        // 新增：根据消息类型 dispatch 细粒度事件
+        var messages = data.messages || (data.message ? [data.message] : []);
+        messages.forEach(function (msg) {
+          if (!msg) return;
+          var msgType = msg.type || "";
+          var msgFrom = msg.from || "";
+
+          if (msgType === "task" || (msgType === "status" && msgFrom === "director")) {
+            // 任务状态变更
+            window.dispatchEvent(
+              new CustomEvent("multiagent-task-status", {
+                detail: {
+                  op_id: msg.op_id || "",
+                  status: msg.status || _inferStatus(msg),
+                  from: msgFrom,
+                  assigned_to: msg.assigned_to || "",
+                  content: msg.content || "",
+                  ts: msg.ts || "",
+                },
+              })
+            );
+          } else if (msgType === "result" || (msgType === "status" && msgFrom !== "user" && msgFrom !== "director")) {
+            // Agent 消息
+            window.dispatchEvent(
+              new CustomEvent("multiagent-agent-message", {
+                detail: {
+                  op_id: msg.op_id || "",
+                  from: msgFrom,
+                  msg_type: msgType,
+                  status: msg.status || _inferStatus(msg),
+                  content: msg.content || "",
+                  ts: msg.ts || "",
+                },
+              })
+            );
+          }
+        });
       } catch (err) {
         console.warn("multiagent SSE: message_append 解析失败", err);
       }
