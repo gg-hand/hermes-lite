@@ -268,6 +268,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("multiagent adapter 关闭失败: %s", e)
 
+        # 清理 Director 进程
+        try:
+            from teage_liu.multiagent.director_manager import create_director_manager
+            dm = create_director_manager(config)
+            result = await dm.stop()
+            if result.get("ok"):
+                logger.info("Director 进程已清理: %s", result.get("message"))
+        except Exception as e:
+            logger.warning("Director 清理失败: %s", e)
+
     close_container()
     logger.info("lifespan 关闭完成")
 
