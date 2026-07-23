@@ -36,19 +36,31 @@ logger = logging.getLogger(__name__)
 
 
 def _infer_task_status(msg: dict) -> str:
-    """根据消息类型和来源推断任务状态。"""
+    """根据消息类型和来源推断任务状态。
+
+    v3 扩展：支持 task/assign/status/result 消息类型。
+    兼容旧消息（from=user 而非 user_dispatch，type=status+from=director 而非 type=assign）。
+    """
     msg_type = msg.get("type", "")
     msg_from = msg.get("from", "")
     explicit = msg.get("status")
     if explicit:
         return explicit
 
-    if msg_type == "task" and msg_from == "user":
+    # v3: type=task → pending（兼容 from=user 和 from=user_dispatch）
+    if msg_type == "task":
         return "pending"
-    if msg_type == "status" and msg_from == "director":
+    # v3: type=assign → assigned
+    if msg_type == "assign":
         return "assigned"
-    if msg_type == "status" and msg_from != "user" and msg_from != "director":
+    # v3: type=status → 根据显式 status 字段或 from 推断
+    if msg_type == "status":
+        # 兼容旧消息：from=director → assigned
+        if msg_from.startswith("director"):
+            return "assigned"
+        # 其他 status 消息视为 processing
         return "processing"
+    # v3: type=result → completed/failed
     if msg_type == "result":
         content = (msg.get("content") or "").lower()
         if any(kw in content for kw in ["失败", "error", "failed", "异常"]):
@@ -184,16 +196,17 @@ def create_multiagent_router(container) -> APIRouter:
         ts = datetime.now(timezone.utc).isoformat()
 
         message = {
-            "op_id": op_id,
-            "from": "user",
+            "from": "user_dispatch",
+            "to": "*",
+            "timestamp": ts,
             "type": "task",
             "content": task,
+            "task_op_id": op_id,
             "target_agents": target_agents,
             "mode": mode,
-            "ts": ts,
         }
 
-        await append_message(bb_root, message)
+        await append_message(bb_root, message, validate=True)
 
         await append_audit(
             bb_root,
@@ -240,11 +253,19 @@ def create_multiagent_router(container) -> APIRouter:
 
     @router.get("/tasks/{op_id}")
     async def get_task_status(op_id: str) -> dict:
-        """查询指定任务的状态流转历史。"""
+        """查询指定任务的状态流转历史。
+
+        v3 修复：使用 task_op_id 查询消息（兼容旧消息 fallback 查 op_id），
+        timeline 使用 timestamp 字段（兼容旧消息 fallback 用 ts）。
+        """
         from teage_liu.multiagent.blackboard import read_messages
 
         messages = await read_messages(bb_root)
-        task_msgs = [m for m in messages if m.get("op_id") == op_id]
+        # v3: 优先查 task_op_id，fallback 查 op_id（兼容旧消息）
+        task_msgs = [
+            m for m in messages
+            if m.get("task_op_id") == op_id or m.get("op_id") == op_id
+        ]
         if not task_msgs:
             raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -258,7 +279,7 @@ def create_multiagent_router(container) -> APIRouter:
             "assigned_to": latest.get("assigned_to"),
             "timeline": [
                 {
-                    "ts": m.get("ts", ""),
+                    "ts": m.get("timestamp") or m.get("ts", ""),  # 兼容旧消息
                     "from": m.get("from", ""),
                     "type": m.get("type", ""),
                     "status": m.get("status") or _infer_task_status(m),

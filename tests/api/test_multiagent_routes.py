@@ -347,3 +347,87 @@ def test_format_sse():
     assert block.startswith("event: initial\n")
     assert "data: " in block
     assert block.endswith("\n\n")
+
+
+# =============================================================================
+# Task 1 v3: dispatch_task + get_task_status 字段名统一
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_dispatch_task_writes_compliant_message(app_with_multiagent: FastAPI, bb_root: Path):
+    """dispatch_task 端点写入 schema 合规的消息。"""
+    from teage_liu.multiagent.blackboard import read_messages
+
+    with TestClient(app_with_multiagent) as client:
+        resp = client.post("/api/multiagent/dispatch", json={
+            "task": "测试任务",
+            "target_agents": [],
+            "mode": "dispatch",
+        })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    op_id = data["op_id"]
+
+    messages = await read_messages(bb_root)
+    task_msgs = [m for m in messages if m.get("task_op_id") == op_id]
+    assert len(task_msgs) == 1
+    msg = task_msgs[0]
+    assert msg["from"] == "user_dispatch"
+    assert msg["to"] == "*"
+    assert msg["type"] == "task"
+    assert msg["content"] == "测试任务"
+    assert "timestamp" in msg
+    assert msg["task_op_id"] == op_id
+    assert msg["target_agents"] == []
+    assert msg["mode"] == "dispatch"
+    # 不应有旧字段
+    assert "op_id" not in msg or msg.get("op_id") is None
+    assert "ts" not in msg
+
+
+@pytest.mark.asyncio
+async def test_get_task_status_uses_task_op_id(app_with_multiagent: FastAPI, bb_root: Path):
+    """get_task_status 端点使用 task_op_id 查询消息（v3 修复）。"""
+    from teage_liu.multiagent.blackboard import append_message
+
+    await append_message(bb_root, {
+        "from": "user_dispatch", "to": "*",
+        "timestamp": "2026-07-23T10:00:00+00:00",
+        "type": "task", "content": "查询测试任务",
+        "task_op_id": "query-task-001", "target_agents": [], "mode": "dispatch",
+    }, validate=True)
+
+    with TestClient(app_with_multiagent) as client:
+        resp = client.get("/api/multiagent/tasks/query-task-001")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["op_id"] == "query-task-001"
+    assert data["status"] == "pending"
+    assert len(data["timeline"]) == 1
+    assert data["timeline"][0]["ts"] == "2026-07-23T10:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_get_task_status_fallback_to_op_id_for_legacy(app_with_multiagent: FastAPI, bb_root: Path):
+    """get_task_status 端点兼容旧消息（fallback 查 op_id）。"""
+    from teage_liu.multiagent.blackboard import append_message
+
+    # 写入旧格式消息（op_id 而非 task_op_id）
+    await append_message(bb_root, {
+        "op_id": "legacy-task-001",
+        "from": "user_dispatch",
+        "to": "*",
+        "timestamp": "2026-07-23T10:00:00+00:00",
+        "type": "task", "content": "旧格式任务",
+    })
+
+    with TestClient(app_with_multiagent) as client:
+        resp = client.get("/api/multiagent/tasks/legacy-task-001")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["op_id"] == "legacy-task-001"
