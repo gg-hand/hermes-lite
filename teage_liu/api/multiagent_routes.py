@@ -62,6 +62,9 @@ def create_multiagent_router(container) -> APIRouter:
     bb_dir = multiagent_cfg.get("blackboard_dir", "data/blackboard")
     bb_root = Path(bb_dir)
 
+    from teage_liu.multiagent.director_manager import create_director_manager
+    director_manager = create_director_manager(config)
+
     @router.get("/status")
     async def get_status() -> dict:
         """获取协作总览状态。"""
@@ -193,6 +196,24 @@ def create_multiagent_router(container) -> APIRouter:
             if not target_agents
             else f"任务已分派给 {', '.join(target_agents)}",
         }
+
+    @router.post("/director/start")
+    async def start_director() -> dict:
+        result = await director_manager.start()
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("message", "启动失败"))
+        return result
+
+    @router.post("/director/stop")
+    async def stop_director() -> dict:
+        result = await director_manager.stop()
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("message", "停止失败"))
+        return result
+
+    @router.get("/director/status")
+    async def director_status() -> dict:
+        return await director_manager.status()
 
     @router.get("/sse")
     async def sse_stream(request: Request) -> StreamingResponse:
