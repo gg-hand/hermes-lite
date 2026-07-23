@@ -38,6 +38,10 @@
       <button class="nav-item" data-tab="files">
         <span class="nav-icon">▦</span><span class="nav-label">文件</span>
       </button>
+      <button class="nav-item nav-item--toggle" data-action="toggle-director" id="btnDirector" title="Director 协作">
+        <span class="nav-icon">◎</span><span class="nav-label">Director</span>
+        <span class="nav-status-dot" id="directorStatusDot"></span>
+      </button>
     </nav>
     <!-- 内容区：会话/记忆/文件面板 -->
     <div class="sidebar-content">
@@ -112,6 +116,7 @@
 
   <!-- 主对话区 -->
   <main class="main">
+    <div class="chat-pane">
     <div class="main-header">
       <button class="menu-toggle" id="menuToggle" title="切换侧边栏">&#9776;</button>
       <span class="session-title" id="sessionTitle">未选择会话</span>
@@ -170,6 +175,10 @@
       <input type="file" id="fileInput" multiple style="display:none"
              accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif">
     </div>
+    </div><!-- /.chat-pane -->
+    <section class="collab-pane" id="collabPane" hidden>
+      <!-- Director 工作台内容由 multiagent-render.js 动态填充 -->
+    </section>
   </main>
 </div>
 
