@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -266,6 +267,96 @@ def create_multiagent_router(container) -> APIRouter:
                 for m in task_msgs
             ],
         }
+
+    @router.post("/agents/register")
+    async def register_agent(payload: dict) -> dict:
+        """远程 agent 注册，写入 agent_card.md。"""
+        import uuid as _uuid
+
+        from teage_liu.multiagent.agent_registry import register_agent as _register
+
+        agent_id = (payload.get("agent_id") or "").strip()
+        if not agent_id:
+            raise HTTPException(status_code=400, detail="agent_id 不能为空")
+
+        # 检查是否已存在
+        agents_dir = os.path.join(bb_root, "agents")
+        agent_file = os.path.join(agents_dir, f"{agent_id}.md")
+        if os.path.exists(agent_file):
+            raise HTTPException(status_code=409, detail=f"agent {agent_id} 已存在")
+
+        agent_data = {
+            "agent_id": agent_id,
+            "role": payload.get("role", "worker"),
+            "status": "active",
+            "protocol_version": "1.0.0",
+            "agent_version": "1.0.0",
+            "capabilities": payload.get("capabilities", []),
+            "specialties": [],
+            "auth_method": payload.get("auth_method", "local"),
+            "endpoint": payload.get("endpoint", ""),
+            "owner": "",
+            "max_concurrent_tasks": 3,
+            "heartbeat_interval_seconds": 10,
+            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+            "trust_score": 100,
+            "trust_history": [],
+            "extensions": {},
+            "leave_reason": "",
+            "left_at": "",
+            "dangerous_tools": [],
+            "registered_at": datetime.now(timezone.utc).isoformat(),
+            "host": None,
+            "pid": None,
+        }
+
+        # 写入 agent_card.md
+        os.makedirs(agents_dir, exist_ok=True)
+        frontmatter = "---\n"
+        for k, v in agent_data.items():
+            if isinstance(v, (list, dict)):
+                frontmatter += f"{k}: {v}\n"
+            elif isinstance(v, str) and v:
+                frontmatter += f"{k}: '{v}'\n"
+            elif v is not None:
+                frontmatter += f"{k}: {v}\n"
+            else:
+                frontmatter += f"{k}: null\n"
+        frontmatter += "---\n\n# Agent Card\n"
+
+        with open(agent_file, "w", encoding="utf-8") as f:
+            f.write(frontmatter)
+
+        logger.info("Agent 注册: %s", agent_id)
+        return {"ok": True, "message": f"agent {agent_id} 已注册"}
+
+    @router.post("/agents/{agent_id}/heartbeat")
+    async def agent_heartbeat(agent_id: str, payload: dict) -> dict:
+        """更新 agent 心跳。"""
+        agent_file = os.path.join(bb_root, "agents", f"{agent_id}.md")
+        if not os.path.exists(agent_file):
+            raise HTTPException(status_code=404, detail=f"agent {agent_id} 不存在")
+
+        # 读取现有内容
+        with open(agent_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 更新 last_heartbeat
+        new_ts = datetime.now(timezone.utc).isoformat()
+        lines = content.split("\n")
+        updated = []
+        for line in lines:
+            if line.startswith("last_heartbeat:"):
+                updated.append(f"last_heartbeat: '{new_ts}'")
+            elif line.startswith("status:"):
+                updated.append(f"status: {payload.get('status', 'active')}")
+            else:
+                updated.append(line)
+
+        with open(agent_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(updated))
+
+        return {"ok": True, "next_heartbeat_due": 10}
 
     @router.get("/sse")
     async def sse_stream(request: Request) -> StreamingResponse:
