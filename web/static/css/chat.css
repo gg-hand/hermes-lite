@@ -29,10 +29,11 @@
   background: linear-gradient(90deg, transparent, var(--glass-border-strong), transparent);
   pointer-events: none;
 }
-/* PC 端：侧边栏始终展开，collapsed 类无效 */
+/* PC 端：collapsed 时收起侧栏（允许 menuToggle 生效） */
 @media (min-width: 769px) {
-  .sidebar,
-  .sidebar.collapsed { margin-left: 0; }
+  .sidebar.collapsed {
+    margin-left: calc(-1 * var(--sidebar-w));
+  }
 }
 
 .sidebar-header {
