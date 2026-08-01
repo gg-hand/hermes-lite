@@ -88,3 +88,17 @@ def test_startup_heals_unarchived_consensus(bb_root: Path):
     entries = asyncio.run(read_collab_index(bb_root))
     assert next(e for e in entries if e["collab_id"] == cid)["status"] == "archived"
     assert cid in w._archived_collabs
+
+
+def test_consensus_intent_pattern_configurable(bb_root: Path):
+    """H-2:consensus_intent_pattern 可配置,覆盖默认 6 字符窗口。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {
+        "persist_state": False,
+        "consensus_intent_pattern": r"(探讨|争取).{0,20}(达成共识|达成一致)",
+    }}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # 配置正则窗口 20,应排除更长距离的意向短语
+    assert w._detect_consensus("探讨很多步骤之后最终达成共识") is False
+    # 真实共识仍命中
+    assert w._detect_consensus("本轮协作达成共识,终止。") is True

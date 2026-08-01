@@ -712,8 +712,7 @@ class WorkerAdapter:
             return f"mid:{message_id}"
         return f"{collab_id or 'global'}:{seq}"
 
-    @staticmethod
-    def _detect_consensus(text: str) -> bool:
+    def _detect_consensus(self, text: str) -> bool:
         """检测 LLM 回复内容是否表达强共识信号。
 
         LLM 常在文本中说"共识达成"但不调用 send_remote_message(msg_type=consensus)，
@@ -744,18 +743,22 @@ class WorkerAdapter:
         # 结构常用于描述任务流程（要做的事），非已达成的事实。
         if re.search(r"(讨论|协商|沟通|交流)并(达成共识|达成一致)", snippet):
             return False
-        # 意向性短语排除：表达"探讨/争取/推动...达成共识"（尚未达成的意向），
-        # 不应误判为共识已达成。修复"探讨达成共识"等意向短语导致 fallback
-        # 误写 consensus、单轮即终止协作的问题。
-        # 仅排除意向动词与"达成共识/达成一致"直接相邻；"经过讨论，达成共识"
-        # 等真实共识因动词"讨论"不在意向列表、且有标点分隔，不受影响。
-        if re.search(
-            r"(探讨|争取|推动|促成|谋求|以求|以便|等待|方能|方可|才能"
-            r"|容易|可以|能够|可能|希望|想要|打算|力求|力促|以期|借以)"
-            r".{0,6}(达成共识|达成一致)",
-            snippet,
-        ):
-            return False
+        # Phase4 H-2:意向性短语排除改可配置正则(替代固定 6 字符窗口)。
+        # 配置项 consensus_intent_pattern 为空时用默认动词集 + 默认 6 字符窗口。
+        # 表达"探讨/争取/推动...达成共识"（尚未达成的意向）不应误判为共识已达成。
+        # "经过讨论，达成共识"等真实共识因动词"讨论"不在意向列表、且有标点分隔,不受影响。
+        intent_pattern = self._config.get("consensus_intent_pattern", "")
+        if intent_pattern:
+            if re.search(intent_pattern, snippet):
+                return False
+        else:
+            if re.search(
+                r"(探讨|争取|推动|促成|谋求|以求|以便|等待|方能|方可|才能"
+                r"|容易|可以|能够|可能|希望|想要|打算|力求|力促|以期|借以)"
+                r".{0,6}(达成共识|达成一致)",
+                snippet,
+            ):
+                return False
         # 强共识信号——同时检查开头和结尾，LLM 常在文本末尾表达共识
         # （如"[teagent-lu → consensus] 头案共识锁定...本轮协作达成共识，终止。"）
         # 扩展信号列表：覆盖"收敛共识""达成完全共识""共识清晰""协作终止"等

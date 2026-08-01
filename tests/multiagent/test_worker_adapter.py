@@ -1032,14 +1032,24 @@ class TestDetectConsensusIgnoresToolMeta:
     验收失败场景：LLM 输出工具元语言含"继续达成共识"字样，旧逻辑直接对原文
     跑 _detect_consensus 误判命中，把元语言原文写成 consensus 类型（seq3/seq4
     含元语言的直接原因）。修复：worker_adapter fallback 先 sanitize_collab_content
-    再 _detect_consensus。此处用 `WorkerAdapter._detect_consensus(sanitize(...))`
+    再 _detect_consensus。此处用 `self._w._detect_consensus(sanitize(...))`
     镜像生产调用路径。
     """
+
+    @pytest.fixture(autouse=True)
+    def _make_consensus_worker(self, tmp_path: Path):
+        """Phase4 H-2:_detect_consensus 改为实例方法(读 self._config),
+        此处构造默认配置 worker 供纯文本检测测试使用。"""
+        bb = tmp_path / "bb"
+        bb.mkdir()
+        (bb / "agents").mkdir()
+        cfg = {"multiagent": {"worker": {"persist_state": False}}}
+        self._w = WorkerAdapter(bb_root=bb, agent_id="w1", config=cfg, orchestrator=None)
 
     def test_detect_consensus_genuine_signal(self):
         """实质内容含真实"达成共识" → 净化保留 → 检测命中。"""
         text = "我们经过讨论，达成共识：今晚吃火锅。"
-        assert WorkerAdapter._detect_consensus(sanitize_collab_content(text)) is True
+        assert self._w._detect_consensus(sanitize_collab_content(text)) is True
 
     def test_detect_consensus_ignores_tool_meta(self):
         """工具元语言句含"继续达成共识" → 净化剥离该句 → 不误判 consensus。"""
@@ -1050,46 +1060,46 @@ class TestDetectConsensusIgnoresToolMeta:
         # 净化后"继续达成共识"随工具元语言句被剥离
         cleaned = sanitize_collab_content(text)
         assert "继续达成共识" not in cleaned
-        assert WorkerAdapter._detect_consensus(cleaned) is False
+        assert self._w._detect_consensus(cleaned) is False
 
     def test_detect_consensus_all_meta_no_false_positive(self):
         """100% 工具元语言（含"达成共识"）→ 净化返回占位符 → 不误判 consensus。"""
         text = "我来调用工具继续达成共识。工具调用被拦截。"
         cleaned = sanitize_collab_content(text)
         assert cleaned == SANITIZED_PLACEHOLDER
-        assert WorkerAdapter._detect_consensus(cleaned) is False
+        assert self._w._detect_consensus(cleaned) is False
 
     def test_detect_consensus_negation_excluded(self):
         """含否定词"未达成共识" → 不命中（既有否定排除逻辑不回归）。"""
         text = "我们尚未达成共识，需要继续讨论。"
-        assert WorkerAdapter._detect_consensus(sanitize_collab_content(text)) is False
+        assert self._w._detect_consensus(sanitize_collab_content(text)) is False
 
     def test_detect_consensus_intent_phrase_excluded(self):
         """意向短语"探讨达成共识/争取达成共识" → 不命中（尚未达成的意向，
         非事实）。修复 teagent-liu-2 round1 输出"探讨达成共识"被误判为
         consensus、单轮即终止协作的问题。"""
         # 直接调 _detect_consensus（已 sanitize 的干净文本）
-        assert WorkerAdapter._detect_consensus("现在等 teagent-lu 回应，探讨达成共识。") is False
-        assert WorkerAdapter._detect_consensus("我们争取在2轮内达成共识。") is False
-        assert WorkerAdapter._detect_consensus("以便达成共识，我先提出方案。") is False
-        assert WorkerAdapter._detect_consensus("推动达成共识需要双方努力。") is False
+        assert self._w._detect_consensus("现在等 teagent-lu 回应，探讨达成共识。") is False
+        assert self._w._detect_consensus("我们争取在2轮内达成共识。") is False
+        assert self._w._detect_consensus("以便达成共识，我先提出方案。") is False
+        assert self._w._detect_consensus("推动达成共识需要双方努力。") is False
         # 评估性短语（非事实）：容易/可以/能够 + 达成共识
-        assert WorkerAdapter._detect_consensus("火锅适合讨论氛围，容易达成共识。你觉得如何？") is False
-        assert WorkerAdapter._detect_consensus("我们可以达成共识，你意下如何？") is False
+        assert self._w._detect_consensus("火锅适合讨论氛围，容易达成共识。你觉得如何？") is False
+        assert self._w._detect_consensus("我们可以达成共识，你意下如何？") is False
 
     def test_detect_consensus_goal_description_excluded(self):
         """目标描述"目标是...进行...讨论并达成共识" → 不命中（描述任务目标，
         非已达成的事实）。修复协作2第1轮 teagent-lu 输出被误判为 consensus、
         创建幽灵终止信号导致后续真正共识被熔断、协作停滞的问题。"""
         # 完整复现协作2 seq3 的关键句
-        assert WorkerAdapter._detect_consensus(
+        assert self._w._detect_consensus(
             "目标是和 teagent-liu-2 进行 7 轮以上的实质讨论并达成共识。"
         ) is False
         # 目标描述变体
-        assert WorkerAdapter._detect_consensus("目标是达成共识，请开始讨论。") is False
+        assert self._w._detect_consensus("目标是达成共识，请开始讨论。") is False
         # 并列结构："讨论并达成共识"是任务流程描述
-        assert WorkerAdapter._detect_consensus("我们需要进行讨论并达成共识。") is False
-        assert WorkerAdapter._detect_consensus("双方协商并达成一致后结束。") is False
+        assert self._w._detect_consensus("我们需要进行讨论并达成共识。") is False
+        assert self._w._detect_consensus("双方协商并达成一致后结束。") is False
 
     def test_detect_consensus_tail_signal_detected(self):
         """LLM 在文本末尾表达共识（超出前300字符）→ 末尾200字符检测命中。
@@ -1099,42 +1109,42 @@ class TestDetectConsensusIgnoresToolMeta:
         long_prefix = "这是一段很长的讨论内容。" * 20  # > 300 字符
         tail = "无补充点，确认为头案共识。以 consensus 终止本轮协作。本轮协作达成共识，终止。"
         text = long_prefix + tail
-        assert WorkerAdapter._detect_consensus(text) is True
+        assert self._w._detect_consensus(text) is True
 
     def test_detect_consensus_genuine_after_discussion(self):
         """真实共识"经过讨论，达成共识" → 命中（"讨论"非意向动词，
         且有标点分隔，不受意向排除影响）。"""
         text = "我们经过讨论，达成共识：今晚吃火锅。"
-        assert WorkerAdapter._detect_consensus(text) is True
+        assert self._w._detect_consensus(text) is True
 
     def test_detect_consensus_expanded_signals(self):
         """扩展共识信号检测：覆盖"收敛共识""达成完全共识""协作终止"等
         LLM 常用变体（协作 0b11ed517e1f 中 LLM 反复说这些短语但原信号列表不匹配）。"""
-        assert WorkerAdapter._detect_consensus("三点全部对齐，就此收敛共识。") is True
-        assert WorkerAdapter._detect_consensus("双方达成完全共识，无分歧。") is True
-        assert WorkerAdapter._detect_consensus("共识清晰明确，无遗留分歧。") is True
-        assert WorkerAdapter._detect_consensus("协作到此终止。") is True
-        assert WorkerAdapter._detect_consensus("终止本次协作。") is True
+        assert self._w._detect_consensus("三点全部对齐，就此收敛共识。") is True
+        assert self._w._detect_consensus("双方达成完全共识，无分歧。") is True
+        assert self._w._detect_consensus("共识清晰明确，无遗留分歧。") is True
+        assert self._w._detect_consensus("协作到此终止。") is True
+        assert self._w._detect_consensus("终止本次协作。") is True
 
     def test_detect_consensus_terminate_intent(self):
         """终止意向检测：LLM 说"发送 consensus 终止""以 consensus 收尾"等
         明确终止意向时，即使没有"达成共识"字样，也应识别为 consensus。
         这些短语表明 LLM 想发 consensus 但没调工具，fallback 应代写 consensus。"""
-        assert WorkerAdapter._detect_consensus("发送 consensus 终止本次协作。") is True
-        assert WorkerAdapter._detect_consensus("以 consensus 收尾。") is True
-        assert WorkerAdapter._detect_consensus("请发 consensus 终止本次协作。") is True
+        assert self._w._detect_consensus("发送 consensus 终止本次协作。") is True
+        assert self._w._detect_consensus("以 consensus 收尾。") is True
+        assert self._w._detect_consensus("请发 consensus 终止本次协作。") is True
 
     def test_genuine_consensus_after_meta_sentence(self):
         """元语言句 + 真实共识句 → 净化保留共识句 → 检测命中。"""
         text = "我来调用工具查询菜单。我们达成共识：吃红烧肉。"
         cleaned = sanitize_collab_content(text)
         assert "达成共识：吃红烧肉" in cleaned
-        assert WorkerAdapter._detect_consensus(cleaned) is True
+        assert self._w._detect_consensus(cleaned) is True
 
     def test_detect_consensus_empty_and_placeholder(self):
         """空串与占位符均不命中共识检测。"""
-        assert WorkerAdapter._detect_consensus("") is False
-        assert WorkerAdapter._detect_consensus(SANITIZED_PLACEHOLDER) is False
+        assert self._w._detect_consensus("") is False
+        assert self._w._detect_consensus(SANITIZED_PLACEHOLDER) is False
 
 
 # ========== P1-4: collab_round 计数修正（换 agent 才 +1，体现一来一回） ==========
