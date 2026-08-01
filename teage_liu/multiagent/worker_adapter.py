@@ -575,6 +575,31 @@ class WorkerAdapter:
                     self._dk(cid, msg["seq"], msg.get("message_id"))
                 )
 
+        # Phase4 A-2:按 cid 独立重建 round 状态(绝不跨 cid 串扰)。
+        # collab_last_sent_round[cid] = 本 worker 在该 cid 发过的 response/request/consensus
+        #   消息的 max(collab_round)；collab_max_rounds[cid] = 基础 config 值 + 该 cid 收到的
+        #   extend 消息数 × extend 增量。每个 cid 只扫自己的消息，绝不跨 cid 串扰。
+        base_max = self._config.get("worker_collab_decentralized_max_rounds", 8)
+        cid_last_sent: dict[str, int] = {}
+        cid_extend_count: dict[str, int] = {}
+        for msg in collab_msgs:
+            cid = msg.get("collab_id")
+            if not cid:
+                continue
+            r = msg.get("collab_round")
+            # 本 worker 发过的 response/request/consensus 的 max collab_round → last_sent
+            if (msg.get("from") == self._agent_id
+                    and msg.get("type") in ("response", "request", "consensus")
+                    and isinstance(r, int)):
+                cid_last_sent[cid] = max(cid_last_sent.get(cid, 0), r)
+            # 收到的 extend 数 → max_rounds = base + count × base
+            if (msg.get("from") != self._agent_id
+                    and msg.get("type") == "extend"):
+                cid_extend_count[cid] = cid_extend_count.get(cid, 0) + 1
+        for cid in set(list(cid_last_sent.keys()) + list(cid_extend_count.keys())):
+            state.collab_last_sent_round[cid] = cid_last_sent.get(cid, 0)
+            state.collab_max_rounds[cid] = base_max + cid_extend_count.get(cid, 0) * base_max
+
         # 2. 扫描 messages.md（A2A 任务结果）
         try:
             task_msgs = await read_messages(self._bb_root)
@@ -608,6 +633,10 @@ class WorkerAdapter:
                     "Worker %s 历史扫描后持久化失败（不阻塞启动）: %s",
                     self._agent_id, e,
                 )
+
+        # Phase4 A-2:把重建的 round 状态同步到内存(rebuild 可能被直接调用,如 fallback)
+        self._collab_max_rounds = dict(state.collab_max_rounds)
+        self._collab_last_sent_round = dict(state.collab_last_sent_round)
 
         return state
 
