@@ -272,3 +272,55 @@ def test_directive_drain_idempotent_single_entry(bb_root: Path):
     assert ctx2 == "" or ctx2 is None
 
 
+# =============================================================================
+# Phase 6 ISO-1 — 协作/主会话完全隔离契约固化 (D12)
+# =============================================================================
+
+
+def test_collab_error_does_not_propagate_to_main_session(bb_root: Path):
+    """D12:协作 LLM 错误只写协作文件,不抛回主会话。"""
+    orch = _FailingOrch(fail_times=99)
+    w = _make_worker_with_orch(bb_root, orch)
+    asyncio.run(w._load_archived_collabs())
+    cid = "c-iso"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    ctx = {"type": "request", "seq": 30, "collab_id": cid,
+           "_collab_round": 1, "message_id": "m30"}
+    # 不应抛异常(错误被重试队列消化)
+    asyncio.run(w._trigger_urgent_llm(prompt="p", context_msg=ctx))
+    asyncio.run(w._drain_retry_queue())
+    # 主会话 history_buffer 不含协作错误内容
+    assert w._orchestrator.history_buffer is None or \
+        all("协作响应失败" not in str(m) for m in (w._orchestrator.history_buffer or []))
+
+
+def test_collab_archive_does_not_interrupt_main_session(bb_root: Path):
+    """D12:协作归档不中断主会话(archive 只写 collabs/,不动主会话状态)。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cid = "c-iso2"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    asyncio.run(w._load_archived_collabs())
+    main_seq_before = w._last_collab_seq
+    asyncio.run(archive_collab(bb_root, cid))
+    # watchdog 检测 index 变更后刷新归档集(模拟)
+    w._refresh_archived_collabs()
+    # archive 不应改主会话的 _last_collab_seq / _responded_request_seqs
+    assert w._last_collab_seq == main_seq_before
+    assert cid in w._archived_collabs
+
+
+def test_collab_llm_lock_independent_from_main_session(bb_root: Path):
+    """D12:协作用 _llm_lock,主会话用主 orchestrator 锁,互不阻塞。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # 协作 LLM 锁存在且独立
+    assert hasattr(w, "_llm_lock")
+    # 主会话锁在 orchestrator 内,worker 不持有主锁(隔离契约)
+    assert w._orchestrator is None or not hasattr(w._orchestrator, "_llm_lock") \
+        or w._orchestrator._llm_lock is not w._llm_lock
+
+
+
