@@ -109,3 +109,63 @@ def test_archive_collab_idempotent(bb_root: Path):
     assert asyncio.run(archive_collab(bb_root, "not-exist")) is False
 
 
+class _FailingOrch:
+    """模拟 LLM 前 N 次失败,之后成功。"""
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.calls = 0
+        self.history_buffer = None
+    async def chat(self, session_id, prompt, **kw):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise RuntimeError("llm boom")
+        return "ok-response"
+
+
+def _make_worker_with_orch(bb_root: Path, orch, agent_id="w1"):
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {
+        "persist_state": False, "worker_collab_decentralized": True,
+        "collab_retry": {"enabled": True, "max_retries": 3, "interval_seconds": 0},
+        "director_v2_enabled": False,
+    }}}
+    return WorkerAdapter(bb_root=bb_root, agent_id=agent_id, config=cfg, orchestrator=orch)
+
+
+def test_llm_failure_retries_then_succeeds(bb_root: Path):
+    """L-1:LLM 失败 2 次后第 3 次成功 → 正常写 response,协作不卡死。"""
+    cid = "c-retry"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    orch = _FailingOrch(fail_times=2)
+    w = _make_worker_with_orch(bb_root, orch)
+    asyncio.run(w._load_archived_collabs())
+    ctx = {"type": "request", "seq": 10, "collab_id": cid,
+           "_collab_round": 1, "message_id": "m10"}
+    asyncio.run(w._trigger_urgent_llm(prompt="p", context_msg=ctx))
+    # 触发重试 consumer(同步驱动)
+    asyncio.run(w._drain_retry_queue())
+    from teage_liu.multiagent.blackboard import read_collab_messages
+    msgs = asyncio.run(read_collab_messages(bb_root, collab_id=cid))
+    assert any(m.get("type") == "response" and m.get("accept") is True for m in msgs)
+    assert orch.calls == 3
+
+
+def test_llm_failure_exhausts_skips_and_notifies(bb_root: Path):
+    """L-1:重试 3 次仍失败 → 写一条精炼 error(带 collab_round)+ 跳过 request。"""
+    cid = "c-exhaust"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    orch = _FailingOrch(fail_times=99)  # 永远失败
+    w = _make_worker_with_orch(bb_root, orch)
+    asyncio.run(w._load_archived_collabs())
+    ctx = {"type": "request", "seq": 11, "collab_id": cid,
+           "_collab_round": 2, "message_id": "m11"}
+    asyncio.run(w._trigger_urgent_llm(prompt="p", context_msg=ctx))
+    asyncio.run(w._drain_retry_queue())
+    from teage_liu.multiagent.blackboard import read_collab_messages
+    msgs = asyncio.run(read_collab_messages(bb_root, collab_id=cid))
+    errs = [m for m in msgs if m.get("error") is True]
+    assert errs and errs[-1].get("collab_round") == 2
+    # 该 request 未被标记为已响应(失败跳过,非成功响应)
+    assert "mid:m11" not in w._responded_request_seqs
+
+

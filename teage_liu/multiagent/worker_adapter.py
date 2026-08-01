@@ -350,6 +350,10 @@ class WorkerAdapter:
         from teage_liu.multiagent.collab_health import CollabHealthMonitor
         self._collab_health_monitor = CollabHealthMonitor(self)
 
+        # Phase2 L-1：LLM 重试队列（失败入队,不立即写 error）
+        self._llm_retry_queue: asyncio.Queue = asyncio.Queue()
+        self._llm_retry_task: asyncio.Task | None = None
+
     async def _load_archived_collabs(self) -> None:
         """从 collabs/index.md 加载已归档协作到内存集合（Phase1 I-1）。
 
@@ -449,13 +453,17 @@ class WorkerAdapter:
         self._sleep_state = state.sleep_state if state.sleep_state in ("active", "sleeping") else "active"
         self._empty_poll_count = max(0, state.empty_poll_count)
         self._sleep_entered_at = state.sleep_entered_at or ""
+        # Phase2 L-1：重载 LLM 重试队列(重启后继续重试未完成的 request)
+        for item in getattr(state, "llm_retry_queue", []) or []:
+            if isinstance(item, dict):
+                self._llm_retry_queue.put_nowait(item)
 
         logger.info(
-            "Worker %s 状态加载完成：last_collab_seq=%d, responded=%d, processed=%d, urgent=%d, executed=%d, sleep=%s",
+            "Worker %s 状态加载完成：last_collab_seq=%d, responded=%d, processed=%d, urgent=%d, executed=%d, sleep=%s, retry_queue=%d",
             self._agent_id, self._last_collab_seq,
             len(self._responded_request_seqs), len(self._processed_msg_seqs),
             len(self._processed_urgent_seqs), len(self._executed_op_ids),
-            self._sleep_state,
+            self._sleep_state, self._llm_retry_queue.qsize(),
         )
 
     async def _rebuild_state_from_history(self, preserve_sleep_from: "WorkerState | None" = None):
@@ -798,6 +806,8 @@ class WorkerAdapter:
             )
             # Phase2 A-1：启动健康监控
             self._collab_health_monitor.start()
+            # Phase2 L-1：启动 LLM 重试 consumer
+            self._llm_retry_task = asyncio.create_task(self._llm_retry_consumer())
 
     async def stop(self) -> None:
         """优雅退出。"""
@@ -826,6 +836,15 @@ class WorkerAdapter:
 
         # Phase2 A-1：停止健康监控
         await self._collab_health_monitor.stop()
+
+        # Phase2 L-1：停止重试 consumer
+        if self._llm_retry_task and not self._llm_retry_task.done():
+            self._llm_retry_task.cancel()
+            try:
+                await self._llm_retry_task
+            except asyncio.CancelledError:
+                pass
+        self._llm_retry_task = None
 
         # 释放所有持有的锁
         await self._release_my_locks()
@@ -867,12 +886,17 @@ class WorkerAdapter:
         if self._persist_state:
             try:
                 from teage_liu.multiagent.worker_state import WorkerState
+                # Phase2 L-1：持久化重试队列(剩余项)
+                retry_items = []
+                while not self._llm_retry_queue.empty():
+                    retry_items.append(self._llm_retry_queue.get_nowait())
                 self._state_store.save(WorkerState(
                     last_collab_seq=self._last_collab_seq,
                     responded_request_seqs=self._responded_request_seqs,
                     processed_msg_seqs=self._processed_msg_seqs,
                     processed_urgent_seqs=self._processed_urgent_seqs,
                     executed_op_ids=self._executed_op_ids,
+                    llm_retry_queue=retry_items,
                 ))
             except Exception as e:
                 logger.warning("Worker %s 状态持久化失败: %s", self._agent_id, e)
@@ -1858,28 +1882,34 @@ class WorkerAdapter:
                         system_prompt_override=collab_system_prompt,
                     )
             except Exception as e:
-                logger.exception("Worker %s 紧急 LLM 调用失败: %s", self._agent_id, e)
-                # 异常时写 error 消息告知用户，不静默丢弃
-                from teage_liu.multiagent.blackboard import append_collab_message
-                err_msg = {
-                    "from": self._agent_id,
-                    "type": "response",
-                    "reply_to": msg_seq,
-                    "content": f"[协作响应失败] {type(e).__name__}: {e}",
-                    "accept": False,
-                    "error": True,
-                    # Phase2 E-1：error 消息带 collab_round，使 round 推进、
-                    # 健康监控的 consecutive_error_rounds 可统计
-                    "collab_round": context_msg.get("_collab_round") or 0,
-                }
-                if ctx_collab_id is not None:
-                    err_msg["collab_id"] = ctx_collab_id
-                await append_collab_message(
-                    self._bb_root, err_msg, collab_id=ctx_collab_id
+                logger.warning(
+                    "Worker %s 紧急 LLM 调用失败 seq=%s,入重试队列: %s",
+                    self._agent_id, msg_seq, e,
                 )
-                # 【深度 Review 修正】异常路径不更新任何幂等集（避免永久跳过）
-                # 【第三轮 Review 修正】注：_last_collab_seq 已推进并持久化，重启后不会重新读取该消息
-                # 当前行为：用户需重新发送广播触发新的 request（详见方法 docstring）
+                # Phase2 L-1：不立即写 error,入重试队列;该 seq 标记已处理,
+                # 推进 _last_collab_seq,不阻塞后续消息轮询。
+                await self._mark_msg_processed(
+                    msg_seq, context_msg.get("collab_id"), context_msg.get("message_id"))
+                if self._config.get("collab_retry", {}).get("enabled", True):
+                    self._llm_retry_queue.put_nowait({
+                        "cid": ctx_collab_id, "seq": msg_seq,
+                        "prompt": prompt, "context_msg": dict(context_msg),
+                        "retry_count": 0,
+                    })
+                else:
+                    # 回滚:重试关闭时写 error(原行为)
+                    from teage_liu.multiagent.blackboard import append_collab_message
+                    err_msg = {
+                        "from": self._agent_id, "type": "response",
+                        "reply_to": msg_seq,
+                        "content": f"[协作响应失败] {type(e).__name__}: {e}",
+                        "accept": False, "error": True,
+                        "collab_round": context_msg.get("_collab_round") or 0,
+                    }
+                    if ctx_collab_id is not None:
+                        err_msg["collab_id"] = ctx_collab_id
+                    await append_collab_message(
+                        self._bb_root, err_msg, collab_id=ctx_collab_id)
                 return
             self._last_a2a_time = time.time()
 
@@ -1964,6 +1994,102 @@ class WorkerAdapter:
             _current_collab_round.reset(token_round)
             _collab_extended.reset(token_extended)
             _collab_round_sent.reset(token_round_sent)
+
+    async def _llm_retry_consumer(self) -> None:
+        """Phase2 L-1:重试队列 consumer。独立协程,串行重试(持 _llm_lock)。"""
+        cfg = self._config.get("collab_retry", {})
+        if not cfg.get("enabled", True):
+            return
+        interval = cfg.get("interval_seconds", 5)
+        max_retries = cfg.get("max_retries", 3)
+        try:
+            while self._running:
+                try:
+                    item = await asyncio.wait_for(
+                        self._llm_retry_queue.get(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                await self._retry_one(item, max_retries, interval)
+        except asyncio.CancelledError:
+            logger.info("Worker %s LLM 重试 consumer 已取消", self._agent_id)
+            raise
+
+    async def _drain_retry_queue(self) -> None:
+        """测试用:同步驱动重试队列直到清空(不走 sleep 间隔)。"""
+        cfg = self._config.get("collab_retry", {})
+        max_retries = cfg.get("max_retries", 3)
+        while not self._llm_retry_queue.empty():
+            item = self._llm_retry_queue.get_nowait()
+            await self._retry_one(item, max_retries, 0)
+
+    async def _retry_one(self, item: dict, max_retries: int, interval: float) -> None:
+        """执行单次重试。成功写 response;超限写精炼 error + 广播 + 跳过。"""
+        from teage_liu.multiagent.blackboard import append_collab_message
+        from teage_liu.multiagent.collab_sanitize import sanitize_collab_content
+        cid = item.get("cid")
+        seq = item.get("seq")
+        prompt = item.get("prompt", "")
+        context_msg = item.get("context_msg", {})
+        retry_count = item.get("retry_count", 0)
+        ctx_round = context_msg.get("_collab_round") or 0
+
+        if self._orchestrator is None:
+            return
+        collab_session_id = f"multiagent_{self._agent_id}"
+        system_prompt = self._build_urgent_system_prompt(context_msg)
+        system_prompt = self._inject_normal_queue_to_context(system_prompt)
+        collab_system_prompt = build_collab_system_prompt(self._agent_id)
+        try:
+            async with self._llm_lock:
+                response = await self._orchestrator.chat(
+                    collab_session_id, prompt,
+                    extra_system_prompt=system_prompt,
+                    system_prompt_override=collab_system_prompt,
+                )
+        except Exception as e:
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.warning(
+                    "Worker %s LLM 重试 %d/%d 失败 seq=%s: %s",
+                    self._agent_id, retry_count, max_retries, seq, e)
+                item["retry_count"] = retry_count
+                if interval:
+                    await asyncio.sleep(interval)
+                await self._llm_retry_queue.put(item)
+                return
+            # 超限:写精炼 error + 广播发起方 + 跳过(不入 responded)
+            logger.error(
+                "Worker %s LLM 重试 %d 次仍失败 seq=%s,跳过该 request",
+                self._agent_id, max_retries, seq)
+            err_msg = {
+                "from": self._agent_id, "type": "response",
+                "reply_to": seq, "content": f"[协作响应失败] LLM 调用重试 {max_retries} 次仍失败",
+                "accept": False, "error": True, "collab_round": ctx_round,
+            }
+            if cid is not None:
+                err_msg["collab_id"] = cid
+            await append_collab_message(self._bb_root, err_msg, collab_id=cid)
+            return
+        # 成功:走 fallback 代写(与 _trigger_urgent_llm 成功路径一致)
+        self._last_a2a_time = time.time()
+        msg_type = context_msg.get("type")
+        if msg_type == "request":
+            resp_text = str(response)
+            fallback_type = ("consensus"
+                             if self._detect_consensus(sanitize_collab_content(resp_text))
+                             else "response")
+            response_msg = {
+                "from": self._agent_id, "type": fallback_type,
+                "content": resp_text, "accept": True,
+                "collab_round": ctx_round,
+            }
+            if cid is not None:
+                response_msg["collab_id"] = cid
+            if not context_msg.get("_collab_context_only"):
+                response_msg["reply_to"] = seq
+            await append_collab_message(self._bb_root, response_msg, collab_id=cid)
+            await self._mark_request_responded(
+                seq, context_msg.get("collab_id"), context_msg.get("message_id"))
 
     async def execute_a2a_task(
         self, task_op_id: str, task_content: str,
