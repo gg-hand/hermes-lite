@@ -56,6 +56,9 @@ class WorkerState:
     # Phase2 L-1：LLM 重试队列持久化（避免重启丢失正在重试的 request）。
     # 每项: {"cid": str, "seq": int, "prompt": str, "context_msg": dict, "retry_count": int}
     llm_retry_queue: list = field(default_factory=list)
+    # Phase4 H-1:round 状态持久化(per cid)，随 state.json 落盘，重启后恢复。
+    collab_max_rounds: dict = field(default_factory=dict)
+    collab_last_sent_round: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """转可 JSON 序列化的 dict（set → list）。"""
@@ -64,6 +67,8 @@ class WorkerState:
         d["processed_msg_seqs"] = sorted(self.processed_msg_seqs)
         d["processed_urgent_seqs"] = sorted(self.processed_urgent_seqs)
         d["executed_op_ids"] = sorted(self.executed_op_ids)
+        d["collab_max_rounds"] = self.collab_max_rounds
+        d["collab_last_sent_round"] = self.collab_last_sent_round
         return d
 
     @classmethod
@@ -80,6 +85,8 @@ class WorkerState:
             empty_poll_count=int(data.get("empty_poll_count", 0)),
             sleep_entered_at=str(data.get("sleep_entered_at", "")),
             llm_retry_queue=list(data.get("llm_retry_queue", [])),
+            collab_max_rounds=dict(data.get("collab_max_rounds", {})),
+            collab_last_sent_round=dict(data.get("collab_last_sent_round", {})),
         )
 
 

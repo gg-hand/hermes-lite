@@ -451,6 +451,8 @@ class WorkerAdapter:
             and not state.processed_msg_seqs
             and not state.processed_urgent_seqs
             and not state.executed_op_ids
+            and not state.collab_max_rounds
+            and not state.collab_last_sent_round
         )
         if is_state_empty:
             logger.info(
@@ -488,6 +490,9 @@ class WorkerAdapter:
         for item in getattr(state, "llm_retry_queue", []) or []:
             if isinstance(item, dict):
                 self._llm_retry_queue.put_nowait(item)
+        # Phase4 H-1:恢复 round 状态
+        self._collab_max_rounds = dict(state.collab_max_rounds)
+        self._collab_last_sent_round = dict(state.collab_last_sent_round)
 
         logger.info(
             "Worker %s 状态加载完成：last_collab_seq=%d, responded=%d, processed=%d, urgent=%d, executed=%d, sleep=%s, retry_queue=%d",
@@ -619,6 +624,20 @@ class WorkerAdapter:
             logger.warning(
                 "Worker %s 持久化 last_collab_seq=%d 失败: %s",
                 self._agent_id, self._last_collab_seq, e,
+            )
+
+    async def _persist_round_state(self, cid: str | None = None) -> None:
+        """Phase4 H-1:持久化 round 状态(全量或单 cid)到 state.json。"""
+        if not self._persist_state:
+            return
+        try:
+            self._state_store.update({
+                "collab_max_rounds": self._collab_max_rounds,
+                "collab_last_sent_round": self._collab_last_sent_round,
+            })
+        except Exception as e:
+            logger.warning(
+                "Worker %s 持久化 round 状态失败: %s", self._agent_id, e,
             )
 
     @staticmethod
@@ -914,6 +933,8 @@ class WorkerAdapter:
                     processed_urgent_seqs=self._processed_urgent_seqs,
                     executed_op_ids=self._executed_op_ids,
                     llm_retry_queue=retry_items,
+                    collab_max_rounds=self._collab_max_rounds,
+                    collab_last_sent_round=self._collab_last_sent_round,
                 ))
             except Exception as e:
                 logger.warning("Worker %s 状态持久化失败: %s", self._agent_id, e)
@@ -1410,6 +1431,8 @@ class WorkerAdapter:
             context_msg["_collab_context_only"] = True
             # P1-4：一来一回计数（同回合共享 round，仅本 worker 已发过才 +1）
             context_msg["_collab_round"] = self._compute_outgoing_collab_round(cid, current_round)
+            # Phase4 H-1:extend bump + round 推进后持久化
+            await self._persist_round_state(cid)
             context_msg["type"] = "request"
             partner_context = await self._build_collab_partner_context(collab_id=cid)
             prompt = (
@@ -1504,6 +1527,8 @@ class WorkerAdapter:
                 # P1-4：一来一回计数（同回合共享 round，仅本 worker 已发过才 +1）。
                 # current_round 仍为对端 round，用于上面 effective_max 阈值判断不变。
                 context_msg["_collab_round"] = self._compute_outgoing_collab_round(cid, current_round)
+                # Phase4 H-1:round 推进后持久化
+                await self._persist_round_state(cid)
                 # 保留原 type 用于 _trigger_urgent_llm 走 request 分支
                 context_msg["type"] = "request"
                 # 阶段 0.4：补齐 partner_context（与 Director 广播分支对齐），
@@ -1655,6 +1680,8 @@ class WorkerAdapter:
                 # last_sent 仍为 0，误返回 round=1（共享对端 round），导致 round 2 消息
                 # 带 collab_round=1 被写侧闸门拒绝，协作死锁在 round 1。
                 context_msg["_collab_round"] = self._compute_outgoing_collab_round(director_collab_id, 0)
+                # Phase4 H-1:round 推进后持久化
+                await self._persist_round_state(director_collab_id)
                 await self._trigger_urgent_llm(prompt=prompt, context_msg=context_msg)
             else:
                 # 旧逻辑：保留以支持回滚（worker_collab_decentralized=False）
@@ -1954,6 +1981,8 @@ class WorkerAdapter:
                     "Worker %s 发送 extend，collab %s 上限升至 %d",
                     self._agent_id, ctx_collab_id, cur_max + max_rounds,
                 )
+                # Phase4 H-1:extend bump 后持久化
+                await self._persist_round_state(ctx_collab_id)
 
             # 阶段 0.3：fallback 检测——若 LLM 已通过 send_remote_message 工具发消息，
             # _collab_tool_called=True，跳过系统代写 response（避免重复写入 + seq 跳跃）。
