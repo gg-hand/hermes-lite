@@ -211,9 +211,10 @@ def test_workbench_observe_via_api(client):
         "action": "online",
         "capabilities": ["sentiment_analysis"],
     })
-    # 写入用户广播（request）
+    # 写入用户广播（request）——发起新协作(start_collab=True,协议要求广播归属协作)
     client.post("/api/multiagent/collab/broadcast", json={
         "content": "需要协作",
+        "start_collab": True,
     })
     # 写入 A2A 转发（relay）——通过 /append 管理接口写入测试归档数据
     client.post("/api/multiagent/collab/append", json={
