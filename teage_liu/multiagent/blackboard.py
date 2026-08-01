@@ -1003,6 +1003,47 @@ async def list_all_collab_ids(bb_root: Path) -> list[str]:
     return [e["collab_id"] for e in entries if e.get("collab_id")]
 
 
+async def cleanup_archived_collabs(bb_root: Path, ttl_days: int = 30) -> list[str]:
+    """Phase5 L-4:清理超 TTL 的归档协作文件（保留 index 快照便于审计）。
+
+    扫描 collabs/index.md 中 status=archived 的条目，若 ``updated_at`` 距今
+    超过 ``ttl_days`` 天，删除对应的 ``collabs/{cid}.md`` 消息文件。
+    index.md 中的元数据条目保留（作为归档快照供审计查询）。
+
+    Args:
+        bb_root: 黑板根目录。
+        ttl_days: 归档后保留消息文件的天数（默认 30）。
+
+    Returns:
+        被清理的 collab_id 列表。
+    """
+    from datetime import timedelta
+
+    removed: list[str] = []
+    entries = await read_collab_index(bb_root)
+    now = datetime.now(timezone.utc)
+    for e in entries:
+        if e.get("status") != "archived":
+            continue
+        updated = e.get("updated_at", "")
+        try:
+            t = datetime.fromisoformat(updated.replace("Z", "+00:00")) if updated else now
+        except Exception:
+            continue
+        if (now - t).days >= ttl_days:
+            cid = e.get("collab_id")
+            if not cid:
+                continue
+            f = bb_root / "collabs" / f"{cid}.md"
+            if f.exists():
+                try:
+                    f.unlink()
+                    removed.append(cid)
+                except Exception as e_err:
+                    logger.warning("清理归档协作 %s 文件失败: %s", cid, e_err)
+    return removed
+
+
 async def read_all_active_collab_messages(
     bb_root: Path, include_archived: bool = False,
 ) -> list[dict]:

@@ -102,3 +102,55 @@ def test_consensus_intent_pattern_configurable(bb_root: Path):
     assert w._detect_consensus("探讨很多步骤之后最终达成共识") is False
     # 真实共识仍命中
     assert w._detect_consensus("本轮协作达成共识,终止。") is True
+
+
+def test_cleanup_archived_collabs_by_ttl(bb_root: Path):
+    """L-4:超 TTL 的归档协作文件被清理,index 记录保留。"""
+    from teage_liu.multiagent.blackboard import (
+        append_collab_message, archive_collab, cleanup_archived_collabs,
+        read_collab_index, update_collab_index,
+    )
+    cid = "c-ttl"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=[]))
+    asyncio.run(append_collab_message(bb_root, {"from": "w", "type": "response",
+        "content": "x", "collab_id": cid}, collab_id=cid))
+    asyncio.run(archive_collab(bb_root, cid))
+    # 把 index 中该条目 updated_at 改成 40 天前(模拟归档超 TTL)
+    from datetime import datetime, timedelta, timezone
+    import yaml as _y
+    entries = asyncio.run(read_collab_index(bb_root))
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    for e in entries:
+        if e.get("collab_id") == cid:
+            e["updated_at"] = old
+    index_path = bb_root / "collabs" / "index.md"
+    content = ""
+    for e in entries:
+        content += f"---\n{_y.safe_dump(e, allow_unicode=True, default_flow_style=False, sort_keys=False)}---\n\n"
+    index_path.write_text(content, encoding="utf-8")
+    # 清理
+    removed = asyncio.run(cleanup_archived_collabs(bb_root, ttl_days=30))
+    assert cid in removed
+    # 文件已删
+    assert not (bb_root / "collabs" / f"{cid}.md").exists()
+    # index 记录仍保留(便于审计)
+    entries2 = asyncio.run(read_collab_index(bb_root))
+    assert any(e.get("collab_id") == cid for e in entries2)
+
+
+def test_cleanup_archived_collabs_skips_recent(bb_root: Path):
+    """L-4:未超 TTL 的归档协作文件不被清理。"""
+    from teage_liu.multiagent.blackboard import (
+        append_collab_message, archive_collab, cleanup_archived_collabs,
+        update_collab_index,
+    )
+    cid = "c-recent"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=[]))
+    asyncio.run(append_collab_message(bb_root, {"from": "w", "type": "response",
+        "content": "x", "collab_id": cid}, collab_id=cid))
+    asyncio.run(archive_collab(bb_root, cid))
+    # 刚归档(未超 TTL)
+    removed = asyncio.run(cleanup_archived_collabs(bb_root, ttl_days=30))
+    assert cid not in removed
+    assert (bb_root / "collabs" / f"{cid}.md").exists()
+

@@ -884,6 +884,14 @@ class WorkerAdapter:
         await self._load_state_on_start()
         # Phase1 I-1：加载归档协作集（入口硬阻断初始数据源）
         await self._load_archived_collabs()
+        # Phase5 L-4：启动时清理超 TTL 的归档协作（保留 index 快照便于审计）
+        ttl = self._config.get("collab_ttl_days", 30)
+        if ttl and ttl > 0:
+            try:
+                from teage_liu.multiagent.blackboard import cleanup_archived_collabs
+                await cleanup_archived_collabs(self._bb_root, ttl_days=ttl)
+            except Exception as e:
+                logger.warning("Worker %s TTL 清理失败: %s", self._agent_id, e)
 
         # 1. 注册 agent_card
         await self._register()
