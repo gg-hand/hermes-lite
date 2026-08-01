@@ -207,3 +207,23 @@ def test_extend_receiver_round_no_jump(bb_root: Path):
     assert w._compute_outgoing_collab_round("c2", 3) == 3
 
 
+def test_director_broadcast_index_failure_self_heals(bb_root: Path, monkeypatch):
+    """E-2:index 更新失败不再静默 pass,记精炼错误 + 重试。"""
+    from teage_liu.multiagent.a2a_gateway import _director_broadcast
+    from teage_liu.multiagent.schema_validator import SchemaValidator
+    cid = "c-e2"
+    calls = {"update": 0}
+    import teage_liu.multiagent.a2a_gateway as gw
+    orig = gw.update_collab_index
+    async def flaky_update(*a, **k):
+        calls["update"] += 1
+        if calls["update"] < 3:
+            raise RuntimeError("idx boom")
+        return await orig(*a, **k)
+    monkeypatch.setattr(gw, "update_collab_index", flaky_update)
+    asyncio.run(_director_broadcast(bb_root, {
+        "content": "hello", "message_id": "m1", "collab_id": cid,
+    }, lock_manager=None, schema_validator=SchemaValidator(enabled=False)))
+    assert calls["update"] >= 3  # 重试到成功
+
+
