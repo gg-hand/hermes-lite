@@ -2478,9 +2478,9 @@ class WorkerAdapter:
         - 当返回 "offline" 且未在自治模式时，进入自治模式
         - 当返回 "healthy" 且在自治模式时，触发 _check_director_recovery
 
-        GAP-4 修复：增加 _depth 参数限制选举失败后的递归深度（上限
+        Phase5 L-2 修复：选举重试由递归改为显式 ``for`` 循环（上限
         ``self._ELECTION_MAX_DEPTH``），超过上限不再递归，直接走 fallback
-        自治逻辑，避免栈溢出。
+        自治逻辑，避免栈溢出。``_depth`` 参数保留以兼容旧调用签名。
         """
 
         director_md = await read_director_md(self._bb_root)
@@ -2503,14 +2503,19 @@ class WorkerAdapter:
             # offline
             if not self._autonomous_mode and not self._autonomous.is_active:
                 if self._config.get("director_v2_enabled", True):
-                    # 新逻辑：优先尝试选举抢占（Task 1.1 接入 Election）
-                    try:
-                        from teage_liu.multiagent.election import Election
+                    # Phase5 L-2：选举重试改显式循环（替代递归，避免栈溢出）
+                    from teage_liu.multiagent.election import Election
 
-                        election = Election(
-                            self._bb_root, self._agent_id, self._config
-                        )
-                        result = await election.run()
+                    took_over = False
+                    for _retry in range(self._ELECTION_MAX_DEPTH):
+                        try:
+                            election = Election(
+                                self._bb_root, self._agent_id, self._config
+                            )
+                            result = await election.run()
+                        except Exception as e:
+                            logger.exception("选举异常，回退到自治模式: %s", e)
+                            break
                         if result.won:
                             logger.info(
                                 "本机选举胜出 epoch=%s，启动 Director", result.epoch
@@ -2518,25 +2523,20 @@ class WorkerAdapter:
                             if self._director_manager:
                                 await self._director_manager.start()
                                 return "healthy"  # 自己接管后视为健康
-                            # 无 director_manager：落到旧逻辑（进入自治）
-                        else:
-                            logger.info(
-                                "选举失败，胜者=%s，等待其心跳", result.director_id
-                            )
-                            await asyncio.sleep(
-                                self._director_config.get("election_wait_seconds", 5)
-                            )
-                            # GAP-4：限制递归深度，超过上限走 fallback 自治逻辑
-                            if _depth < self._ELECTION_MAX_DEPTH:
-                                return await self._check_director_health(_depth + 1)
-                            logger.warning(
-                                "选举重试达深度上限 depth=%d，回退到自治模式",
-                                _depth,
-                            )
-                            # 超过深度上限，落到下方旧逻辑（进入自治）
-                    except Exception as e:
-                        logger.exception("选举异常，回退到自治模式: %s", e)
-                        # 落到下方旧逻辑
+                            # 无 director_manager：胜出但无法启动，落到旧逻辑（进入自治）
+                            took_over = True
+                            break
+                        logger.info(
+                            "选举失败，胜者=%s，等待其心跳", result.director_id
+                        )
+                        await asyncio.sleep(
+                            self._director_config.get("election_wait_seconds", 5)
+                        )
+                    if not took_over:
+                        logger.warning(
+                            "选举重试达深度上限 %d，回退到自治模式",
+                            self._ELECTION_MAX_DEPTH,
+                        )
                 # 旧逻辑（fallback / 配置回退 / 选举未胜出时走这里）
                 epoch = director_md.get("current_epoch", 0)
                 await self._autonomous.enter(
@@ -2586,6 +2586,7 @@ class WorkerAdapter:
                     if director_md:
                         new_epoch = director_md.get("current_epoch", 0)
                     await self._autonomous.exit(new_epoch)
+                    self._autonomous._turn_index = 0  # Phase5 L-2:防御性显式重置
                     self._autonomous_mode = False
                     self._autonomous_epoch = 0
                     logger.info("Director 持续健康，退出自治模式")
@@ -2676,6 +2677,7 @@ class WorkerAdapter:
 
         # Director 已恢复，退出自治
         await self._autonomous.exit(new_epoch)
+        self._autonomous._turn_index = 0  # Phase5 L-2:防御性显式重置
         self._autonomous_mode = False
         self._autonomous_epoch = 0
 

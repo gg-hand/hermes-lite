@@ -169,3 +169,27 @@ def test_llm_failure_exhausts_skips_and_notifies(bb_root: Path):
     assert "mid:m11" not in w._responded_request_seqs
 
 
+# =============================================================================
+# Phase 5 — 生命周期与错误细化
+# =============================================================================
+
+
+def test_autonomous_exit_resets_turn_index(bb_root: Path):
+    """L-2:退出自治时 _turn_index 重置为 0。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False, "director_v2_enabled": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    w._autonomous._turn_index = 5
+    asyncio.run(w._autonomous.exit(1))
+    assert w._autonomous._turn_index == 0
+
+
+def test_director_health_no_recursion_stack_safe(bb_root: Path, monkeypatch):
+    """L-2:_check_director_health 选举重试不递归(深度上限内不栈溢出)。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False, "director_v2_enabled": True}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # 直接调用不应抛 RecursionError(内部循环,不栈溢出)
+    asyncio.run(w._check_director_health())
+
+
