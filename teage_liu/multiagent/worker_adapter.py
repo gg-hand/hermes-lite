@@ -277,6 +277,9 @@ class WorkerAdapter:
 
         # Task 1.1：Director 管理器（选举胜出后启动本地 Director；默认 None，由外部注入）
         self._director_manager = None
+        # Phase3 N-1：缓存的 AgentRegistry 引用（_register 时构造），供
+        # _update_heartbeat / _update_agent_card_status 委托 update_fields 原子更新。
+        self._registry = None
 
         # orchestrator 注入（用于 A2A 主泵触发 LLM 调用）
         self._orchestrator = orchestrator
@@ -961,6 +964,8 @@ class WorkerAdapter:
 
         registry = AgentRegistry(self._bb_root, SchemaValidator(enabled=False))
         await registry.update_agent_status(self._agent_id, "active")
+        # Phase3 N-1：缓存 registry 引用，供后续心跳/状态更新委托 update_fields 原子化
+        self._registry = registry
 
     async def reregister(self, new_config: dict | None = None) -> dict:
         """动态重注册 agent_card（无需重启）。
@@ -1030,18 +1035,30 @@ class WorkerAdapter:
             raise
 
     async def _update_heartbeat(self) -> None:
-        """更新 agent_card.last_heartbeat。"""
+        """更新 agent_card.last_heartbeat(Phase3 N-1:走 registry.update_fields 原子化)。
+
+        任何正在发送心跳的 agent 按定义为活跃，故同时将 status 设为 "active"
+        （对齐 AgentRegistry.update_heartbeat 自愈语义，修复重启竞态）。
+        """
+        if self._registry is not None:
+            await self._registry.update_fields(
+                self._agent_id, last_heartbeat=_now_iso(), status="active")
+            return
+        # 回退：未持有 registry 引用（测试或未走 start() 时）——直接 FileLock 内读-改-写
+        from teage_liu.multiagent.file_lock import FileLock
+
         card_path = self._bb_root / "agents" / f"{self._agent_id}.md"
         if not card_path.exists():
             return
-        frontmatter, body = read_yaml_frontmatter(card_path)
-        if not frontmatter:
-            return
-
-        frontmatter["last_heartbeat"] = _now_iso()
-        yaml_str = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
-        content = f"---\n{yaml_str}---\n\n# Agent Card\n"
-        await atomic_write(card_path, content)
+        async with FileLock(card_path):
+            frontmatter, body = read_yaml_frontmatter(card_path)
+            if not frontmatter:
+                return
+            frontmatter["last_heartbeat"] = _now_iso()
+            frontmatter["status"] = "active"
+            yaml_str = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
+            content = f"---\n{yaml_str}---\n{body}"
+            await atomic_write(card_path, content)
 
     async def _director_monitor_loop(self) -> None:
         """Director 心跳监测循环。"""
@@ -2686,22 +2703,29 @@ class WorkerAdapter:
     async def _update_agent_card_status(
         self, status: str, leave_reason: str = ""
     ) -> None:
-        """更新 agent_card 状态。"""
+        """更新 agent_card 状态(Phase3 N-1:走 registry.update_fields 原子化)。"""
+        fields: dict = {"status": status}
+        if leave_reason:
+            fields["leave_reason"] = leave_reason
+            fields["left_at"] = _now_iso()
+        if self._registry is not None:
+            await self._registry.update_fields(self._agent_id, **fields)
+            return
+        # 回退：未持有 registry 引用——直接 FileLock 内读-改-写
+        from teage_liu.multiagent.file_lock import FileLock
+
         card_path = self._bb_root / "agents" / f"{self._agent_id}.md"
         if not card_path.exists():
             return
-        frontmatter, body = read_yaml_frontmatter(card_path)
-        if not frontmatter:
-            return
-
-        frontmatter["status"] = status
-        if leave_reason:
-            frontmatter["leave_reason"] = leave_reason
-            frontmatter["left_at"] = _now_iso()
-
-        yaml_str = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
-        content = f"---\n{yaml_str}---\n\n# Agent Card\n"
-        await atomic_write(card_path, content)
+        async with FileLock(card_path):
+            frontmatter, body = read_yaml_frontmatter(card_path)
+            if not frontmatter:
+                return
+            for k, v in fields.items():
+                frontmatter[k] = v
+            yaml_str = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
+            content = f"---\n{yaml_str}---\n{body}"
+            await atomic_write(card_path, content)
 
     def _read_status(self) -> dict:
         """读取 status.json。"""
