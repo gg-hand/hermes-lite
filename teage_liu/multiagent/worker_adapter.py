@@ -501,6 +501,42 @@ class WorkerAdapter:
             len(self._processed_urgent_seqs), len(self._executed_op_ids),
             self._sleep_state, self._llm_retry_queue.qsize(),
         )
+        # Phase4 H-3:自愈——有 consensus 终止信号但未归档的协作,补 archive。
+        await self._heal_unarchived_consensus()
+
+    async def _heal_unarchived_consensus(self) -> None:
+        """Phase4 H-3:扫描有 consensus/end 消息但 index 仍 active 的协作,补归档。
+
+        consensus 写入与 archive 标记非原子:若 consensus 写成功但 archive 失败
+        (异常/崩溃),协作会滞留 active 状态。启动时扫描自愈,补 archive 使其从
+        默认 active 聚合流移除,避免归档协作被误写复活。
+        """
+        from teage_liu.multiagent.blackboard import (
+            archive_collab, list_active_collab_ids, read_collab_messages,
+        )
+        try:
+            active_cids = await list_active_collab_ids(self._bb_root)
+        except Exception:
+            return
+        for cid in active_cids:
+            try:
+                msgs = await read_collab_messages(self._bb_root, collab_id=cid)
+            except Exception:
+                continue
+            if any(m.get("type") in ("consensus", "end") for m in msgs):
+                try:
+                    was = await archive_collab(self._bb_root, cid)
+                    if was:
+                        self._archived_collabs.add(cid)
+                        logger.info(
+                            "Worker %s 自愈补归档协作 %s(有 consensus 无 archived)",
+                            self._agent_id, cid,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Worker %s 补归档 %s 失败: %s",
+                        self._agent_id, cid, e,
+                    )
 
     async def _rebuild_state_from_history(self, preserve_sleep_from: "WorkerState | None" = None):
         """扫描 collaboration.md + messages.md 历史构建初始 state。
