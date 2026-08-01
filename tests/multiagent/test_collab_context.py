@@ -88,3 +88,17 @@ def test_partner_context_global_timeline(bb_root: Path):
     # 全局时间线:w1 和 w2 消息都出现,按 seq 顺序(ALPHA 在 BETA 之前)
     assert "ALPHA_FROM_W1" in ctx and "BETA_FROM_W2" in ctx
     assert ctx.index("ALPHA_FROM_W1") < ctx.index("BETA_FROM_W2")  # seq 顺序
+
+
+def test_watchdog_wakes_on_collabs_change(bb_root: Path):
+    """I-3:collabs/*.md 变更触发唤醒。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    w._collab_interrupt.clear()
+    # 模拟 watchdog 事件(collabs/{cid}.md 变更)
+    class _Evt:
+        src_path = str(bb_root / "collabs" / "c1.md")
+    w._on_collab_file_changed(_Evt())
+    assert w._collab_interrupt.is_set()
+
