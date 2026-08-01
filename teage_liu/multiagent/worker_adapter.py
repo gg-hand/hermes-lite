@@ -1916,6 +1916,37 @@ class WorkerAdapter:
         # P3-4：只取 response/consensus 类型，并净化 content 剥离工具元语言污染，
         # 避免 partner_context 把 LLM 的工具元语言/思考性开头传染给本 worker LLM。
         from teage_liu.multiagent.collab_sanitize import sanitize_collab_content
+
+        # Phase6 C-2：默认全局时间线（按 seq 排序，含所有参与方含 self）；
+        # partner_context_grouped=True 回退分组视图（原逻辑）。
+        grouped = self._config.get("partner_context_grouped", False)
+        if not grouped:
+            # 全局时间线：所有参与方（含 self）的 response/consensus 按 seq 正序
+            participants = {self._agent_id, *(p["agent_id"] for p in partners)}
+            timeline: list[str] = []
+            for m in sorted(all_msgs, key=lambda x: x.get("seq", 0)):
+                if m.get("type") not in ("response", "consensus"):
+                    continue
+                if m.get("from") not in participants:
+                    continue
+                raw = m.get("content", "") or ""
+                cleaned = sanitize_collab_content(raw) if isinstance(raw, str) else raw
+                timeline.append(f"[{m.get('from')}/seq{m.get('seq')}] {cleaned[:200]}")
+            lines = ["在线协作伙伴(全局时间线):"]
+            for p in partners:
+                caps = ", ".join(p.get("capabilities", []) or []) or "(无)"
+                lines.append(f"- {p['agent_id']} (capabilities: {caps})")
+            lines.append("近期对话:")
+            # 上限：每伙伴 max_msgs_per_partner 条，避免上下文爆炸
+            cap = max_msgs_per_partner * max(1, len(partners))
+            lines.extend(timeline[-cap:])
+            lines.append("")
+            lines.append(
+                "通信机制：你可以直接回复本消息,也可调用 send_remote_message 工具定向通信。"
+            )
+            return "\n".join(lines)
+
+        # 分组视图（原逻辑，fallback）
         # 仅取 from=伙伴 的 response/consensus 消息，按 seq 倒序，取最近 N 条
         partner_msgs: dict[str, list[dict]] = {p["agent_id"]: [] for p in partners}
         for m in sorted(all_msgs, key=lambda x: x.get("seq", 0), reverse=True):
