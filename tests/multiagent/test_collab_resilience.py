@@ -81,3 +81,22 @@ def test_response_missing_collab_round_rejected(bb_root: Path):
     assert w._normal_queue == [] or not any(
         m.get("seq") == 5 for m in w._normal_queue)
 
+
+def test_dead_code_removed_migrated_to_append_collab(bb_root: Path):
+    """E-4:_send_relay/_forward_a2a_message 删除后,等价行为由 append_collab_message 提供。"""
+    from teage_liu.multiagent.blackboard import append_collab_message, read_collab_messages
+    cid = "c-dead"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    asyncio.run(append_collab_message(bb_root, {
+        "from": "w1", "to": "w2", "type": "relay",
+        "content": "via append", "message_id": "m1",
+    }, collab_id=cid))
+    msgs = asyncio.run(read_collab_messages(bb_root, collab_id=cid))
+    assert any(m.get("content") == "via append" and m.get("type") == "relay"
+               for m in msgs)
+    # 确认方法已删除
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    assert not hasattr(WorkerAdapter, "_send_relay")
+    assert not hasattr(WorkerAdapter, "_forward_a2a_message")
+
+

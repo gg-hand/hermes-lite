@@ -2175,31 +2175,6 @@ class WorkerAdapter:
 
         return system_prompt + injection
 
-    async def _forward_a2a_message(
-        self, message_id: str, from_agent: str, to_agent: str, content: str
-    ) -> None:
-        """转发 A2A 消息到 collaboration.md（带 message_id 去重）。"""
-        from teage_liu.multiagent.blackboard import append_collab_message
-        await append_collab_message(self._bb_root, {
-            "from": from_agent,
-            "to": to_agent,
-            "type": "relay",
-            "content": content,
-            "via": "a2a",
-            "forwarded_by": self._agent_id,
-            "message_id": message_id,
-        })
-
-    async def _send_relay(self, to_agent: str, content: str) -> None:
-        """发送 relay 消息（本 agent 发起的协作消息）。"""
-        from teage_liu.multiagent.blackboard import append_collab_message
-        await append_collab_message(self._bb_root, {
-            "from": self._agent_id,
-            "to": to_agent,
-            "type": "relay",
-            "content": content,
-        })
-
     async def _check_idle_timeout(self) -> None:
         """空闲超时保护：60s 无 A2A 且队列非空 → 触发 LLM 调用。"""
         if not self._normal_queue:
