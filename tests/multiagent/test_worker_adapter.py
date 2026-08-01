@@ -1333,23 +1333,28 @@ class TestSameRoundGate:
     async def test_gate_allows_zero_peer_round(
         self, bb_root: Path, worker_config,
     ):
-        """peer_round=0 时不触发闸门（避免拦截无 round 字段的旧消息）。"""
+        """有效 collab_round=0 + 双方同回合(my_last_sent=0)时不触发闸门。
+
+        Phase1 I-2 已把「缺 collab_round 字段」(前置检查拒绝)与「有效 round=0」解耦。
+        本测试验证:有效 round=0 且本 worker 也在 round 0 时,闸门
+        `my_last_sent > current_round` = `0 > 0` = False → 不拦截 → LLM 正常调用。
+        (my_last_sent=2 + peer_round=0 是过时回合消息,应被拦截,见其它用例。)
+        """
         await self._register_partner(bb_root, "worker_002")
         fake_orch = FakeOrchestratorCapturing()
         adapter = WorkerAdapter(
             bb_root=bb_root, config=worker_config,
             agent_id="worker_001", orchestrator=fake_orch,
         )
-        adapter._collab_last_sent_round["collab_gate_3"] = 2
-        # collab_round=0，闸门条件 current_round > 0 不满足 → 不拦截
+        adapter._collab_last_sent_round["collab_gate_3"] = 0  # 双方都在 round 0
         msg = {
             "from": "worker_002", "to": "worker_001",
-            "type": "response", "content": "无 round 标记",
+            "type": "response", "content": "同回合 round=0",
             "collab_id": "collab_gate_3", "collab_round": 0,
             "seq": 1, "message_id": "peer_r0",
         }
         await adapter._handle_collab_message(msg)
-        assert len(fake_orch.captured_calls) == 1, "peer_round=0 不应被闸门拦截"
+        assert len(fake_orch.captured_calls) == 1, "同回合 round=0 不应被闸门拦截"
 
 
 class TestErrorFuse:
