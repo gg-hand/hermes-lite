@@ -102,3 +102,36 @@ def test_watchdog_wakes_on_collabs_change(bb_root: Path):
     w._on_collab_file_changed(_Evt())
     assert w._collab_interrupt.is_set()
 
+
+def test_prompt_stable_prefix_before_volatile_suffix(bb_root: Path):
+    """D11:稳定前缀(system prompt+摘要)在易变后缀(触发消息)之前。
+
+    摘要注入稳定前缀区（缓存命中区），近期对话属易变后缀。
+    """
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cid = "c-cache"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    asyncio.run(write_collab_summary(bb_root, cid, {"consensus": ["稳定共识点"],
+                                                    "open": [], "positions": {}, "decisions": []}))
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # _build_collab_llm_context 把摘要放稳定前缀区
+    ctx = asyncio.run(w._build_collab_llm_context(cid))
+    assert "稳定共识点" in ctx
+    # 摘要(稳定前缀)在近期对话(易变后缀)之前
+    assert ctx.index("历史摘要") < ctx.index("近期对话")
+
+
+def test_collab_msg_cache_invalidated_on_watchdog(bb_root: Path):
+    """D11:_collab_msg_cache 在 watchdog 事件时失效(下次读取重新加载)。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # 模拟已填充缓存
+    w._collab_msg_cache = [{"seq": 1, "content": "stale"}]
+    # watchdog 事件应失效缓存
+    class _Evt:
+        src_path = str(bb_root / "collabs" / "c1.md")
+    w._on_collab_file_changed(_Evt())
+    assert w._collab_msg_cache is None
+

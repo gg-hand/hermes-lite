@@ -378,6 +378,11 @@ class WorkerAdapter:
         # 任务 2.3：LLM 调用串行化锁（避免并发 _trigger_urgent_llm 干扰协作轮询）
         self._llm_lock = asyncio.Lock()
 
+        # Phase6 D11：黑板消息读取缓存（watchdog 事件失效）。
+        # _poll_collab_once 高频读取 read_all_active_collab_messages，缓存后在
+        # 同一轮询周期内复用，watchdog 文件变更时置 None 强制下次重载。
+        self._collab_msg_cache: list[dict] | None = None
+
         # Phase2 A-1：协作健康监控（独立后台任务）
         from teage_liu.multiagent.collab_health import CollabHealthMonitor
         self._collab_health_monitor = CollabHealthMonitor(self)
@@ -1223,6 +1228,8 @@ class WorkerAdapter:
                     or "/collabs/" in normalized):
                 if "collabs/index.md" in normalized:
                     self._refresh_archived_collabs()
+                # Phase6 D11：文件变更失效黑板消息缓存，下次轮询强制重载
+                self._collab_msg_cache = None
                 self._collab_interrupt.set()
         except Exception as e:
             logger.warning("Worker %s watchdog callback 异常: %s", self._agent_id, e)
@@ -1289,7 +1296,10 @@ class WorkerAdapter:
 
         # 聚合全局 + 所有 active 协作消息（per-collab 文件），否则 worker 看不到
         # 写入 collabs/{collab_id}.md 的广播/响应消息。
-        messages = await read_all_active_collab_messages(self._bb_root)
+        # Phase6 D11：watchdog 失效缓存——同轮询周期内复用，文件变更时置 None 重载
+        if self._collab_msg_cache is None:
+            self._collab_msg_cache = await read_all_active_collab_messages(self._bb_root)
+        messages = self._collab_msg_cache
         # 记录 collaboration.md 的 mtime 作为休眠探针基线（即使本次无新消息也刷新）
         self._refresh_collab_file_mtime()
 
