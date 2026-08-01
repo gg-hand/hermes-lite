@@ -193,3 +193,17 @@ def test_director_health_no_recursion_stack_safe(bb_root: Path, monkeypatch):
     asyncio.run(w._check_director_health())
 
 
+def test_extend_receiver_round_no_jump(bb_root: Path):
+    """L-3:extend 接收方 last_sent > current_round 时对齐,不 +1 跳跃。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    w._collab_last_sent_round = {"c1": 5}
+    # extend 消息 current_round=0(extend 不带有效 round)→ 对齐到 0,不跳到 6
+    r = w._compute_outgoing_collab_round("c1", 0)
+    assert r == 0
+    # 正常 peer_round > last_sent 仍共享
+    w._collab_last_sent_round = {"c2": 2}
+    assert w._compute_outgoing_collab_round("c2", 3) == 3
+
+

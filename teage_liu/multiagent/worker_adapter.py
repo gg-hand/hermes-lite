@@ -798,10 +798,12 @@ class WorkerAdapter:
 
         旧逻辑每条消息 `peer_round + 1`，导致 6 条消息 round 跳到 6/7，且同一回合
         的收发双方 round 号不一致。新规则让同一回合内收发双方共享 round 号，仅当
-        本 worker 上一轮已发送（last_sent >= peer_round）时才 +1 推进到下一回合：
+        本 worker 上一轮已发送（last_sent == peer_round）时才 +1 推进到下一回合：
 
         - peer_round > last_sent：对端在新回合，本 worker 共享该回合 → my_round = peer_round
-        - 否则（peer_round <= last_sent）：本 worker 已发过该回合，推进 → my_round = last_sent + 1
+        - peer_round < last_sent（Phase5 L-3）：对端落后（如 extend 不带有效 round），
+          对齐到 peer_round（同回合共享 round），不再 +1 跳跃，避免接收方 round 越推越高。
+        - peer_round == last_sent：本 worker 已发过该回合，推进 → my_round = last_sent + 1
 
         示例（A、B 一来一回）：
             A 发（peer=0, last=0）→ 1；B 回（peer=1, last=0）→ 1（共享）
@@ -818,6 +820,10 @@ class WorkerAdapter:
         """
         last_sent = self._collab_last_sent_round.get(cid, 0) if cid else 0
         if peer_round > last_sent:
+            my_round = peer_round
+        elif last_sent > peer_round:
+            # Phase5 L-3:extend 等场景 peer_round < last_sent 时，对齐到 peer_round
+            # （同回合共享 round），不再 +1 跳跃，避免接收方 round 越推越高。
             my_round = peer_round
         else:
             my_round = last_sent + 1

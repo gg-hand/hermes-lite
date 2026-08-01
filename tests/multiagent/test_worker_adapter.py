@@ -1213,12 +1213,13 @@ class TestCollabRoundCounting:
         assert adapter._compute_outgoing_collab_round(None, 0) == 1
 
     def test_zero_peer_when_last_sent_ahead_advances(self, bb_root, worker_config):
-        """本 worker 已发 round 2，对端落后发 round 0 → 推进到 3（不被对端拖回）。"""
+        """Phase5 L-3:本 worker 已发 round 2，对端落后发 round 0 → 对齐到 0（同回合共享，
+        不再 +1 跳跃，避免接收方 round 越推越高）。"""
         adapter = WorkerAdapter(bb_root, worker_config, agent_id="worker_001")
         adapter._compute_outgoing_collab_round("c1", 0)  # 1
         adapter._compute_outgoing_collab_round("c1", 1)  # 2
-        # 对端 round 0 < last_sent 2 → last+1 = 3
-        assert adapter._compute_outgoing_collab_round("c1", 0) == 3
+        # Phase5 L-3:对端 round 0 < last_sent 2 → 对齐到 peer_round=0（不跳到 3）
+        assert adapter._compute_outgoing_collab_round("c1", 0) == 0
 
 
 # ========== P3-3: 同 round 连发闸门 ==========
