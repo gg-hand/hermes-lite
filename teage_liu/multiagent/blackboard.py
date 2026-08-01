@@ -1044,6 +1044,45 @@ async def cleanup_archived_collabs(bb_root: Path, ttl_days: int = 30) -> list[st
     return removed
 
 
+# =============================================================================
+# Phase6 C-1：协作滚动摘要（frontmatter summary 字段）
+# 黑板层 collabs/{cid}.md 保留全量消息（审计/rebuild 用），永不清；
+# LLM 上下文层采用「滚动摘要 + 近期窗口」，摘要存 frontmatter summary 字段。
+# =============================================================================
+
+
+async def read_collab_summary(bb_root: Path, collab_id: str) -> dict:
+    """读取 collabs/{cid}.md frontmatter 的 summary 字段（Phase6 C-1）。
+
+    摘要为固定四段 schema：consensus / open / positions / decisions。
+    文件不存在或无 summary 字段时返回空 dict。
+    """
+    f = bb_root / "collabs" / f"{collab_id}.md"
+    if not f.exists():
+        return {}
+    fm, _ = read_yaml_frontmatter(f)
+    return fm.get("summary") or {}
+
+
+async def write_collab_summary(bb_root: Path, collab_id: str, summary: dict) -> None:
+    """写入 summary 到 collabs/{cid}.md frontmatter（原子，带 FileLock）。
+
+    summary 存入文件的第一个 frontmatter 块；若文件已有消息块，summary
+    字段并入首块（不影响后续消息块的解析）。
+    """
+    from teage_liu.multiagent.file_lock import FileLock
+    f = bb_root / "collabs" / f"{collab_id}.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    async with FileLock(f):
+        if f.exists():
+            fm, body = read_yaml_frontmatter(f)
+        else:
+            fm, body = {}, ""
+        fm["summary"] = summary
+        yaml_str = yaml.safe_dump(fm, allow_unicode=True, sort_keys=False)
+        await atomic_write(f, f"---\n{yaml_str}---\n{body}")
+
+
 async def read_all_active_collab_messages(
     bb_root: Path, include_archived: bool = False,
 ) -> list[dict]:

@@ -1841,6 +1841,11 @@ class WorkerAdapter:
         同时清除内存历史与磁盘 JSONL 文件（若启用持久化）。
         清除失败不阻断协作流程（fail-open，仅告警）。
 
+        Phase6 C-1：此处仅清 LLM 会话的 verbatim 历史（orchestrator
+        history_buffer），黑板层 collabs/{cid}.md 全量消息与 frontmatter
+        summary 摘要均保留（审计/rebuild 用，摘要供稳定前缀缓存命中）。
+        摘要滚动收敛到协作 session 内，不污染主会话。
+
         参数:
             collab_session_id: 协作会话 ID（如 ``multiagent_teagent-lu``）。
         """
@@ -1951,6 +1956,39 @@ class WorkerAdapter:
 
         return "\n".join(lines)
 
+    async def _build_collab_llm_context(self, cid: str | None) -> str:
+        """Phase6 C-1：LLM 上下文 = 历史摘要 + 近期 N 轮 verbatim 消息。
+
+        分层策略（黑板层与 LLM 上下文层解耦）：
+        - 黑板层：collabs/{cid}.md 保留全量消息（审计/rebuild 用），永不清
+        - LLM 上下文层：历史摘要（frontmatter summary，固定四段 schema）+
+          近期 partner_context_window 轮 verbatim 消息
+
+        摘要注入稳定前缀区（D11 缓存命中区），近期对话属易变后缀。
+        摘要 schema 固定四段：consensus / open / positions / decisions。
+        """
+        if not cid:
+            return ""
+        from teage_liu.multiagent.blackboard import (
+            read_collab_messages, read_collab_summary,
+        )
+        window = self._config.get("partner_context_window", 6)
+        summary = await read_collab_summary(self._bb_root, cid)
+        msgs = await read_collab_messages(self._bb_root, collab_id=cid)
+        # 近期 window 轮 verbatim（粗取尾部，每轮约 2-4 条消息）
+        recent = msgs[-window * 4:] if len(msgs) > window * 4 else msgs
+        parts: list[str] = []
+        if summary:
+            parts.append("## 历史摘要")
+            parts.append(f"已达成共识: {summary.get('consensus', [])}")
+            parts.append(f"未决问题: {summary.get('open', [])}")
+            parts.append(f"各方立场: {summary.get('positions', {})}")
+            parts.append(f"关键决策: {summary.get('decisions', [])}")
+        parts.append("## 近期对话")
+        for m in recent:
+            parts.append(f"[{m.get('from')}/r{m.get('collab_round')}] {m.get('content', '')[:200]}")
+        return "\n".join(parts)
+
     def _drain_directives_once(self) -> str:
         """Phase5 N-3:directive drain 单一入口 + 幂等标记。
 
@@ -2027,6 +2065,12 @@ class WorkerAdapter:
                 # 协作专用 system prompt（含 agent_id 身份声明，绕开主 SYSTEM_PROMPT
                 # 的 "Teage Liu" 自称），system_prompt 作为补充上下文追加到 enhanced_history
                 collab_system_prompt = build_collab_system_prompt(self._agent_id)
+                # Phase6 C-1/D11：注入历史摘要到稳定前缀（缓存命中区）。
+                # 摘要 + 近期窗口 = 稳定前缀的一部分（system prompt 协议/规则在前，
+                # 摘要紧随其后），近期对话属易变后缀由 prompt 参数带入。
+                collab_summary_ctx = await self._build_collab_llm_context(ctx_collab_id)
+                if collab_summary_ctx:
+                    collab_system_prompt = collab_system_prompt + "\n\n" + collab_summary_ctx
                 if self._config.get("director_v2_enabled", True):
                     # 任务 2.3：串行化 LLM 调用，避免并发 _trigger_urgent_llm 干扰协作轮询
                     async with self._llm_lock:
