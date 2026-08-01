@@ -76,6 +76,37 @@ logger = logging.getLogger(__name__)
 _PROCESSED_MSG_SEQS_LRU_CAP = 2000
 
 
+class OrderedSet:
+    """单结构去重 + LRU FIFO 淘汰（Phase3 N-2）。
+
+    替换原 set + OrderedDict 双结构，消除手动同步腐化风险。
+    add 已存在的 key 时保持原序（匹配原 popitem(last=False) 的 FIFO 语义），
+    超过 cap 时按最早插入顺序淘汰。
+    """
+    def __init__(self, cap: int = _PROCESSED_MSG_SEQS_LRU_CAP) -> None:
+        self._cap = cap
+        self._od: "OrderedDict[str, None]" = OrderedDict()
+
+    def add(self, key: str) -> None:
+        if key in self._od:
+            return
+        self._od[key] = None
+        while len(self._od) > self._cap:
+            self._od.popitem(last=False)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._od
+
+    def __len__(self) -> int:
+        return len(self._od)
+
+    def __iter__(self):
+        return iter(self._od)
+
+    def discard(self, key: str) -> None:
+        self._od.pop(key, None)
+
+
 def _now_iso() -> str:
     """当前 UTC 时间 ISO 格式。"""
     return datetime.now(timezone.utc).isoformat()
@@ -323,10 +354,8 @@ class WorkerAdapter:
         from teage_liu.multiagent.worker_state import WorkerStateStore
         self._state_store = state_store or WorkerStateStore(bb_root, agent_id)
         self._responded_request_seqs: set[str] = set()
-        self._processed_msg_seqs: set[str] = set()
-        # 阶段 3.2：_processed_msg_seqs 的 LRU 插入顺序镜像（FIFO 淘汰用）。
-        # 与 _processed_msg_seqs 同步维护：add 时同步写入 LRU，超限 popitem(last=False)。
-        self._processed_msg_seqs_lru: OrderedDict[str, None] = OrderedDict()
+        # Phase3 N-2：OrderedSet 单结构（去重 + FIFO 淘汰），替换 set+OrderedDict
+        self._processed_msg_seqs: OrderedSet = OrderedSet()
         self._processed_urgent_seqs: set[str] = set()
         self._executed_op_ids: set[str] = set()
         # 弹性协作上限（per collab_id）：收到 extend 信号时 +max_rounds，
@@ -443,13 +472,12 @@ class WorkerAdapter:
                     result.add(str(v))
             return result
         self._responded_request_seqs = _migrate(state.responded_request_seqs)
-        self._processed_msg_seqs = _migrate(state.processed_msg_seqs)
-        # 阶段 3.2：从 state 加载后初始化 LRU 镜像（按 seq 升序作为插入顺序代理），
-        # 并应用 LRU 上限（state 可能由旧版本写入超大集合）。
-        self._processed_msg_seqs_lru = OrderedDict(
-            (s, None) for s in sorted(self._processed_msg_seqs)
-        )
-        self._evict_processed_msg_seqs_lru()
+        # Phase3 N-2：从 state 加载后构造 OrderedSet 单结构（按 seq 升序作为插入顺序代理），
+        # 内嵌 FIFO 淘汰（state 可能由旧版本写入超大集合，OrderedSet.add 自动应用 cap）。
+        _processed = OrderedSet()
+        for s in sorted(_migrate(state.processed_msg_seqs)):
+            _processed.add(s)
+        self._processed_msg_seqs = _processed
         self._processed_urgent_seqs = _migrate(state.processed_urgent_seqs)
         self._executed_op_ids = set(state.executed_op_ids)
         # 同步休眠状态（跨重启保留，避免重启后立即全速轮询）
@@ -745,10 +773,8 @@ class WorkerAdapter:
         if not isinstance(msg_seq, int):
             return
         key = self._dk(collab_id, msg_seq, message_id)
+        # Phase3 N-2：OrderedSet.add 内嵌去重 + FIFO 淘汰（原 _evict_processed_msg_seqs_lru 已删除）
         self._processed_msg_seqs.add(key)
-        # 阶段 3.2：同步写入 LRU 镜像并按 FIFO 淘汰，防止内存膨胀
-        self._processed_msg_seqs_lru[key] = None
-        self._evict_processed_msg_seqs_lru()
         if not self._persist_state:
             return
         try:
@@ -758,18 +784,6 @@ class WorkerAdapter:
                 "Worker %s 持久化 processed_msg_seqs=%d 失败: %s",
                 self._agent_id, msg_seq, e,
             )
-
-    def _evict_processed_msg_seqs_lru(self) -> None:
-        """阶段 3.2：_processed_msg_seqs LRU 上限淘汰（FIFO，popitem(last=False)）。
-
-        超过 _PROCESSED_MSG_SEQS_LRU_CAP 时，移除最早插入的 seq——同时从 set 与
-        OrderedDict 摘除，保持两者一致。被淘汰的旧 seq 若再次被轮询到（极低概率，
-        需 collaboration.md 累积 >2000 条消息）会被视为新消息重新处理，由各
-        handler 自身的幂等集（_responded_request_seqs / _processed_urgent_seqs）兜底。
-        """
-        while len(self._processed_msg_seqs_lru) > _PROCESSED_MSG_SEQS_LRU_CAP:
-            old_seq, _ = self._processed_msg_seqs_lru.popitem(last=False)
-            self._processed_msg_seqs.discard(old_seq)
 
     async def start(self) -> None:
         """启动 Worker。"""
@@ -896,7 +910,7 @@ class WorkerAdapter:
                 self._state_store.save(WorkerState(
                     last_collab_seq=self._last_collab_seq,
                     responded_request_seqs=self._responded_request_seqs,
-                    processed_msg_seqs=self._processed_msg_seqs,
+                    processed_msg_seqs=set(self._processed_msg_seqs),
                     processed_urgent_seqs=self._processed_urgent_seqs,
                     executed_op_ids=self._executed_op_ids,
                     llm_retry_queue=retry_items,

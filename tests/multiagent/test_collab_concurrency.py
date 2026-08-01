@@ -56,3 +56,16 @@ def test_worker_heartbeat_routes_through_registry(bb_root: Path):
     fm, _ = read_yaml_frontmatter(bb_root / "agents" / "w1.md")
     assert fm.get("last_heartbeat")
     assert fm.get("status") == "active"
+
+
+def test_ordered_set_dedup_and_fifo_evict():
+    """N-2:OrderedSet 去重 + FIFO 淘汰,单结构一致。"""
+    from teage_liu.multiagent.worker_adapter import OrderedSet
+    s = OrderedSet(cap=3)
+    s.add("a"); s.add("b"); s.add("a")  # a 去重,顺序不变
+    assert "a" in s and "b" in s
+    assert len(s) == 2
+    s.add("c"); s.add("d")  # 超 cap=3,淘汰 a(FIFO 最早)
+    assert "a" not in s
+    assert "b" in s and "c" in s and "d" in s
+
