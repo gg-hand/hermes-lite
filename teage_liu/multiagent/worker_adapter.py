@@ -346,6 +346,10 @@ class WorkerAdapter:
         # 任务 2.3：LLM 调用串行化锁（避免并发 _trigger_urgent_llm 干扰协作轮询）
         self._llm_lock = asyncio.Lock()
 
+        # Phase2 A-1：协作健康监控（独立后台任务）
+        from teage_liu.multiagent.collab_health import CollabHealthMonitor
+        self._collab_health_monitor = CollabHealthMonitor(self)
+
     async def _load_archived_collabs(self) -> None:
         """从 collabs/index.md 加载已归档协作到内存集合（Phase1 I-1）。
 
@@ -792,6 +796,8 @@ class WorkerAdapter:
                 "Worker %s 协作轮询已启动（interval=%ss, idle_timeout=%ss）",
                 self._agent_id, self._collab_poll_interval, self._idle_timeout_seconds,
             )
+            # Phase2 A-1：启动健康监控
+            self._collab_health_monitor.start()
 
     async def stop(self) -> None:
         """优雅退出。"""
@@ -817,6 +823,9 @@ class WorkerAdapter:
                     pass
         self._collab_poll_task = None
         self._idle_check_task = None
+
+        # Phase2 A-1：停止健康监控
+        await self._collab_health_monitor.stop()
 
         # 释放所有持有的锁
         await self._release_my_locks()
@@ -1497,7 +1506,7 @@ class WorkerAdapter:
                 # 立即标记为已处理
                 await self._mark_msg_processed(msg_seq, msg.get("collab_id"), msg.get("message_id"))
                 # 轮次超限停滞时自动归档协作，避免协作永远卡在 initiated 状态
-                if cid and has_collab_round and current_round > effective_max:
+                if cid and has_collab_round_field and current_round > effective_max:
                     try:
                         archived = await archive_collab(self._bb_root, cid)
                         if archived:
@@ -1859,6 +1868,9 @@ class WorkerAdapter:
                     "content": f"[协作响应失败] {type(e).__name__}: {e}",
                     "accept": False,
                     "error": True,
+                    # Phase2 E-1：error 消息带 collab_round，使 round 推进、
+                    # 健康监控的 consecutive_error_rounds 可统计
+                    "collab_round": context_msg.get("_collab_round") or 0,
                 }
                 if ctx_collab_id is not None:
                     err_msg["collab_id"] = ctx_collab_id
