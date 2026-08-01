@@ -247,3 +247,28 @@ def test_extend_llm_failure_uses_retry_queue(bb_root: Path):
     assert any(m.get("error") is True and m.get("collab_round") == 2 for m in msgs2)
 
 
+def test_directive_drain_idempotent_single_entry(bb_root: Path):
+    """N-3:directive drain 单一入口 + 幂等,不重复注入。"""
+    from teage_liu.multiagent.worker_adapter import WorkerAdapter
+    cfg = {"multiagent": {"worker": {"persist_state": False}}}
+    w = WorkerAdapter(bb_root=bb_root, agent_id="w1", config=cfg, orchestrator=None)
+    # 模拟 injector
+    class _Inj:
+        def __init__(self):
+            self.polled = 0
+            self._pending = ["d1", "d2"]
+        async def poll_and_enqueue_new_directives(self):
+            self.polled += 1
+        def drain_pending_directives(self):
+            d = self._pending
+            self._pending = []
+            return "\n".join(d)
+    w._director_injector = _Inj()
+    # 第一次 drain
+    ctx1 = w._drain_directives_once()
+    assert "d1" in ctx1 and "d2" in ctx1
+    # 第二次:幂等,不重复
+    ctx2 = w._drain_directives_once()
+    assert ctx2 == "" or ctx2 is None
+
+

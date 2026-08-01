@@ -1951,6 +1951,26 @@ class WorkerAdapter:
 
         return "\n".join(lines)
 
+    def _drain_directives_once(self) -> str:
+        """Phase5 N-3:directive drain 单一入口 + 幂等标记。
+
+        消除 _collab_poll_loop 与 _trigger_urgent_llm 两处重复 drain 调用导致的
+        重复注入风险。用 _drained_directive_seq 标记已 drain 的最新 seq，避免
+        相同 seq 被重复 drain。实际注入幂等主要由 injector 内部 pending 队列
+        drain 后清空保证，seq 标记作为额外防护（仅当 injector 暴露 _last_seen_seq）。
+        """
+        if not hasattr(self, "_drained_directive_seq"):
+            self._drained_directive_seq = -1
+        ctx = self._director_injector.drain_pending_directives()
+        # injector 内部维护 _last_seen_seq，用于 seq 级幂等；不存在的实现回退 None。
+        # 用 isinstance 严格校验，避免 MagicMock 等测试替身返回非 int 值。
+        last = getattr(self._director_injector, "_last_seen_seq", None)
+        if isinstance(last, int) and last <= self._drained_directive_seq and not ctx:
+            return ""
+        if isinstance(last, int):
+            self._drained_directive_seq = last
+        return ctx or ""
+
     async def _trigger_urgent_llm(self, prompt: str, context_msg: dict) -> None:
         """紧急插队：立即触发 LLM 调用（不搭便车，但顺便清空普通队列）。
 
@@ -1969,9 +1989,9 @@ class WorkerAdapter:
         # 同时把普通队列消息也注入（顺便清空）
         system_prompt = self._inject_normal_queue_to_context(system_prompt)
 
-        # Task 4：搭便车注入 Director directive
+        # Task 4 + Phase5 N-3：搭便车注入 Director directive（单一 drain 入口，幂等）
         await self._director_injector.poll_and_enqueue_new_directives()
-        directive_context = self._director_injector.drain_pending_directives()
+        directive_context = self._drain_directives_once()
         if directive_context:
             system_prompt = (system_prompt or "") + "\n\n" + directive_context
 
