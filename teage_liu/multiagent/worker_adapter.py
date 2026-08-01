@@ -1388,10 +1388,20 @@ class WorkerAdapter:
             # 绝对硬上限 absolute_max（1000）仅防 bug，不限正常长期任务。
             max_rounds = self._config.get("worker_collab_decentralized_max_rounds", 8)
             absolute_max = self._config.get("worker_collab_absolute_max_rounds", 1000)
-            collab_round_raw = msg.get("collab_round")
-            has_collab_round = isinstance(collab_round_raw, int)
-            current_round = collab_round_raw if has_collab_round else 0
             cid = msg.get("collab_id")
+            # Phase1 I-2：消息必须显式携带 collab_round 字段（用 "collab_round" in msg
+            # 区分「有效 round=0」与「缺字段」）。缺字段 → 拒绝并记精炼错误，
+            # 不触发 LLM，不入队。标记已处理避免重复拒绝日志。
+            has_collab_round_field = "collab_round" in msg
+            collab_round_raw = msg.get("collab_round")
+            if not has_collab_round_field or not isinstance(collab_round_raw, int):
+                logger.warning(
+                    "Worker %s 拒绝处理消息 seq=%s:缺失 collab_round 字段(拒绝处理)",
+                    self._agent_id, msg_seq,
+                )
+                await self._mark_msg_processed(msg_seq, cid, msg.get("message_id"))
+                return
+            current_round = collab_round_raw
             effective_max = self._collab_max_rounds.get(cid, max_rounds)
 
             # 绝对硬上限：仅防 bug（如 LLM 永不发 consensus/extend），硬丢弃
@@ -1410,15 +1420,15 @@ class WorkerAdapter:
             # 此时 _compute_outgoing_collab_round 会推进到 current_round+1，
             # 让协作正常进入下一轮。旧逻辑用 >= 会导致双方都在 round1 发过后互相
             # 收到对方 round1 消息时双双被拦截，协作死锁在 round1 无法推进。
+            # Phase1 I-2：闸门改 current_round >= 0（覆盖 round=0，与缺字段拒绝解耦）。
             my_last_sent = self._collab_last_sent_round.get(cid, 0) if cid else 0
-            same_round_gate = current_round > 0 and my_last_sent > current_round
+            same_round_gate = current_round >= 0 and my_last_sent > current_round
 
-            # 触发条件：去中心化 + peer response + 有 collab_round + 未超 effective_max
+            # 触发条件：去中心化 + peer response + 未超 effective_max
             # + 未被同 round 闸门拦截。current_round == effective_max 为最后判断机会（强提示），
             # > effective_max 入队停滞。
             if (self._config.get("worker_collab_decentralized", True)
                     and is_peer_response
-                    and has_collab_round
                     and current_round <= effective_max
                     and not same_round_gate):
                 # 立即标记为已处理（防止重启后重复触发）

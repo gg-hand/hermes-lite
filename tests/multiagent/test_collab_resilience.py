@@ -63,3 +63,21 @@ def test_read_active_messages_excludes_archived_by_default(bb_root: Path):
     # 显式 include_archived=True 仍可读
     msgs_arch = asyncio.run(read_all_active_collab_messages(bb_root, include_archived=True))
     assert any(m.get("collab_id") == cid for m in msgs_arch)
+
+
+def test_response_missing_collab_round_rejected(bb_root: Path):
+    """I-2:response 缺 collab_round 字段被拒绝(精炼错误)。"""
+    cid = "c-round"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    asyncio.run(append_collab_message(bb_root, {"from": "w2", "type": "response",
+        "content": "no round field", "collab_id": cid}, collab_id=cid))
+    w = _make_worker(bb_root)
+    asyncio.run(w._load_archived_collabs())
+    # 构造一条缺 collab_round 的 peer response
+    msg = {"from": "w2", "type": "response", "content": "x", "collab_id": cid,
+           "seq": 5}  # 无 collab_round 字段
+    asyncio.run(w._handle_collab_message(msg))
+    # 缺字段不应触发 LLM(无 orchestrator.chat 调用),不应入 normal_queue
+    assert w._normal_queue == [] or not any(
+        m.get("seq") == 5 for m in w._normal_queue)
+
