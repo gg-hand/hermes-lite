@@ -2566,6 +2566,24 @@ class WorkerAdapter:
                         await asyncio.sleep(
                             self._director_config.get("election_wait_seconds", 5)
                         )
+                        # Phase5 L-2：重新检查 director.md（等价于原递归的重新检查）。
+                        # 若胜者已启动 Director（心跳新鲜）→ 返回健康级别；
+                        # 若 director.md 缺失 → 等价于原递归早返回 "offline"，
+                        # 不进自治（与原递归行为一致）。
+                        recheck_md = await read_director_md(self._bb_root)
+                        if not recheck_md:
+                            return "offline"
+                        recheck_tick = recheck_md.get("last_director_tick", "")
+                        if not recheck_tick:
+                            return "offline"
+                        recheck_age = datetime.now(timezone.utc) - _parse_iso(recheck_tick)
+                        if recheck_age <= timedelta(seconds=timeout):
+                            return (
+                                "degraded"
+                                if recheck_age >= timedelta(seconds=degraded_threshold)
+                                else "healthy"
+                            )
+                        # 仍 stale，继续循环重试选举
                     if not took_over:
                         logger.warning(
                             "选举重试达深度上限 %d，回退到自治模式",
