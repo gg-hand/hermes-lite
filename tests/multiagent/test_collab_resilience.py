@@ -100,3 +100,12 @@ def test_dead_code_removed_migrated_to_append_collab(bb_root: Path):
     assert not hasattr(WorkerAdapter, "_forward_a2a_message")
 
 
+def test_archive_collab_idempotent(bb_root: Path):
+    """Phase2:archive_collab 幂等,重复归档返回 False。"""
+    cid = "c-idem"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=[]))
+    assert asyncio.run(archive_collab(bb_root, cid)) is True   # 首次
+    assert asyncio.run(archive_collab(bb_root, cid)) is False  # 重复 no-op
+    assert asyncio.run(archive_collab(bb_root, "not-exist")) is False
+
+

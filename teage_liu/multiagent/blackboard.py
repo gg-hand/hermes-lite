@@ -941,31 +941,38 @@ async def update_collab_index(
 
 
 async def archive_collab(bb_root: Path, collab_id: str) -> bool:
-    """归档协作：将 index 中该 collab_id 的 status 置为 archived。
+    """归档协作：将 index 中该 collab_id 的 status 置为 archived（幂等）。
 
     保留原 title / participants / created_at，仅更新 status 与 updated_at。
-    协作结束（consensus/end）时由 worker_adapter 调用。
-    文件留在 collabs/{collab_id}.md 供历史查询（?collab_id=X），
-    默认 active 聚合流（/messages 无 collab_id）不再包含归档协作。
+    协作结束（consensus/end）时由 worker_adapter 调用；Phase2 起也由
+    CollabHealthMonitor 检测停滞/死循环时调用。文件留在 collabs/{collab_id}.md
+    供历史查询（?collab_id=X），默认 active 聚合流（/messages 无 collab_id）
+    不再包含归档协作。
 
     Returns:
-        True 若找到并归档；False 若 collab_id 不在 index 中。
+        True 若本次「真正归档」(从非 archived → archived);
+        False 若 collab_id 不在 index 中,或已被归档(no-op)。
+        多 worker 并发检测停滞时,仅首个返回 True,其余 no-op 无冲突。
     """
-    entries = await read_collab_index(bb_root)
-    target = None
-    for e in entries:
-        if e.get("collab_id") == collab_id:
-            target = e
-            break
-    if target is None:
-        return False
-    await update_collab_index(
-        bb_root, collab_id,
-        title=target.get("title", ""),
-        status="archived",
-        participants=target.get("participants", []),
-    )
-    return True
+    writer = _get_global_writer(bb_root)
+    async with writer._lock:
+        entries = await read_collab_index(bb_root)
+        target = None
+        for e in entries:
+            if e.get("collab_id") == collab_id:
+                target = e
+                break
+        if target is None:
+            return False
+        if target.get("status") == "archived":
+            return False  # 已归档,no-op
+        await _update_collab_index_locked(
+            bb_root, collab_id,
+            title=target.get("title", ""),
+            status="archived",
+            participants=target.get("participants", []),
+        )
+        return True
 
 
 async def list_active_collab_ids(bb_root: Path) -> list[str]:
