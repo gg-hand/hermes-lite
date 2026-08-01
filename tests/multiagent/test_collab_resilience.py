@@ -227,3 +227,23 @@ def test_director_broadcast_index_failure_self_heals(bb_root: Path, monkeypatch)
     assert calls["update"] >= 3  # 重试到成功
 
 
+def test_extend_llm_failure_uses_retry_queue(bb_root: Path):
+    """E-3:extend 后 LLM 失败走重试队列,超限通知发起方(与 L-1 一致)。"""
+    cid = "c-e3"
+    asyncio.run(update_collab_index(bb_root, cid, title="t", status="active", participants=["w1"]))
+    orch = _FailingOrch(fail_times=99)
+    w = _make_worker_with_orch(bb_root, orch)
+    asyncio.run(w._load_archived_collabs())
+    # extend 消息
+    asyncio.run(append_collab_message(bb_root, {"from": "w2", "type": "extend",
+        "content": "继续", "collab_id": cid, "collab_round": 2, "seq": 20,
+        "message_id": "m20"}, collab_id=cid))
+    msgs = asyncio.run(read_all_active_collab_messages(bb_root))
+    ext = [m for m in msgs if m.get("type") == "extend"][-1]
+    asyncio.run(w._handle_collab_message(ext))
+    asyncio.run(w._drain_retry_queue())
+    from teage_liu.multiagent.blackboard import read_collab_messages
+    msgs2 = asyncio.run(read_collab_messages(bb_root, collab_id=cid))
+    assert any(m.get("error") is True and m.get("collab_round") == 2 for m in msgs2)
+
+
