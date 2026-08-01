@@ -366,31 +366,38 @@ async def append_message(bb_root: Path, message: dict, validate: bool = False) -
 
     每条消息写为独立 frontmatter 块，便于后续按 frontmatter 解析。
 
+    Phase3 N-4：跨进程 FileLock 串行化「读尾 seq → 分配 → 追加」整个临界区，
+    防止并发 append 导致 seq 冲突或 frontmatter 块交错损坏（解析丢失）。
+
     Args:
         bb_root: 黑板根目录
         message: 消息字典。若缺失 seq 字段，自动分配（last_seq + 1）
         validate: 是否调用 SchemaValidator 验证消息格式（默认 False 兼容现有）
     """
-    # 自动分配 seq（如果缺失）
-    if "seq" not in message or message.get("seq") is None:
-        last_seq = await _read_last_message_seq(bb_root)
-        message = {**message, "seq": last_seq + 1}
-
-    # 可选 schema 验证
-    if validate:
-        from teage_liu.multiagent.schema_validator import SchemaValidator
-
-        validator = SchemaValidator(enabled=True)
-        validator.validate_messages_record(message)
-
     messages_path = bb_root / "messages.md"
     messages_path.parent.mkdir(parents=True, exist_ok=True)
-    yaml_str = yaml.safe_dump(message, sort_keys=False, allow_unicode=True)
-    content = f"---\n{yaml_str}---\n\n{message.get('content', '')}\n\n"
-    async with aiofiles.open(messages_path, "a", encoding="utf-8") as f:
-        await f.write(content)
-        await f.flush()
-        os.fsync(f.fileno())
+    # 延迟导入避免循环依赖（file_lock.py 导入 blackboard.py 的 atomic_write/read_json）
+    from teage_liu.multiagent.file_lock import FileLock
+
+    async with FileLock(messages_path):
+        # seq 分配在锁内（读尾），避免并发分配重复 seq
+        if "seq" not in message or message.get("seq") is None:
+            last_seq = await _read_last_message_seq(bb_root)
+            message = {**message, "seq": last_seq + 1}
+
+        # 可选 schema 验证
+        if validate:
+            from teage_liu.multiagent.schema_validator import SchemaValidator
+
+            validator = SchemaValidator(enabled=True)
+            validator.validate_messages_record(message)
+
+        yaml_str = yaml.safe_dump(message, sort_keys=False, allow_unicode=True)
+        content = f"---\n{yaml_str}---\n\n{message.get('content', '')}\n\n"
+        async with aiofiles.open(messages_path, "a", encoding="utf-8") as f:
+            await f.write(content)
+            await f.flush()
+            os.fsync(f.fileno())
 
 
 async def _read_last_message_seq(bb_root: Path) -> int:

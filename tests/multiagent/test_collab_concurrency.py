@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from teage_liu.multiagent.agent_registry import AgentRegistry
 from teage_liu.multiagent.blackboard import read_yaml_frontmatter
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _registry(bb_root: Path) -> AgentRegistry:
@@ -68,4 +73,24 @@ def test_ordered_set_dedup_and_fifo_evict():
     s.add("c"); s.add("d")  # 超 cap=3,淘汰 a(FIFO 最早)
     assert "a" not in s
     assert "b" in s and "c" in s and "d" in s
+
+
+def test_concurrent_append_message_no_loss(bb_root: Path):
+    """N-4:并发 append_message 无消息丢失、seq 不重复。"""
+    from teage_liu.multiagent.blackboard import append_message, read_messages
+
+    async def writer(n: int):
+        for i in range(30):
+            await append_message(bb_root, {"from": "w", "type": "status",
+                "content": f"m-{n}-{i}", "timestamp": _now_iso()})
+
+    async def main():
+        await asyncio.gather(writer(0), writer(1), writer(2))
+
+    asyncio.run(main())
+    msgs = asyncio.run(read_messages(bb_root))
+    assert len(msgs) == 90
+    seqs = [m.get("seq") for m in msgs]
+    assert len(set(seqs)) == len(seqs)  # 无重复
+
 
