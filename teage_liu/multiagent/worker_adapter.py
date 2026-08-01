@@ -1312,6 +1312,9 @@ class WorkerAdapter:
         ]
 
         if not new_messages:
+            # Phase6 D11：本轮次无新消息，清缓存让下次轮询重载
+            # （生产中 watchdog 也会失效；此处兜底测试/无 watchdog 场景）
+            self._collab_msg_cache = None
             return False
 
         max_seq = self._last_collab_seq
@@ -1325,6 +1328,9 @@ class WorkerAdapter:
         if max_seq > self._last_collab_seq:
             self._last_collab_seq = max_seq
             await self._persist_last_collab_seq()
+        # Phase6 D11：处理完后清缓存，下次轮询重载（_handle_collab_message
+        # 可能写入新消息，需确保下次轮询看到）
+        self._collab_msg_cache = None
         return True
 
     # ========== 休眠模式 ==========
