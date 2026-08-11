@@ -24,6 +24,8 @@ data/*
 .idea/
 .vscode/
 .zcode/
+# ── 代码索引（codegraph MCP 本地索引，可重新生成） ──
+.codegraph/
 *.swp
 *.swo
 
