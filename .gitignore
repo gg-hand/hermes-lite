@@ -23,6 +23,7 @@ data/*
 .trae/
 .idea/
 .vscode/
+.zcode/
 *.swp
 *.swo
 
