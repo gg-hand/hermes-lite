@@ -1513,12 +1513,7 @@ function init() {
   // 3.7. 配置编辑器绑定（7.1）
   const cfgSaveBtn = document.getElementById('cfgSaveBtn');
   if (cfgSaveBtn) cfgSaveBtn.addEventListener('click', saveScheduleConfig);
-  const cfgModal = document.getElementById('configEditorModal');
-  if (cfgModal) {
-    cfgModal.addEventListener('click', (e) => {
-      if (e.target === cfgModal) closeConfigEditor();
-    });
-  }
+  // 配置编辑器弹窗只能通过关闭按钮/取消按钮关闭，不响应遮罩点击
   // Drawer 次级 Tab 切换
   document.querySelectorAll('.drawer-tab').forEach(tab => {
     tab.addEventListener('click', () => switchDrawerSubTab(tab.dataset.drawerTab));
@@ -1530,12 +1525,8 @@ function init() {
     runsLimitSel.addEventListener('change', () => { _lastScheduleRunId = null; fetchScheduleRuns(); });
   }
 
-  // 4. modal-overlay 遮罩点击关闭
-  document.querySelectorAll('.modal-overlay').forEach(el => {
-    el.addEventListener('click', (e) => {
-      if (e.target === el) el.classList.remove('show');
-    });
-  });
+  // 4. 弹窗只能通过关闭按钮/取消按钮关闭，不响应遮罩点击
+  // （避免用户按下打开弹窗、松手落在遮罩上导致弹窗立即关闭的体验问题）
 
   // 5. 表单事件绑定
   const createScheduleBtn = document.getElementById('createScheduleBtn');

@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import logging
 import signal
-import sys
 from pathlib import Path
 
 from teage_liu.multiagent.blackboard import Blackboard
@@ -65,9 +64,37 @@ async def main_async(bb_root: Path, mode: str = "script") -> None:
             pass
 
     await director.start()
+
+    # director_v2_enabled：监听 director._loop_task 退出，触发 stop_event.set()
+    # 修复 B2：_loop_task 异常退出时旧逻辑只等 SIGINT/SIGTERM，导致子进程僵尸
+    # （仍持 director.lock，无法被新实例获取）。watcher 在 _loop_task 结束后
+    # 主动 set stop_event，使 main_async 走 finally 调 director.stop() 释放锁。
+    watcher = None
+    if config.get("director_v2_enabled", True):
+        async def _watch_loop_task():
+            """监听 director._loop_task 退出，触发 stop_event.set()。"""
+            try:
+                await director._loop_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Director 主循环异常退出")
+            finally:
+                stop_event.set()
+
+        # _loop_task 在 director.start() 内被赋值，此处已保证 start() 完成
+        if director._loop_task is not None:
+            watcher = asyncio.create_task(_watch_loop_task())
+
     try:
         await stop_event.wait()
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
         await director.stop()
 
 

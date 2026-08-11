@@ -17,7 +17,6 @@ epoch 机制防旧 Director 写入。
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -97,6 +96,7 @@ class DirectorEngine:
         config: dict,
         agent_id: str = "director_001",
         signature_verifier=None,
+        director_protocol=None,
     ):
         """初始化 Director 引擎。
 
@@ -105,6 +105,9 @@ class DirectorEngine:
             config: 完整配置字典（含 multiagent.director 段）
             agent_id: Director 的 agent_id
             signature_verifier: 可选的 SignatureVerifier 实例
+            director_protocol: 可选的 DirectorProtocol 实例（Task 7 新增，
+                用于 observe_collab / detect_anomaly 委托）。为 None 时
+                observe_collab 直接读 collab 消息，detect_anomaly 返回空列表。
         """
         self._bb_root = bb_root
         self._config = config.get("multiagent", {}).get("director", {})
@@ -134,6 +137,13 @@ class DirectorEngine:
 
         # flush 幂等：已处理的 op_id 集合
         self._flushed_op_ids: set[str] = set()
+
+        # Task 7：DirectorProtocol 委托（观察者模式）
+        self._director_protocol = director_protocol
+
+        # 任务1.3：子任务失败计数（连续失败 10 次触发 director 重启）
+        # keys 在 _run_loop 启动时按 tasks 列表初始化
+        self._task_failure_counts: dict[str, int] = {}
 
     async def start(self) -> None:
         """启动 Director 引擎。"""
@@ -302,23 +312,115 @@ class DirectorEngine:
         )
 
     async def _run_loop(self) -> None:
-        """Director 主循环。
+        """Director 主循环（Task 7：观察者模式，移除 _dispatch_tasks 调用）。
 
         首次迭代前先 sleep tick_interval，避免覆盖 _increment_epoch 刚写入的
         last_director_tick（测试需要在 start() 后立即写入自定义 tick）。
+
+        保留的基础设施循环：tick 更新 / Worker 心跳监督 / 轮次超时 / flush pending / 仲裁
+        新增：observe_collab + detect_anomaly + 按需注入 intervention directive
+
+        任务1.3：每个子任务独立 try/except，单个子任务抛异常不拖垮主循环；
+        连续失败 10 次触发 director 重启（_running=False 后退出）。
         """
+        # 子任务清单（name, fn）二元组：name 用于失败计数键
+        tasks = [
+            ("tick",          self._update_director_tick),
+            ("heartbeat",     self._check_worker_heartbeats),
+            ("turn_timeout",  self._check_turn_timeout),
+            ("observe",       self._observe_and_intervene),
+            ("flush_pending", self._flush_pending_messages),
+            ("arbitrate",     self._arbitrate_conflicts),
+        ]
+        # 初始化失败计数 keys（与 __init__ 中预声明呼应，避免硬编码名字）
+        for name, _ in tasks:
+            self._task_failure_counts.setdefault(name, 0)
+
         try:
             while self._running:
                 await asyncio.sleep(self._tick_interval)
-                await self._update_director_tick()
-                await self._check_worker_heartbeats()
-                await self._check_turn_timeout()
-                await self._dispatch_tasks()
-                await self._flush_pending_messages()
-                await self._arbitrate_conflicts()
+                failed_this_round: set[str] = set()
+                for name, fn in tasks:
+                    try:
+                        await fn()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        # 单个子任务失败不拖垮主循环，仅累加连续失败计数
+                        logger.warning(
+                            "Director 子任务 %s 失败: %s", name, e, exc_info=True
+                        )
+                        failed_this_round.add(name)
+                        self._task_failure_counts[name] = (
+                            self._task_failure_counts.get(name, 0) + 1
+                        )
+                        if self._task_failure_counts[name] > 10:
+                            logger.error(
+                                "子任务 %s 连续失败 10 次，触发 director 重启",
+                                name,
+                            )
+                            self._running = False
+                            return
+                # 衰减本轮成功任务的失败计数（仅未失败的任务衰减）。
+                # 这样偶尔失败不会累积，但连续失败会单调上升触发重启。
+                for name in self._task_failure_counts:
+                    if name not in failed_this_round and self._task_failure_counts[name] > 0:
+                        self._task_failure_counts[name] -= 1
         except asyncio.CancelledError:
             logger.info("Director 主循环被取消")
             raise
+        except Exception as e:
+            # 主循环本身（如 sleep 被中断）的兜底
+            logger.exception("Director 主循环异常: %s", e)
+
+    async def _observe_and_intervene(self) -> None:
+        """观察协作状态 + 检测异常 + 按需注入 intervention directive（Task 7 新增）。
+
+        - 无 director_protocol 时静默跳过（保持纯基础设施模式）
+        - 检测到 timeout 异常时注入 intervention directive
+        """
+        if self._director_protocol is None:
+            return
+
+        try:
+            anomalies = await self.detect_anomaly()
+            for anomaly in anomalies:
+                if anomaly.get("type") == "timeout":
+                    await self._director_protocol.inject_directive(
+                        content=f"检测到超时：{anomaly.get('detail', '')}",
+                        rule_type="intervention",
+                        target="*",
+                        priority="high",
+                    )
+                    logger.warning(
+                        "Director 检测到超时异常，已注入 intervention: %s",
+                        anomaly.get("detail", ""),
+                    )
+        except Exception as e:
+            logger.warning("Director observe_and_intervene 异常: %s", e)
+
+    async def observe_collab(self) -> dict:
+        """观察协作状态（Task 7 新增，委托给 director_protocol.observe）。
+
+        无 director_protocol 时直接读 collab 消息返回基础状态。
+        """
+        if self._director_protocol is not None:
+            return await self._director_protocol.observe()
+        # 降级：直接读 collab 消息
+        from teage_liu.multiagent.blackboard import read_collab_messages
+        messages = await read_collab_messages(self._bb_root)
+        return {"message_count": len(messages), "messages": messages}
+
+    async def detect_anomaly(self) -> list[dict]:
+        """检测异常（Task 7 新增，委托给 director_protocol.detect_anomaly）。
+
+        无 director_protocol 或 protocol 无 detect_anomaly 方法时返回空列表。
+        """
+        if self._director_protocol is not None and hasattr(
+            self._director_protocol, "detect_anomaly"
+        ):
+            return await self._director_protocol.detect_anomaly()
+        return []
 
     async def _update_director_tick(self) -> None:
         """更新 director.md.last_director_tick。"""
@@ -489,6 +591,10 @@ class DirectorEngine:
         - trust_score < rejected_threshold (30) → 拒绝该 agent 的写操作
         - trust_score < force_offline_threshold (10) → 强制下线
         - 单次 delta 不超过 max_single_delta (5)
+
+        任务1.2：用 FileLock 保护 agent_card.md 的读-改-写临界区，
+        防止 Director 与 Worker / 其他 Director 实例并发写导致字段丢失。
+        FileLock 调用点用 director_v2_enabled 开关包住（默认 True 启用）。
         """
         from teage_liu.multiagent.agent_registry import AgentRegistry
         from teage_liu.multiagent.schema_validator import SchemaValidator
@@ -510,13 +616,29 @@ class DirectorEngine:
         if agent_file.exists():
             from teage_liu.multiagent.blackboard import read_yaml_frontmatter
 
-            frontmatter, body = read_yaml_frontmatter(agent_file)
-            frontmatter["trust_score"] = new_score
-            yaml_str = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True)
-            content = f"---\n{yaml_str}---\n{body}"
-            await atomic_write(agent_file, content)
+            if self._config.get("director_v2_enabled", True):
+                # 任务1.2：跨进程 FileLock 保护读-改-写
+                from teage_liu.multiagent.file_lock import FileLock
 
-        # 阈值检查
+                async with FileLock(agent_file):
+                    frontmatter, body = read_yaml_frontmatter(agent_file)
+                    frontmatter["trust_score"] = new_score
+                    yaml_str = yaml.safe_dump(
+                        frontmatter, sort_keys=False, allow_unicode=True
+                    )
+                    content = f"---\n{yaml_str}---\n{body}"
+                    await atomic_write(agent_file, content)
+            else:
+                # 兼容旧路径（FileLock 关闭，保持原行为）
+                frontmatter, body = read_yaml_frontmatter(agent_file)
+                frontmatter["trust_score"] = new_score
+                yaml_str = yaml.safe_dump(
+                    frontmatter, sort_keys=False, allow_unicode=True
+                )
+                content = f"---\n{yaml_str}---\n{body}"
+                await atomic_write(agent_file, content)
+
+        # 阈值检查（update_agent_status 内部已自带 FileLock，此处不嵌套）
         if new_score < self._force_offline_threshold:
             await registry.update_agent_status(agent_id, "offline")
         elif new_score < self._rejected_threshold:
@@ -544,73 +666,6 @@ class DirectorEngine:
                 "signature": "",
             },
         )
-
-    async def _dispatch_tasks(self) -> None:
-        """扫描 messages.md 中未分派的 task 消息，分派给 active worker。"""
-        from teage_liu.multiagent.agent_registry import AgentRegistry
-        from teage_liu.multiagent.blackboard import append_message, read_messages
-        from teage_liu.multiagent.schema_validator import SchemaValidator
-
-        messages = await read_messages(self._bb_root)
-
-        assigned_op_ids = {
-            m.get("task_op_id") for m in messages
-            if m.get("type") == "assign" and m.get("task_op_id")
-        }
-
-        pending_tasks = [
-            m for m in messages
-            if m.get("type") == "task"
-            and m.get("task_op_id") not in assigned_op_ids
-        ]
-
-        if not pending_tasks:
-            return
-
-        registry = AgentRegistry(self._bb_root, SchemaValidator(enabled=False))
-        active_agents = await registry.list_active_agents()
-        active_workers = [
-            a for a in active_agents
-            if a.get("role") == "worker" and a.get("status") == "active"
-        ]
-        if not active_workers:
-            logger.warning("Director: 无 active worker，%d 个任务等待分派", len(pending_tasks))
-            return
-
-        active_workers.sort(key=lambda a: a.get("agent_id", ""))
-        active_worker_ids = [a["agent_id"] for a in active_workers]
-
-        for task_msg in pending_tasks:
-            task_op_id = task_msg.get("task_op_id", "")
-            target_agents = task_msg.get("target_agents") or []
-
-            chosen = None
-            for tid in target_agents:
-                if tid in active_worker_ids:
-                    chosen = tid
-                    break
-            if chosen is None and not target_agents:
-                chosen = active_worker_ids[0]
-            if chosen is None:
-                logger.warning(
-                    "Director: task task_op_id=%s 的 target_agents=%s 均不在线，跳过",
-                    task_op_id, target_agents,
-                )
-                continue
-
-            assign_msg = {
-                "from": self._agent_id,
-                "to": chosen,
-                "timestamp": _now_iso(),
-                "type": "assign",
-                "content": task_msg.get("content", ""),
-                "reply_to": task_msg.get("seq"),
-                "task_op_id": task_op_id,
-                "assigned_to": chosen,
-                "epoch": self._current_epoch,
-            }
-            await append_message(self._bb_root, assign_msg, validate=True)
-            logger.info("Director: 任务 task_op_id=%s 已分派给 %s", task_op_id, chosen)
 
     async def _check_turn_timeout(self) -> None:
         """检查轮次超时并推进。"""
@@ -720,7 +775,6 @@ class DirectorEngine:
             return
 
         # 解析 pending 消息（YAML frontmatter 块）
-        from teage_liu.multiagent.blackboard import read_yaml_frontmatter
 
         # 按 "---\n" 分割多个 frontmatter 块
         parts = content.split("---\n")

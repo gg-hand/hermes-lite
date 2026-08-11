@@ -49,6 +49,36 @@ def _get_config_path() -> str:
     return "config.yaml"
 
 
+def _main_session_collab_guidance(session_id: Optional[str]) -> Optional[str]:
+    """主会话协作引导段（条件注入，extra_system_prompt）。
+
+    仅当全部满足时返回引导文本，否则返回 None（主 SYSTEM_PROMPT 不变）：
+    - ``multiagent.enabled`` 且 ``main_session_collab.enabled`` 且 ``inject_prompt``
+    - ``a2a.enabled``（工具已注册，避免引导存在但无工具可用）
+    - session_id 非 ``cron:`` / ``multiagent_`` 前缀（协作/调度会话不注入）
+    """
+    try:
+        config = load_config(_get_config_path())
+        multiagent_cfg = config.get("multiagent", {}) or {}
+        if not multiagent_cfg.get("enabled"):
+            return None
+        msc = multiagent_cfg.get("main_session_collab", {}) or {}
+        if not msc.get("enabled", False) or not msc.get("inject_prompt", True):
+            return None
+        a2a_cfg = config.get("a2a", {}) or {}
+        if not a2a_cfg.get("enabled"):
+            return None
+        if session_id and (
+            session_id.startswith("cron:") or session_id.startswith("multiagent_")
+        ):
+            return None
+        from teage_liu.llm.prompts import build_main_session_collab_guidance
+
+        return build_main_session_collab_guidance(msc)
+    except Exception:
+        return None
+
+
 # ---------- 端点 ----------
 
 
@@ -86,6 +116,7 @@ async def chat(req: ChatRequest,
         try:
             response_text = await orchestrator.chat(
                 session_id, req.message, cancel_event=cancel_event,
+                extra_system_prompt=_main_session_collab_guidance(session_id),
             )
         finally:
             if stream_manager is not None and cancel_event is not None:
@@ -162,6 +193,7 @@ def chat_stream(req: ChatRequest,
                     cancel_event=cancel_event,
                     is_cron=False,
                     stream_manager=stream_manager,
+                    extra_system_prompt=_main_session_collab_guidance(session_id),
                 ).__aiter__()
                 while True:
                     try:

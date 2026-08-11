@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -82,7 +83,7 @@ class TestA2AGatewayEndpoints:
             "agent_version": "1.0.0",
             "protocol_version": "1.0.0",
             "created_at": "2026-07-21T00:00:00Z",
-            "last_heartbeat": "2026-07-21T00:00:00Z",
+            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
             "heartbeat_interval_seconds": 10,
             "status": "active",
             "role": "worker",
@@ -203,7 +204,8 @@ class TestA2AGatewayPathSandbox:
             assert "error" in data
             assert data["error"]["code"] == -32002
             assert "absolute" in data["error"]["message"].lower() or \
-                   "绝对" in data["error"]["message"]
+                   "绝对" in data["error"]["message"] or \
+                   "not in readable whitelist" in data["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_path_with_traversal_rejected(self, bb_root: Path, gateway_config):
@@ -221,7 +223,8 @@ class TestA2AGatewayPathSandbox:
             assert "error" in data
             assert data["error"]["code"] == -32002
             assert "traversal" in data["error"]["message"].lower() or \
-                   "穿越" in data["error"]["message"]
+                   "穿越" in data["error"]["message"] or \
+                   "not in readable whitelist" in data["error"]["message"].lower()
 
 
 class TestA2AGatewayRateLimit:
@@ -245,3 +248,229 @@ class TestA2AGatewayRateLimit:
             # 第三次应被限流
             resp = client.get("/a2a/health")
             assert resp.status_code == 429
+
+
+class TestA2AGatewayReadFileACL:
+    """A2A Gateway read_file ACL 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_read_file_allows_protocol_md(self, bb_root: Path, gateway_config):
+        """允许读取 protocol.md。"""
+        (bb_root / "protocol.md").write_text("# Protocol", encoding="utf-8")
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "read_file",
+                "params": {"path": "protocol.md"},
+                "id": 1,
+            })
+            data = resp.json()
+            assert "result" in data
+            assert data["result"]["exists"] is True
+
+    @pytest.mark.asyncio
+    async def test_read_file_allows_director_md(self, bb_root: Path, gateway_config):
+        """允许读取 director.md。"""
+        (bb_root / "director.md").write_text("---\n---\n", encoding="utf-8")
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "read_file",
+                "params": {"path": "director.md"},
+                "id": 1,
+            })
+            data = resp.json()
+            assert data["result"]["exists"] is True
+
+    @pytest.mark.asyncio
+    async def test_read_file_rejects_agents_dir(self, bb_root: Path, gateway_config):
+        """禁止读取 agents/ 目录（含 agent 元数据）。"""
+        (bb_root / "agents").mkdir(exist_ok=True)
+        (bb_root / "agents" / "secret.md").write_text("secret", encoding="utf-8")
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "read_file",
+                "params": {"path": "agents/secret.md"},
+                "id": 1,
+            })
+            data = resp.json()
+            assert data["error"]["code"] == -32002
+
+    @pytest.mark.asyncio
+    async def test_read_file_rejects_audit_dir(self, bb_root: Path, gateway_config):
+        """禁止读取 audit/ 目录。"""
+        (bb_root / "audit").mkdir(exist_ok=True)
+        (bb_root / "audit" / "audit.jsonl").write_text("[]", encoding="utf-8")
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "read_file",
+                "params": {"path": "audit/audit.jsonl"},
+                "id": 1,
+            })
+            data = resp.json()
+            assert data["error"]["code"] == -32002
+
+    @pytest.mark.asyncio
+    async def test_read_file_rejects_status_json(self, bb_root: Path, gateway_config):
+        """禁止读取 status.json（含 fencing_token 等敏感字段）。"""
+        (bb_root / "status.json").write_text("{}", encoding="utf-8")
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "read_file",
+                "params": {"path": "status.json"},
+                "id": 1,
+            })
+            data = resp.json()
+            assert data["error"]["code"] == -32002
+
+
+class TestA2AGatewayHeartbeat:
+    """A2A Gateway heartbeat 字段统一测试。"""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_with_status_and_current_task(
+        self, bb_root: Path, gateway_config
+    ):
+        """heartbeat 接受 status 和 current_task 字段。"""
+        from teage_liu.multiagent.agent_registry import AgentRegistry
+        from teage_liu.multiagent.schema_validator import SchemaValidator
+
+        # 先注册一个 agent
+        registry = AgentRegistry(bb_root, SchemaValidator())
+        await registry.register({
+            "agent_id": "agent_test_hb",
+            "agent_version": "1.0.0",
+            "protocol_version": "1.0.0",
+            "status": "active",
+            "role": "worker",
+            "last_heartbeat": "2026-01-01T00:00:00+00:00",
+            "heartbeat_interval_seconds": 10,
+        })
+
+        app = _make_app(bb_root, gateway_config)
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0",
+                "method": "heartbeat",
+                "params": {
+                    "agent_id": "agent_test_hb",
+                    "status": "busy",
+                    "current_task": "task-001",
+                    "ts": "2026-07-29T10:00:00+00:00",
+                },
+                "id": 1,
+            })
+            data = resp.json()
+            assert "result" in data
+            assert data["result"]["ok"] is True
+
+        # 验证 agent_card 的 status 已更新
+        card = await registry.get_agent("agent_test_hb")
+        assert card["status"] == "busy"
+
+
+class TestCollabMessageMethod:
+    """主会话协作通道 collab_message JSON-RPC 方法测试。"""
+
+    @pytest.fixture
+    def main_gateway_config(self):
+        return {
+            "multiagent": {"worker": {"agent_id": "teagent-lu"}},
+            "a2a": {
+                "enabled": True,
+                "rate_limit_per_second": 100,
+            },
+        }
+
+    def _call(self, app, method, params, req_id=1):
+        with TestClient(app) as client:
+            resp = client.post("/a2a/jsonrpc", json={
+                "jsonrpc": "2.0", "method": method, "params": params, "id": req_id,
+            })
+            return resp.json()
+
+    def test_request_to_self_written_to_main_collab(self, bb_root, main_gateway_config):
+        """request 且 to==本机 → 写入 collabs/main_{cid}.md。"""
+        app = _make_app(bb_root, main_gateway_config)
+        data = self._call(app, "collab_message", {
+            "channel": "main_session", "type": "request",
+            "from": "teagent-lu", "to": "teagent-lu",
+            "content": "帮我总结", "collab_id": "main_abc123",
+            "message_id": "main_msg_1", "priority": "high",
+            "wait_for_response": True,
+        })
+        assert "result" in data
+        assert data["result"]["ok"] is True
+        file = bb_root / "collabs" / "main_abc123.md"
+        assert file.exists()
+        text = file.read_text(encoding="utf-8")
+        assert "channel: main_session" in text
+        assert "type: request" in text
+
+    def test_request_to_other_ignored(self, bb_root, main_gateway_config):
+        """request 且 to!=本机 → not_target 忽略（不写镜像）。"""
+        app = _make_app(bb_root, main_gateway_config)
+        data = self._call(app, "collab_message", {
+            "channel": "main_session", "type": "request",
+            "from": "teagent-lu", "to": "teagent-liu-2",
+            "content": "不是给你的", "collab_id": "main_abc456",
+            "message_id": "main_msg_2",
+        })
+        assert data["result"]["ok"] is False
+        assert data["result"]["ignored"] == "not_target"
+        assert not (bb_root / "collabs" / "main_abc456.md").exists()
+
+    def test_response_unknown_collab_discarded(self, bb_root, main_gateway_config):
+        """response 且本地无该 collab → not_participant（防广播污染）。"""
+        app = _make_app(bb_root, main_gateway_config)
+        data = self._call(app, "collab_message", {
+            "channel": "main_session", "type": "response",
+            "from": "teagent-liu-2", "to": "teagent-lu",
+            "content": "结果", "collab_id": "main_nonexist",
+            "message_id": "main_msg_3",
+        })
+        assert data["result"]["ok"] is False
+        assert data["result"]["ignored"] == "not_participant"
+
+    def test_response_known_collab_written(self, bb_root, main_gateway_config):
+        """先有 request，response 且 collab 在 index → 写入镜像。"""
+        app = _make_app(bb_root, main_gateway_config)
+        cid = "main_known1"
+        # 先写 request（建 index）
+        self._call(app, "collab_message", {
+            "channel": "main_session", "type": "request",
+            "from": "teagent-lu", "to": "teagent-lu",
+            "content": "发起", "collab_id": cid,
+            "message_id": "main_msg_4",
+        })
+        # 再写 response
+        data = self._call(app, "collab_message", {
+            "channel": "main_session", "type": "response",
+            "from": "teagent-liu-2", "to": "teagent-lu",
+            "content": "结果内容", "collab_id": cid,
+            "message_id": "main_msg_5",
+        })
+        assert data["result"]["ok"] is True
+        text = (bb_root / "collabs" / f"{cid}.md").read_text(encoding="utf-8")
+        assert "type: response" in text
+        assert "teagent-liu-2" in text
+
+    def test_non_main_namespace_rejected(self, bb_root, main_gateway_config):
+        """collab_id 非 main_ 前缀 → invalid_collab_namespace。"""
+        app = _make_app(bb_root, main_gateway_config)
+        data = self._call(app, "collab_message", {
+            "channel": "main_session", "type": "request",
+            "from": "teagent-lu", "to": "teagent-lu",
+            "content": "非法命名空间", "collab_id": "collab_worker_1",
+            "message_id": "main_msg_6",
+        })
+        assert data["result"]["ok"] is False
+        assert data["result"]["ignored"] == "invalid_collab_namespace"

@@ -248,3 +248,8 @@ class DirectorSignatureError(ToolError):
             )
         super().__post_init__()
 
+
+class WorkerStateError(Exception):
+    """Worker 状态持久化错误（如路径违规、序列化失败）。"""
+    pass
+

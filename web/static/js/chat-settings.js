@@ -89,12 +89,8 @@ async function openSettings() {
   try {
     const data = await api('/config');
     currentConfig = data.config;
+    // multiagent 配置段由 renderSettingsForm 统一渲染到「协作」tab，无需单独处理
     renderSettingsForm(currentConfig);
-    // Plan 4: 渲染 multiagent 配置段
-    const multiagentContainer = document.getElementById('multiagent-settings-container');
-    if (multiagentContainer && window.MultiagentSettings) {
-      window.MultiagentSettings.render(multiagentContainer, currentConfig);
-    }
   } catch (e) {
     settingsBodyEl.innerHTML = '<div style="color: var(--danger);">加载配置失败: ' + escapeHtml(e.message) + '</div>';
   }
@@ -588,6 +584,7 @@ function renderSettingsForm(config) {
     { key: 'security', label: '安全', icon: iconShield(), sections: [secSecurity, secGuardrail, secReadPaths] },
     { key: 'storage', label: '存储', icon: iconStorage(), sections: [secStorage, secFiles, secOCR, secStorageAdv] },
     { key: 'advanced', label: '进阶', icon: iconAdvanced(), sections: [secLLMAdv, secMemoryAdv, secToolsAdv, secInterrupt] },
+    { key: 'multiagent', label: '协作', icon: iconMultiagent(), sections: ['<div id="multiagent-tab-container"></div>'] },
   ];
 
   // 分类图标（统一 SVG，无 emoji）
@@ -602,6 +599,9 @@ function renderSettingsForm(config) {
   }
   function iconAdvanced() {
     return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>';
+  }
+  function iconMultiagent() {
+    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
   }
 
   const navHtml = categories.map((c, i) => `
@@ -622,6 +622,12 @@ function renderSettingsForm(config) {
   bindReasoningToggle();
   syncReasoningStatus();
   bindSettingsNav();
+
+  // 渲染多 Agent 协作配置段到「协作」tab 的 placeholder 容器
+  const multiagentTabContainer = document.getElementById('multiagent-tab-container');
+  if (multiagentTabContainer && window.MultiagentSettings) {
+    window.MultiagentSettings.render(multiagentTabContainer, config);
+  }
 }
 
 // ========== 设置导航切换 ==========
@@ -660,8 +666,8 @@ async function saveConfig() {
     obj[path[path.length - 1]] = val;
   });
 
-  // Plan 4: 收集 multiagent 配置段并合并
-  const multiagentContainer = document.getElementById('multiagent-settings-container');
+  // 收集 multiagent 配置段（从「协作」tab 容器读取）
+  const multiagentContainer = document.getElementById('multiagent-tab-container');
   if (multiagentContainer && window.MultiagentSettings) {
     const multiagentCfg = window.MultiagentSettings.collect(multiagentContainer);
     newConfig.multiagent = multiagentCfg.multiagent;

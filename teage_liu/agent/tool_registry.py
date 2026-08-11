@@ -53,12 +53,16 @@ class ToolDef:
         description: 工具描述。
         input_schema: 工具输入参数的 JSON Schema（Anthropic tool use 格式）。
         handler: 工具执行函数，接收关键字参数，返回 str 结果。
+        blocking: 是否为阻塞型工具（内部可能长时间轮询/等待，如 subagent
+            协作）。True 时由 sync/stream runner 用 asyncio.to_thread 放到
+            工作线程执行，避免冻结事件循环线程。
     """
 
     name: str
     description: str
     input_schema: dict
     handler: Callable[..., str]
+    blocking: bool = False
 
 
 class ToolRegistry:
@@ -107,6 +111,7 @@ class ToolRegistry:
         description: str,
         input_schema: dict,
         handler: Callable[..., str],
+        blocking: bool = False,
     ) -> None:
         """注册工具到 Core Tier（永远全量注入）。
 
@@ -115,12 +120,15 @@ class ToolRegistry:
             description: 工具描述。
             input_schema: 工具输入参数的 JSON Schema（Anthropic tool use 格式）。
             handler: 工具执行函数，接收关键字参数，返回 str 结果。
+            blocking: 阻塞型工具标记，True 时由 runner 用 asyncio.to_thread
+                执行（见 ToolDef.blocking）。
         """
         self._core_tools[name] = ToolDef(
             name=name,
             description=description,
             input_schema=input_schema,
             handler=handler,
+            blocking=blocking,
         )
         logger.debug("已注册 Core 工具: %s", name)
 
@@ -130,6 +138,7 @@ class ToolRegistry:
         description: str,
         input_schema: dict,
         handler: Callable[..., str],
+        blocking: bool = False,
     ) -> None:
         """注册工具到 Deferred Tier（仅注入 stub，按需加载）。
 
@@ -138,12 +147,14 @@ class ToolRegistry:
             description: 工具描述。
             input_schema: 工具输入参数的 JSON Schema（Anthropic tool use 格式）。
             handler: 工具执行函数，接收关键字参数，返回 str 结果。
+            blocking: 阻塞型工具标记（见 ToolDef.blocking）。
         """
         self._deferred_tools[name] = ToolDef(
             name=name,
             description=description,
             input_schema=input_schema,
             handler=handler,
+            blocking=blocking,
         )
         logger.debug("已注册 Deferred 工具: %s", name)
 
@@ -198,6 +209,25 @@ class ToolRegistry:
             if tool is not None:
                 return tool.handler
         return None
+
+    def is_blocking_tool(self, name: str) -> bool:
+        """判断工具是否为阻塞型（需 asyncio.to_thread 执行）。
+
+        查找顺序与 ``execute_tool`` 一致：``_loaded_tools`` → ``_core_tools``
+        （Deferred 未加载时视为非阻塞）。
+
+        参数:
+            name: 工具名称。
+
+        返回:
+            True 表示阻塞型工具。
+        """
+        tool = self._loaded_tools.get(name)
+        if tool is None:
+            tool = self._core_tools.get(name)
+        if tool is None:
+            tool = self._deferred_tools.get(name)
+        return bool(tool and tool.blocking)
 
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """返回工具 schema 列表（Anthropic tool use 格式）。

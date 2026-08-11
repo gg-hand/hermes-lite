@@ -218,3 +218,115 @@ workflow:
     - cleanup_suggest
     - research
     - custom
+
+# ============================================================
+# 多 Agent 协作配置（可选，未配置时 multiagent 默认禁用）
+# 启用后工作台显示协作观察窗，Agent 可自主协作 + Director 引导
+# 详见 docs/plans/2026-07-23-agent自主协作架构重设计.md
+# ============================================================
+multiagent:
+  # 是否启用多 Agent 协作（false 时所有 /api/multiagent/* 端点返回 404）
+  enabled: false
+  # 当前实例角色：worker（参与协作）/ director（引导观察）
+  role: worker
+  # 黑板根目录（协议文件、消息、agent_card 等存放位置）
+  # 支持相对路径（相对于工作目录）或绝对路径
+  blackboard_dir: data/blackboard
+
+  # Worker 配置（role=worker 时生效）
+  worker:
+    # 本 agent 的唯一标识（写入 agent_card.agent_id）
+    # 默认 worker_001，多实例部署时需修改为唯一值
+    agent_id: worker_001
+    # Agent 版本号（写入 agent_card.agent_version）
+    agent_version: "1.0.0"
+    # 本 agent 声明的能力列表（用于其他 agent / Director 匹配协作请求）
+    # 常见能力：file_read, file_write, execute_command, web_search,
+    #          sentiment_analysis, translation, summarization, code_review
+    capabilities: []
+    # 专长领域（自由文本列表，用于协作匹配的语义补充）
+    # 例：["Python后端", "数据分析", "文档撰写"]
+    specialties: []
+    # 心跳上报间隔（秒），Director 据此判断 worker 是否存活
+    heartbeat_interval_seconds: 10
+    # 危险工具白名单（写入 agent_card，供 Director 审计）
+    # 常见：execute_command, write_file, call_tool
+    dangerous_tools: []
+    # 服务端点（写入 agent_card.endpoint，供其他 agent A2A 调用）
+    endpoint: "http://localhost:8000"
+    # 所有者标识（写入 agent_card.owner）
+    owner: ""
+    # 最大并发任务数（写入 agent_card.max_concurrent_tasks）
+    max_concurrent_tasks: 3
+    # 认证方式（写入 agent_card.auth_method）
+    # 可选：local, api_key, signed, oauth2, mtls
+    auth_method: local
+    # 初始信任分数（0-100，写入 agent_card.trust_score）
+    trust_score: 100
+
+  # Director 配置（role=director 时生效）
+  director:
+    # 是否强制执行 director.md 中的规则
+    enforce_rules: true
+    # 冲突仲裁策略：llm_arbitration（LLM 仲裁）/ priority（优先级仲裁）
+    conflict_strategy: llm_arbitration
+    # 单轮次超时（秒），超时后强制推进轮次
+    turn_timeout_seconds: 30
+    # Director 心跳超时（秒），worker 据此判断是否进入自治模式
+    heartbeat_timeout_seconds: 30
+    # 降级阈值（秒），age 超过此值但未超 timeout 时标记 degraded
+    degraded_threshold_seconds: 20
+    # 自治模式 grace period（秒）
+    grace_period_seconds: 2
+    # Director 故障恢复锁超时（秒）
+    recovery_lock_timeout: 30
+    # Director 故障时 worker 的 fallback 策略：priority / round_robin
+    fallback_strategy: priority
+
+  # 协作参数（Task 13 新增，热重载生效）
+  collab:
+    # 协作消息轮询间隔（秒），WorkerAdapter._collab_poll_loop 使用
+    poll_interval_seconds: 2
+    # 空闲超时阈值（秒）：超过此时间无 A2A 调用且队列非空 → 触发 LLM 调用
+    idle_timeout_seconds: 60
+    # 紧急队列最大长度（directive intervention / 用户广播）
+    urgent_queue_max_size: 10
+    # 普通队列最大长度（directive ordering / relay / request 非用户广播）
+    normal_queue_max_size: 100
+    # 休眠模式：连续 N 次空轮询后进入休眠（0=禁用，默认禁用以保持兼容）
+    # 休眠期停止完整轮询，仅 stat collaboration.md 的 mtime 做廉价唤醒探针
+    # 新消息写入会改动 mtime，触发唤醒切回活跃模式
+    sleep_after_empty_polls: 0
+    # 休眠模式唤醒探针间隔（秒），建议 30s 兼顾响应性与省资源
+    sleep_poll_interval_seconds: 30
+
+
+# ============ A2A（Agent-to-Agent，标准 A2A v1.0）============
+a2a:
+  # 是否启用 A2A 子系统（false 时不注册 A2A 路由/客户端/工具）
+  enabled: false
+  # 对端实例端点（本地 ↔ 服务器双实例互连时各指向对方）
+  remote_endpoints:
+  - name: worker-2
+    url: "http://localhost:8001"
+  # 标准 A2A v1.0 面（协议底线：完整达标后再谈扩展）
+  standard:
+    enabled: true
+    name: "worker_001"        # Agent Card name（缺省用 multiagent.worker.agent_id）
+    description: "Teage Liu personal AI agent"
+    base_url: ""              # 空 → 开发态从 TEAGE_HOST/TEAGE_PORT 推导
+    endpoint_url: ""          # 空 → base_url + /a2a/std/jsonrpc
+    version: ""
+    capabilities:
+      streaming: true
+      push_notifications: false
+    default_input_modes: ["text", "text/plain"]
+    default_output_modes: ["text", "text/plain"]
+    skills: []
+    security_schemes: []      # 空 → 自动 [{scheme: bearer}] iff security.api_key
+    mode: "legacy"            # legacy | standard（工具路由；标准达标后翻转）
+    task_store_path: ""       # 缺省 {multiagent.blackboard_dir}/tasks/a2a/tasks.json
+    extensions_enabled: true  # 旧自定义方法作为 A2A 扩展（A2A-Extensions 头门控）
+    extensions: [list_agents, read_messages, append_message, acquire_lock,
+                 release_lock, read_director_md, register_remote_agent, heartbeat,
+                 read_file, director_broadcast, agent_message, collab_message]

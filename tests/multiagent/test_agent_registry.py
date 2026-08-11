@@ -22,7 +22,7 @@ def _make_agent_card(agent_id: str = "agent_a", role: str = "worker") -> dict:
         "agent_version": "1.0.0",
         "protocol_version": "1.0.0",
         "created_at": "2026-07-20T09:55:00Z",
-        "last_heartbeat": "2026-07-20T10:00:00Z",
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         "heartbeat_interval_seconds": 10,
         "status": "registering",
         "role": role,

@@ -24,26 +24,30 @@ class RecoveryFenceError(Exception):
 
 
 def _initial_status() -> dict:
-    """生成初始 status.json。"""
+    """生成初始 status.json。
+
+    字段默认值与 Blackboard.init_blackboard() 保持一致，
+    避免不同初始化路径产生不一致的 status 残值。
+    """
     return {
         "protocol_version": "1.0.0",
         "session_id": "default",
-        "phase": "initializing",
+        "phase": "init",
         "version": 0,
-        "epoch": 1,
+        "epoch": 0,
         "compat_mode": None,
-        "current_turn": {"agent_id": "", "started_at": "", "deadline_at": "", "epoch": 1},
+        "current_turn": {"agent_id": "", "started_at": "", "deadline_at": "", "epoch": 0},
         "turn_history": [],
         "active_agents": [],
         "locks": {},
         "last_message_seq": 0,
         "last_heartbeat": {},
-        "director_status": "active",
+        "director_status": "offline",
         "director_signature": "",
         "last_fencing_token": 0,
         "recovery_started_at": None,
-        "recovery_progress": None,
-        "recovery_stage": None,
+        "recovery_progress": {},
+        "recovery_stage": "idle",
         "extensions": {},
     }
 

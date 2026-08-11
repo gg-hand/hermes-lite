@@ -1,14 +1,31 @@
 $schema: http://json-schema.org/draft-07/schema#
 title: messages_md_record
 type: object
-required: [seq, from, to, timestamp, type, content]
+# content 不再全局必填：announce（用 action）、status（用 status 字段）等消息不需要 content
+# 通过 allOf 条件校验：非 announce/status 类型必须有 content
+required: [seq, from, type]
+allOf:
+  - if:
+      properties:
+        type:
+          const: announce
+    then:
+      required: [action]
+  - if:
+      properties:
+        type:
+          enum: [chat, system, broadcast, action, error, task, assign, result,
+                 relay, request, response, directive]
+    then:
+      required: [content]
 properties:
   seq:
     type: integer
     minimum: 1
   from:
     type: string
-    pattern: '^[a-z0-9_]{3,32}$'
+    # 允许 user / director 等特殊来源（协作消息）
+    pattern: '^[a-zA-Z0-9_]{3,32}$|^(user|director)$'
   to:
     oneOf:
       - type: string
@@ -18,7 +35,8 @@ properties:
     type: string
   type:
     type: string
-    enum: [chat, system, broadcast, action, error, task, assign, status, result]
+    enum: [chat, system, broadcast, action, error, task, assign, status, result,
+           relay, request, response, directive, announce]
   content:
     type: string
   reply_to:
@@ -43,3 +61,68 @@ properties:
     description: 协作模式（dispatch/relay/debate），task 消息使用
   epoch:
     type: [integer, "null"]
+  # ========== 协作消息扩展字段 ==========
+  collab_id:
+    type: [string, "null"]
+    description: 协作会话 ID（关联所有相关消息）
+  collab_type:
+    type: [string, "null"]
+    enum: [instant, task, continuous, null]
+    description: 协作模式（即时型/任务型/持续型）
+  message_id:
+    type: [string, "null"]
+    description: 消息唯一 ID（A2A 转发去重用）
+  via:
+    type: [string, "null"]
+    enum: [a2a, blackboard, null]
+    description: 通信方式标识（a2a/blackboard）
+  forwarded_by:
+    type: [string, "null"]
+    description: 转发者 agent_id（A2A 消息转发到黑板时标识）
+  rule_type:
+    type: [string, "null"]
+    enum: [ordering, constraint, intervention, null]
+    description: directive 类型（顺序约束/规则约束/应急干预）
+  target:
+    type: [string, "null"]
+    description: directive 目标 agent_id 或 "*"（全部）
+  action:
+    type: [string, "null"]
+    enum: [online, offline, capability_update, null]
+    description: announce 动作（上线/下线/能力更新）
+  capabilities:
+    type: [array, "null"]
+    items: {type: string}
+    description: agent 能力列表（announce 消息使用）
+  endpoint:
+    type: [string, "null"]
+    description: agent 端点 URL（announce 消息使用）
+  agent_name:
+    type: [string, "null"]
+    description: agent 显示名称（announce 消息使用）
+  accept:
+    type: [boolean, "null"]
+    description: 是否接受协作请求（response 消息使用）
+  capabilities_needed:
+    type: [array, "null"]
+    items: {type: string}
+    description: 协作请求需要的能力（request 消息使用）
+  wait_for:
+    type: [string, "null"]
+    enum: [all, any, null]
+    description: 等待所有响应还是任一即可（request 消息使用）
+  reason:
+    type: [string, "null"]
+    description: 状态变更原因（status 消息使用）
+  # ========== Directive 字段级强化（§12.7） ==========
+  priority:
+    type: [string, "null"]
+    enum: [high, normal, low, null]
+    description: 消息优先级（directive 字段级强化）
+  deadline:
+    type: [integer, "null"]
+    description: 期望生效时限（秒，directive 强化）
+  issued_by:
+    type: [string, "null"]
+    enum: [AgentDirector, UserDirector, ScriptDirector, null]
+    description: directive 发出者标识

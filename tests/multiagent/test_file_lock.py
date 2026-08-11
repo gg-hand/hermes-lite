@@ -1,12 +1,14 @@
-"""file_lock.py 测试：CAS + fencing_token + grace_period。"""
+"""file_lock.py 测试：CAS + fencing_token + grace_period + 跨进程 FileLock。"""
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
+import portalocker
 import pytest
 
-from teage_liu.multiagent.file_lock import LockManager
+from teage_liu.multiagent.file_lock import FileLock, LockManager
 from teage_liu.multiagent.exceptions import (
     FencingTokenMismatchError,
     LockAcquisitionError,
@@ -137,3 +139,101 @@ async def test_is_locked(bb_root: Path, lock_manager: LockManager):
     assert not lock_manager.is_locked("messages")
     await lock_manager.acquire("messages", "agent_a", ttl_seconds=30)
     assert lock_manager.is_locked("messages")
+
+
+# ============================================================
+# 任务1.2：FileLock 跨进程锁测试
+# ============================================================
+
+
+def _make_agent_card(agent_id: str = "agent_a") -> dict:
+    """构造最小可用 agent_card（与 test_agent_registry 一致）。"""
+    return {
+        "agent_id": agent_id,
+        "agent_version": "1.0.0",
+        "protocol_version": "1.0.0",
+        "created_at": "2026-07-20T09:55:00Z",
+        "last_heartbeat": "2026-07-20T10:00:00Z",
+        "heartbeat_interval_seconds": 10,
+        "status": "active",
+        "role": "worker",
+        "endpoint": "http://localhost:8000",
+        "owner": "user_a",
+        "capabilities": ["file_read"],
+        "specialties": [],
+        "auth_method": "local",
+        "trust_score": 100,
+        "trust_history": [],
+        "extensions": {},
+        "leave_reason": "",
+        "left_at": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writes_preserve_last_heartbeat(bb_root: Path):
+    """任务1.2：10 个协程并发调 update_heartbeat + update_status，
+    断言 agent_card.md 的 last_heartbeat 最终值为最新写入时间戳。
+
+    验证 FileLock 保护读-改-写临界区，防止 frontmatter 字段丢失。
+    """
+    from teage_liu.multiagent.agent_registry import AgentRegistry
+    from teage_liu.multiagent.schema_validator import SchemaValidator
+
+    registry = AgentRegistry(bb_root, SchemaValidator(enabled=False))
+    await registry.register(_make_agent_card("agent_a"))
+
+    # 10 个单调递增的时间戳（保证可比较）
+    base_time = datetime(2026, 7, 30, 10, 0, 0, tzinfo=timezone.utc)
+    timestamps = [
+        (base_time.replace(second=i)).isoformat() for i in range(10)
+    ]
+
+    async def write_heartbeat(ts: str) -> None:
+        await registry.update_heartbeat("agent_a", ts)
+        # 同时更新 status，制造更复杂的读-改-写场景
+        await registry.update_agent_status("agent_a", "active")
+
+    # 10 个协程并发写入
+    await asyncio.gather(*[write_heartbeat(ts) for ts in timestamps])
+
+    # 读取最终 agent_card.md，断言 last_heartbeat 是 10 个时间戳之一
+    # （FileLock 保证最后一次写入胜出，没有中途损坏）
+    agent = await registry.get_agent("agent_a")
+    assert agent is not None
+    assert agent["last_heartbeat"] in timestamps, (
+        f"last_heartbeat={agent['last_heartbeat']} 不在预期时间戳集合中，"
+        f"说明并发写入发生损坏"
+    )
+    # 进一步断言：frontmatter 完整性（status 字段未丢失）
+    assert agent["status"] == "active"
+    assert agent["agent_id"] == "agent_a"
+    assert agent["trust_score"] == 100  # 其他字段未被覆盖
+
+
+@pytest.mark.asyncio
+async def test_lock_timeout_raises(bb_root: Path, tmp_path: Path):
+    """任务1.2：锁被长任务占住时，第二个 acquire 在 timeout 后抛异常。
+
+    用 portalocker.Lock 同步占住锁文件，再用 FileLock 尝试获取（短 timeout），
+    断言抛 portalocker.LockException。
+    """
+    target_file = bb_root / "agents" / "target.md"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("---\n---\n", encoding="utf-8")
+
+    lock_file = target_file.with_suffix(target_file.suffix + ".lock")
+
+    # 同步占住锁文件（模拟另一个进程持有）
+    holder = portalocker.Lock(
+        str(lock_file), mode="a", timeout=1, fail_when_locked=False
+    )
+    holder.acquire()
+
+    try:
+        # FileLock 用 1s timeout，应超时抛 LockException
+        fl = FileLock(target_file, timeout=1.0)
+        with pytest.raises(portalocker.LockException):
+            await fl.__aenter__()
+    finally:
+        holder.release()

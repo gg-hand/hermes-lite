@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
+from teage_liu.multiagent.a2a_client import A2AClient
 from teage_liu.multiagent.blackboard import append_audit, atomic_write, read_json
 
 logger = logging.getLogger(__name__)

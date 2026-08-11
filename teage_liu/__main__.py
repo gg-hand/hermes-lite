@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import socket
 
 import uvicorn
 
@@ -33,7 +34,19 @@ def main() -> None:
     )
     server = uvicorn.Server(config)
     app.state.uvicorn_server = server
-    server.run()
+
+    # 预创建 socket 并设置 SO_REUSEADDR，避免重启时前一个进程的 TIME_WAIT
+    # socket 导致 bind 失败（Windows 上 asyncio.create_server 默认不设置此选项）。
+    # uvicorn 的 Server.run() 接受 sockets 参数，复用预创建的 socket 跳过内部 bind。
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(config.backlog)
+
+    try:
+        server.run(sockets=[sock])
+    finally:
+        sock.close()
 
 
 if __name__ == "__main__":

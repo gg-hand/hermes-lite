@@ -196,27 +196,46 @@ class Orchestrator:
     async def chat(self, session_id: str, user_input: str,
              cancel_event: Optional[threading.Event] = None,
              reasoning_cfg: Optional["ReasoningConfig"] = None,
-             is_cron: bool = False) -> str:
-        """主对话入口（委托到 ChatHandler）。"""
+             is_cron: bool = False,
+             extra_system_prompt: Optional[str] = None,
+             system_prompt_override: Optional[str] = None) -> str:
+        """主对话入口（委托到 ChatHandler）。
+
+        system_prompt_override: 协作会话专用 system prompt 覆盖（见 ChatHandler.chat）。
+            非 None 时完全绕开主 SYSTEM_PROMPT / 用户画像 / 检索记忆等用户会话
+            专属上下文，用于多 worker 协作场景避免身份认知混乱。
+        """
         return await self.chat_handler.chat(
             session_id, user_input,
             cancel_event=cancel_event,
             reasoning_cfg=reasoning_cfg,
             is_cron=is_cron,
+            extra_system_prompt=extra_system_prompt,
+            system_prompt_override=system_prompt_override,
         )
 
     async def chat_stream(self, session_id: str, user_input: str,
                           cancel_event: Optional[threading.Event] = None,
                           reasoning_cfg: Optional["ReasoningConfig"] = None,
                           is_cron: bool = False,
-                          stream_manager: Optional[Any] = None):
-        """流式对话入口（委托到 ChatHandler）。"""
+                          stream_manager: Optional[Any] = None,
+                          extra_system_prompt: Optional[str] = None,
+                          system_prompt_override: Optional[str] = None):
+        """流式对话入口（委托到 ChatHandler）。
+
+        extra_system_prompt: 追加的额外 system 上下文（如主会话协作引导段），
+            以独立 system 消息追加到 history 末尾，不替换主 SYSTEM_PROMPT。
+        system_prompt_override: 完全替换 system_text（如主会话协作响应上下文），
+            绕开主 SYSTEM_PROMPT / 画像 / 记忆。
+        """
         async for event in self.chat_handler.chat_stream(
             session_id, user_input,
             cancel_event=cancel_event,
             reasoning_cfg=reasoning_cfg,
             is_cron=is_cron,
             stream_manager=stream_manager,
+            extra_system_prompt=extra_system_prompt,
+            system_prompt_override=system_prompt_override,
         ):
             yield event
 

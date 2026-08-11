@@ -4,6 +4,10 @@
 # config.yaml 含 ${VAR} 占位符但禁止硬编码密钥，仍可能含本地路径等敏感配置，不入库
 config.yaml
 config.yaml.bak
+# 本地双实例 / A2A 测试配置（同 config.yaml 策略，含本地路径不入库）
+/config2.yaml
+/config-a2a-1.yaml
+/config-a2a-2.yaml
 .env
 # .env.example 仅含占位符模板，需提交以便用户参考
 
@@ -58,6 +62,7 @@ __pycache__/
 # ── 系统生成 ──
 *.log
 .server.pid
+.dual_workers.pid
 
 # ── 截图 / 图片工件 ──
 tests/*.png

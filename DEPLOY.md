@@ -4,6 +4,59 @@
 
 ---
 
+## ⚠️ 端口策略（重要，请先阅读）
+
+> 本文档下方部分示例仍引用旧端口 `8000` 与旧路径 `src/server.py` / `src.server:app`，这些为历史遗留。
+> **实际启动脚本与 systemd 配置以仓库根目录下的脚本文件为准**：
+> - [start.sh](start.sh) / [restart.sh](restart.sh) / [restart.ps1](restart.ps1) — 本地开发，默认 `0.0.0.0:8000`，支持 `TEAGE_PORT` 环境变量覆盖
+> - [teage-liu.service](teage-liu.service) — 生产 systemd 服务，**默认 `127.0.0.1:7007`**
+> - [nginx-teage-liu.conf](nginx-teage-liu.conf) — Nginx 反向代理，**对外 `88` → 后端 `127.0.0.1:7007`**
+> - [deploy.sh](deploy.sh) — 一键部署，自动配置 systemd + nginx
+
+### 生产环境端口拓扑
+
+```
+[ 客户端 ] ──HTTP:88──> [ Nginx ] ──HTTP:7007──> [ uvicorn / 后端服务 ]
+                         监听 88                  监听 127.0.0.1:7007
+                         (对外)                   (仅本机)
+```
+
+- **后端端口** `7007`：仅监听 `127.0.0.1`，不对外暴露，由 systemd 启动
+- **Nginx 端口** `88`：对外暴露，反向代理 + SSE 长连接支持
+- **环境变量覆盖**：所有脚本支持 `TEAGE_HOST` / `TEAGE_PORT` / `NGINX_PORT` 覆盖默认值
+
+### 本地开发端口
+
+- 默认 `0.0.0.0:8000`（与生产隔离，避免端口冲突）
+- `TEAGE_PORT=7007 ./start.sh` 可指定端口
+- Windows: `$env:TEAGE_PORT=7007; .\restart.ps1`
+
+### 模块路径说明
+
+> 文档下方部分示例使用旧路径 `src/server.py` 或 `src.server:app`，实际项目结构为 `teage_liu/`：
+> - 启动模块：`teage_liu.app:app`（FastAPI 实例）
+> - 入口文件：`teage_liu/server.py` / `teage_liu/__main__.py`
+
+---
+
+## 0. 快速部署（生产，推荐）
+
+```bash
+# 在项目根目录执行
+chmod +x deploy.sh
+sudo ./deploy.sh
+# 或自定义端口
+sudo TEAGE_PORT=7007 NGINX_PORT=88 ./deploy.sh
+# 或跳过 nginx
+sudo SKIP_NGINX=1 ./deploy.sh
+```
+
+部署完成后访问 `http://<server-ip>:88/`。
+
+---
+
+
+
 ## 1. 环境要求
 
 | 项目 | 要求 |
@@ -174,31 +227,44 @@ sudo chown ec2-user:ec2-user /etc/teage-liu/env
 sudo cp /opt/teage-liu/teage-liu.service /etc/systemd/system/teage-liu.service
 ```
 
-`teage-liu.service` 内容：
+`teage-liu.service` 内容（**以仓库内 [teage-liu.service](teage-liu.service) 文件为准，下方为简化示例**）：
 
 ```ini
 [Unit]
 Description=Teage Liu Personal AI Agent
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=ec2-user
+User=deploy
+Group=deploy
 WorkingDirectory=/opt/teage-liu
-Environment=ANTHROPIC_API_KEY=your_api_key_here
-ExecStart=/usr/bin/python3 -m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1
+EnvironmentFile=/opt/teage-liu/.env
+Environment="TEAGE_HOST=127.0.0.1"
+Environment="TEAGE_PORT=7007"
+
+# 启动命令（仅监听本机，由 nginx 反代对外）
+ExecStart=/opt/teage-liu/.venv/bin/uvicorn teage_liu.app:app \
+  --host 127.0.0.1 \
+  --port 7007 \
+  --workers 1 \
+  --loop uvloop \
+  --http httptools \
+  --log-level info
+
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-> **安全建议**：生产环境建议使用 `EnvironmentFile=/etc/teage-liu/env` 替代 `Environment=ANTHROPIC_API_KEY=...`，避免 API Key 明文出现在 service 文件中：
+> **安全建议**：生产环境建议使用 `EnvironmentFile=/opt/teage-liu/.env`（权限 600）替代 `Environment=...=`，避免 API Key 明文出现在 service 文件中：
 >
 > ```ini
-> EnvironmentFile=/etc/teage-liu/env
-> ExecStart=/opt/teage-liu/.venv/bin/python -m uvicorn src.server:app --host 0.0.0.0 --port 8000 --workers 1
+> EnvironmentFile=/opt/teage-liu/.env
+> ExecStart=/opt/teage-liu/.venv/bin/uvicorn teage_liu.app:app --host 127.0.0.1 --port 7007 --workers 1
 > ```
 
 ### 4.7 启动服务
@@ -229,13 +295,15 @@ sudo journalctl -u teage-liu -n 100
 
 ### 4.9 配置安全组（EC2 控制台）
 
-在 EC2 安全组中开放 8000 端口（入站规则）：
+在 EC2 安全组中开放 Nginx 对外端口（入站规则）：
 
 | 类型 | 协议 | 端口 | 来源 |
 |------|------|------|------|
-| 自定义 TCP | TCP | 8000 | 你的 IP / 0.0.0.0/0 |
+| 自定义 TCP | TCP | 88 | 你的 IP / 0.0.0.0/0 |
 
-> **安全建议**：生产环境建议仅允许特定 IP 访问，或在前端加 Nginx 反向代理 + HTTPS。
+> **注意**：**不要**对外开放 `7007` 端口，后端仅监听 `127.0.0.1:7007`，由 Nginx 反向代理对外。
+>
+> **安全建议**：生产环境建议仅允许特定 IP 访问 `88` 端口，并为 Nginx 配置 HTTPS（Let's Encrypt）。
 
 ---
 
@@ -497,6 +565,28 @@ sudo systemctl restart teage-liu
 ```
 
 或通过 `/config/reload` 接口提交配置时，`_RESTART_REQUIRED_KEYS` 会判定 `guardrails` 变更需重启，返回 `needs_restart: true`，前端可提示用户重启。
+
+---
+
+## 7.9 标准 A2A（v1.0）部署要点
+
+协议层已完整实现标准 A2A v1.0（详见 [docs/A2A-STANDARD.md](docs/A2A-STANDARD.md)）：
+
+- **Agent Card**：`GET /.well-known/agent-card.json`，自动从 `a2a.standard` 配置构建。
+- **标准端点**：`POST /a2a/std/jsonrpc`（card.url 指向）。
+- **nginx 无需改动**：`location /` 已透传 `/.well-known/` 与 `/a2a/std/`（SSE 已开
+  `proxy_buffering off`）。
+- **URL 配置**：开发态自动从 `TEAGE_HOST`/`TEAGE_PORT` 推导；**生产必须显式设置**
+  `a2a.standard.base_url: https://<域名或IP>:88`，否则 card 会宣告开发地址。
+- **合规门禁（部署验收）**：
+  ```bash
+  npx --yes @a2a-compliance/cli card https://<域名或IP>:88
+  ```
+  预期 `6 passed / 0 failed / tier: FULL_FEATURED`。
+- **双实例互连**：两端 `a2a.remote_endpoints` 互指对方 base URL；`multiagent.worker.agent_id`
+  必须不同；`a2a.standard.mode: standard` 时工具走标准通道（message/send + tasks/get）。
+- **鉴权**：设置 `TEAGE_API_KEY` 后，card 自动声明 bearer scheme，`/a2a/std/jsonrpc`
+  需 `Authorization: Bearer <key>`；`/.well-known/` 免鉴权。
 
 ---
 

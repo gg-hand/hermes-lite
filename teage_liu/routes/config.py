@@ -87,7 +87,7 @@ async def update_config(req: ConfigUpdateRequest, request: Request):
             write_config_with_sensitive_separation(merged_config, config_path, env_path)
             clear_config_cache()
 
-            applied = _apply_runtime_config(merged_config)
+            applied = _apply_runtime_config(merged_config, old_config=old_config)
             needs_restart = _check_needs_restart(old_config, merged_config)
 
             reloaded_components: list[str] = []

@@ -13,7 +13,8 @@
     var msgType = msg.type || "";
     var msgFrom = msg.from || "";
     if (msg.status) return msg.status;
-    if (msgType === "task" && msgFrom === "user") return "pending";
+    if (msgType === "task") return "pending";
+    if (msgType === "assign") return "assigned";
     if (msgType === "status" && msgFrom === "director") return "assigned";
     if (msgType === "status") return "processing";
     if (msgType === "result") {
@@ -137,18 +138,20 @@
           if (!msg) return;
           var msgType = msg.type || "";
           var msgFrom = msg.from || "";
+          // 优先使用 task_op_id（新协议），fallback 到 op_id（旧协议）
+          var taskId = msg.task_op_id || msg.op_id || "";
 
-          if (msgType === "task" || (msgType === "status" && msgFrom === "director")) {
+          if (msgType === "task" || msgType === "assign" || (msgType === "status" && msgFrom === "director")) {
             // 任务状态变更
             window.dispatchEvent(
               new CustomEvent("multiagent-task-status", {
                 detail: {
-                  op_id: msg.op_id || "",
+                  op_id: taskId,
                   status: msg.status || _inferStatus(msg),
                   from: msgFrom,
                   assigned_to: msg.assigned_to || "",
                   content: msg.content || "",
-                  ts: msg.ts || "",
+                  ts: msg.ts || msg.timestamp || "",
                 },
               })
             );
@@ -157,12 +160,12 @@
             window.dispatchEvent(
               new CustomEvent("multiagent-agent-message", {
                 detail: {
-                  op_id: msg.op_id || "",
+                  op_id: taskId,
                   from: msgFrom,
                   msg_type: msgType,
                   status: msg.status || _inferStatus(msg),
                   content: msg.content || "",
-                  ts: msg.ts || "",
+                  ts: msg.ts || msg.timestamp || "",
                 },
               })
             );

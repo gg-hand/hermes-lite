@@ -702,9 +702,18 @@ class StreamRunner:
                 }
                 # Phase 8 Task 5.7: 通过 _execute_tool_with_dispatch 派发到
                 # cron_tool_registry（子进程）或 tool_registry（全局）。
+                # 阻塞型工具（blocking=True，如 subagent 协作等待响应）用
+                # asyncio.to_thread 放到工作线程，避免冻结事件循环线程。
                 error_class: Optional[str] = None
                 try:
-                    result = loop._execute_tool_with_dispatch(tool_name, tool_input, cancel_event)
+                    if loop.tool_is_blocking(tool_name):
+                        result = await loop.execute_tool_with_dispatch_async(
+                            tool_name, tool_input, cancel_event
+                        )
+                    else:
+                        result = loop._execute_tool_with_dispatch(
+                            tool_name, tool_input, cancel_event
+                        )
                 except ToolError as te:
                     # Phase B-2: 统一异常层次，按 stage 分流（与 run() 对称）
                     # pre_execution 错误（如 ParamError）→ tool_result 自包含 [拦截] 详情块

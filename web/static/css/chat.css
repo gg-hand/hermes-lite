@@ -135,6 +135,59 @@
 .nav-item:hover .nav-icon { opacity: 0.9; }
 .nav-item.active .nav-icon { opacity: 1; }
 
+/* ========== 协作工作台按钮（特殊样式，区别于普通导航） ========== */
+.nav-item--workbench {
+  background: linear-gradient(135deg, var(--accent-glow), transparent 70%);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 12px var(--accent-glow), inset 0 0 8px rgba(168, 85, 247, 0.04);
+  position: relative;
+  overflow: hidden;
+}
+.nav-item--workbench::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
+  animation: wb-shimmer 3s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes wb-shimmer {
+  0% { left: -100%; }
+  50%, 100% { left: 100%; }
+}
+.nav-item--workbench:hover {
+  background: linear-gradient(135deg, var(--accent-glow), var(--glass-bg-active));
+  border-color: var(--accent-hover, var(--accent));
+  box-shadow: 0 0 20px var(--accent-glow), inset 0 0 12px rgba(168, 85, 247, 0.08);
+  transform: translateY(-1px);
+}
+.nav-item--workbench .nav-icon {
+  opacity: 1;
+  animation: wb-icon-pulse 2.5s ease-in-out infinite;
+}
+@keyframes wb-icon-pulse {
+  0%, 100% { transform: scale(1); text-shadow: 0 0 4px var(--accent-glow); }
+  50% { transform: scale(1.08); text-shadow: 0 0 10px var(--accent); }
+}
+.nav-item--workbench .nav-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: wb-dot-pulse 1.8s ease-in-out infinite;
+  margin-left: auto;
+}
+@keyframes wb-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
 /* 内容区 */
 .sidebar-content {
   flex: 1;

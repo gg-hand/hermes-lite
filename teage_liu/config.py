@@ -17,10 +17,12 @@ from typing import Any, Optional
 import yaml
 from dotenv import load_dotenv
 
-# 自动加载 .env 文件（如存在），使 ${ENV_VAR} 占位符能解析其中的变量
+# 自动加载 .env 文件（如存在），使 ${ENV_VAR} 占位符能解析其中的变量。
 # 在 shell 脚本（start.sh/restart.sh）中已通过 source .env 加载，
-# 此处作为 Python 层兜底，确保直接通过 python -m uvicorn 启动时也能读取 .env
-load_dotenv()
+# 此处作为 Python 层兜底，确保直接通过 python -m uvicorn 启动时也能读取 .env。
+# override=True：以 .env 文件为准覆盖已存在的环境变量，确保前端通过 PUT /config
+# 写入 .env 的新 API Key 在重启后能正确生效（否则会被系统旧环境变量屏蔽）。
+load_dotenv(override=True)
 
 # 匹配 ${ENV_VAR} 形式的占位符
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -286,8 +288,11 @@ def unmask_sensitive_config(
 ) -> dict:
     """将前端提交的脱敏敏感字段还原为服务端实际值（原地修改并返回）。
 
-    遍历 ``SENSITIVE_FIELDS``，若 incoming 中的值为脱敏形态（``****``），
-    则将 existing 中的实际值复制到 incoming 中，避免用脱敏值覆盖真实值。
+    遍历 ``SENSITIVE_FIELDS``，若 incoming 中的值为脱敏形态（``****``）：
+    - existing 中有真实值 → 用真实值替换脱敏值；
+    - existing 中无真实值（字段不存在或为空）→ 清空 incoming 中的脱敏值
+      （设为 ``""``），避免把无效的脱敏值（含 ``****``）当作真实值写入
+      ``.env`` 污染配置。
 
     参数:
         incoming: 前端 PUT 提交的配置字典（会被原地修改）。
@@ -302,6 +307,11 @@ def unmask_sensitive_config(
             existing_val = _get_nested(existing, field_path)
             if existing_val:
                 _set_nested(incoming, field_path, existing_val)
+            else:
+                # existing 中无真实值，脱敏值本身无效（含 ****），
+                # 清空避免写入 .env 污染（write_config 中 actual_value=""
+                # 是 falsy 会跳过写入，保留 config.yaml 中的占位符）
+                _set_nested(incoming, field_path, "")
     return incoming
 
 

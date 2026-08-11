@@ -174,9 +174,10 @@ async function loadMessages(sessionId) {
         } else {
           // 普通文本消息：传递 attachments（后端 file_upload 消息有附件）
           // 和 reasoning（LLM 思考内容，仅 assistant 消息有值）
+          // Task 10: 传递 m.from 用于 collab_result 角色渲染
           const contentStr = (m.content || '').trim();
           if (contentStr) {
-            appendMessage(m.role, m.content, m.attachments, m.reasoning);
+            appendMessage(m.role, m.content, m.attachments, m.reasoning, m.from);
           }
         }
       }

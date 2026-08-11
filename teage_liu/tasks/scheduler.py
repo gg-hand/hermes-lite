@@ -1846,32 +1846,40 @@ class CronScheduler:
                 # Task 9 Q14: 启动加载时校验 workflow，errors 非空记 WARNING 不阻断
                 wf_raw = item.get("workflow")
                 if wf_raw:
-                    try:
-                        from teage_liu.tasks.workflow import WorkflowSpec
-                        from teage_liu.tasks.workflow.validator import (
-                            validate_workflow_spec,
-                        )
-                        wf_spec = WorkflowSpec.from_dict(wf_raw)
-                        wf_errors = validate_workflow_spec(
-                            spec=wf_spec,
-                            cron_tool_registry=getattr(
-                                self, "cron_tool_registry", None
-                            ),
-                            tool_registry=getattr(self, "tool_registry", None),
-                        )
-                        if wf_errors:
-                            logger.warning(
-                                "调度 %s 的 workflow 校验失败: %s",
-                                schedule_id,
-                                wf_errors,
-                            )
-                    except Exception:
-                        # 校验本身异常不阻断加载（向后兼容）
-                        logger.warning(
-                            "调度 %s 的 workflow 校验异常，已跳过",
+                    tool_registry = getattr(self, "tool_registry", None)
+                    cron_tool_registry = getattr(self, "cron_tool_registry", None)
+                    # __init__ 阶段 registry 尚未注入（lifespan 装配后才有），
+                    # 跳过工具存在性校验避免误报；执行前 ValidateHook 会再次校验
+                    if tool_registry is None and cron_tool_registry is None:
+                        logger.debug(
+                            "调度 %s 的 workflow 工具校验已跳过（registry 未注入）",
                             schedule_id,
-                            exc_info=True,
                         )
+                    else:
+                        try:
+                            from teage_liu.tasks.workflow import WorkflowSpec
+                            from teage_liu.tasks.workflow.validator import (
+                                validate_workflow_spec,
+                            )
+                            wf_spec = WorkflowSpec.from_dict(wf_raw)
+                            wf_errors = validate_workflow_spec(
+                                spec=wf_spec,
+                                cron_tool_registry=cron_tool_registry,
+                                tool_registry=tool_registry,
+                            )
+                            if wf_errors:
+                                logger.warning(
+                                    "调度 %s 的 workflow 校验失败: %s",
+                                    schedule_id,
+                                    wf_errors,
+                                )
+                        except Exception:
+                            # 校验本身异常不阻断加载（向后兼容）
+                            logger.warning(
+                                "调度 %s 的 workflow 校验异常，已跳过",
+                                schedule_id,
+                                exc_info=True,
+                            )
             except Exception:
                 logger.exception("加载调度项失败，已跳过: %s", item)
                 continue

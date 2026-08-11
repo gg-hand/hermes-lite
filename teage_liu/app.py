@@ -76,7 +76,8 @@ if _security_api_key:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        if request.url.path == "/health":
+        # /health 与 A2A Agent Card 免鉴权（发现是公开的）
+        if request.url.path in ("/health", "/.well-known/agent-card.json"):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
@@ -118,14 +119,24 @@ async def log_requests(request: Request, call_next):
         raise
 
     duration_ms = (time.time() - start_time) * 1000
-    if not (method == "GET" and path == "/health" and response.status_code == 200):
-        logger.info(
-            "%s %s -> %d (%.2f ms)", method, path, response.status_code, duration_ms,
-            extra={
-                "method": method, "path": path,
-                "status_code": response.status_code, "duration_ms": duration_ms,
-            },
-        )
+    status = response.status_code
+    # /health GET 200 不记录（高频心跳）
+    if method == "GET" and path == "/health" and status == 200:
+        return response
+
+    SLOW_THRESHOLD_MS = 1000
+    extra = {
+        "method": method, "path": path,
+        "status_code": status, "duration_ms": duration_ms,
+    }
+    if status >= 500:
+        logger.error("%s %s -> %d (%.2f ms)", method, path, status, duration_ms, extra=extra)
+    elif status >= 400:
+        logger.info("%s %s -> %d (%.2f ms)", method, path, status, duration_ms, extra=extra)
+    elif duration_ms > SLOW_THRESHOLD_MS:
+        logger.warning("%s %s -> %d (%.2f ms) 慢请求", method, path, status, duration_ms, extra=extra)
+    else:
+        logger.debug("%s %s -> %d (%.2f ms)", method, path, status, duration_ms, extra=extra)
     return response
 
 # ---------------------------------------------------------------------------
@@ -606,6 +617,18 @@ def register_components(container) -> None:
             hot_reloadable=True,
         )
 
+        # 标准 A2A v1.0 面（条件注册：a2a.enabled + a2a.standard.enabled）
+        std_cfg = a2a_cfg.get("standard", {}) or {}
+        if std_cfg.get("enabled", True):
+            from teage_liu.multiagent.a2a_std.router import create_a2a_std_router
+
+            container.register(
+                "a2a_std_router",
+                lambda c: create_a2a_std_router(_Path(bb_dir), container.config),
+                deps=[],
+                hot_reloadable=True,
+            )
+
     # 6. multiagent REST 路由（条件注册：仅 multiagent.enabled=True 时）
     #    Plan 4 Task 5：注册 multiagent_router 供 lifespan 启动时挂载到 FastAPI app。
     #    路由本身在 teage_liu/api/multiagent_routes.py 实现（Task 1）。
@@ -616,6 +639,18 @@ def register_components(container) -> None:
         container.register(
             "multiagent_router",
             lambda c: create_multiagent_router(c),
+            deps=[],
+            hot_reloadable=True,
+        )
+
+        # 6.1 协作消息路由（Task 3，D2 修复：容器注册模式）
+        #     与 multiagent_router 同时注册，lifespan 1.8 节挂载到 app
+        #     传入 container 以便 broadcast 路由获取 a2a_client 做跨实例转发
+        from teage_liu.multiagent.collaboration_routes import create_collab_router
+
+        container.register(
+            "collab_router",
+            lambda c: create_collab_router(c),
             deps=[],
             hot_reloadable=True,
         )

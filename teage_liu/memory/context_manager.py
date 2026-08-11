@@ -168,7 +168,8 @@ class ContextManager:
 
     def __init__(
         self,
-        system_prompt: str = SYSTEM_PROMPT,
+        system_prompt: Optional[str] = None,
+        agent_name: Optional[str] = None,
         tool_registry: Optional["ToolRegistry"] = None,
         memory_md_manager: Optional["MemoryMdManager"] = None,
         memory_retriever: Optional["MemoryRetriever"] = None,
@@ -181,7 +182,16 @@ class ContextManager:
         """初始化上下文管理器。
 
         参数:
-            system_prompt: 系统提示词，默认为 SYSTEM_PROMPT。
+            system_prompt: 系统提示词。为 None 时根据 ``agent_name`` 决定：
+                ``agent_name`` 非空则用 ``build_system_prompt(agent_name)``
+                实例化（多 worker 场景，每个 worker 用各自 agent_id 自称）；
+                ``agent_name`` 也为 None 时降级为默认 ``SYSTEM_PROMPT``
+                （"Teage Liu"，向后兼容）。显式传入 system_prompt 优先级最高，
+                会覆盖 agent_name。
+            agent_name: agent 名称（通常为 multiagent.worker.agent_id 配置值）。
+                仅当 ``system_prompt`` 为 None 时生效。多 worker 场景下应传入
+                各自的 agent_id（如 ``teagent-lu`` / ``teagent-liu-2``），
+                使 LLM 在对话中正确自称 agent_id 而非通用 "Teage Liu"。
             tool_registry: 工具注册中心实例，用于获取工具 schema。
             memory_md_manager: 用户画像 memory.md 管理器，用于读取用户画像全文。
             memory_retriever: 记忆检索器，用于检索并格式化长期记忆注入文本。
@@ -195,8 +205,20 @@ class ContextManager:
                 保留参数便于后续扩展与 orchestrator 装配一致性。
             failure_cases_path: 失败案例库 JSONL 路径，默认 data/failure_cases.jsonl。
                 文件不存在时教训反哺注入返回空字符串（空文件兜底）。
+
+        .. note::
+            ``self.system_prompt`` 在 ``__init__`` 后即固定，后续 ``build_prompt``
+            / ``get_cache_stable_prefix`` 等方法均读取该属性。由于前缀缓存
+            依赖 system_text 字节级稳定，本属性在进程内不应被重新赋值。
+            每个 worker 进程在初始化时构建一次（含 agent_id 替换），即可
+            满足缓存稳定性要求。
         """
-        self.system_prompt = system_prompt
+        if system_prompt is not None:
+            self.system_prompt = system_prompt
+        elif agent_name is not None:
+            self.system_prompt = build_system_prompt(agent_name)
+        else:
+            self.system_prompt = SYSTEM_PROMPT
         self.tool_registry = tool_registry
         self.memory_md_manager = memory_md_manager
         self.memory_retriever = memory_retriever

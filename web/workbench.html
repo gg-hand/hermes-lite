@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>协作工作台 · teage-liu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/tokens.css?v=20260724a">
+  <link rel="stylesheet" href="/static/css/base.css?v=20260724a">
+  <link rel="stylesheet" href="/static/css/components.css?v=20260724a">
+  <link rel="stylesheet" href="/static/css/collab-workbench.css?v=20260802a">
+  <link rel="stylesheet" href="/static/css/workbench.css?v=20260801b">
+  <!-- 主题初始化（在 head 末尾加载，避免 FOUC） -->
+  <script src="/static/js/theme.js?v=20260724a"></script>
+</head>
+<body class="workbench-page">
+
+<!-- ========== 顶部导航栏 ========== -->
+<header class="wb-topbar">
+  <div class="wb-topbar-left">
+    <a href="/chat" class="wb-back-btn" title="返回主对话">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+      </svg>
+      <span>主对话</span>
+    </a>
+    <div class="wb-brand">
+      <div class="wb-brand-icon">◎</div>
+      <div class="wb-brand-text">
+        <div class="wb-brand-title">协作工作台</div>
+        <div class="wb-brand-subtitle">多 Agent 协作透明观察平台</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wb-topbar-center">
+    <div class="wb-sse-indicator" id="cwSseIndicator" title="SSE 连接状态">
+      <span class="wb-sse-dot state-disconnected"></span>
+      <span class="wb-sse-text">未连接</span>
+    </div>
+    <div class="wb-director-state" id="cwDirectorState" title="Director 当前角色">
+      <span class="cw-director-dot"></span>
+      <span class="cw-director-text">未启用</span>
+    </div>
+    <div class="wb-local-agent" id="wbLocalAgent" hidden>
+      <span class="wb-local-agent-label">本地 Agent</span>
+      <span class="wb-local-agent-id" id="wbLocalAgentId">—</span>
+    </div>
+  </div>
+
+  <div class="wb-topbar-right">
+    <button class="wb-drawer-toggle" id="wbRightDrawerToggle" title="切换右栏">≡</button>
+    <button class="wb-drawer-toggle" id="wbLeftDrawerToggle" title="切换左栏">☰</button>
+    <button class="wb-topbar-btn" id="wbRefreshAll" title="刷新所有数据">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+      </svg>
+      <span>刷新</span>
+    </button>
+    <!-- 主题切换器（复用系统主题组件） -->
+    <div class="theme-switcher">
+      <button class="theme-toggle" id="wbThemeToggle" title="切换深色/浅色">◐</button>
+      <div class="accent-picker">
+        <span class="accent-dot" data-accent="violet" title="电光紫"></span>
+        <span class="accent-dot" data-accent="blue" title="电光蓝"></span>
+        <span class="accent-dot" data-accent="teal" title="深青"></span>
+        <span class="accent-dot" data-accent="amber" title="琥珀"></span>
+      </div>
+    </div>
+    <a href="/chat" class="wb-topbar-btn" title="返回对话">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      <span>对话</span>
+    </a>
+  </div>
+</header>
+
+<!-- ========== 主体三栏布局 ========== -->
+<main class="wb-main">
+
+  <!-- ===== 左栏：Agent 列表 + 活动档案时间线 ===== -->
+  <aside class="wb-sidebar">
+    <section class="wb-panel wb-agents-panel">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">接入 Agents</span>
+        <span class="cw-agents-count" id="cwAgentsCount">0</span>
+        <button class="cw-icon-btn" id="cwRefreshAgentsBtn" title="刷新列表">↻</button>
+      </div>
+      <div class="cw-agents-list" id="cwAgentsList">
+        <div class="cw-empty">加载中…</div>
+      </div>
+    </section>
+
+    <section class="wb-panel wb-collabs-panel">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">协作档案</span>
+        <span class="cw-collabs-count" id="cwCollabsCount">0</span>
+        <button class="cw-icon-btn" id="cwRefreshCollabsBtn" title="刷新协作列表">↻</button>
+      </div>
+      <div class="cw-collabs-list" id="cwCollabsList">
+        <div class="cw-empty">加载中…</div>
+      </div>
+    </section>
+
+    <section class="wb-panel wb-activity-panel">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">活动档案</span>
+        <span class="cw-activity-count" id="cwActivityCount">0</span>
+        <button class="cw-icon-btn" id="cwRefreshActivityBtn" title="刷新活动档案">↻</button>
+      </div>
+      <div class="cw-activity-timeline" id="cwActivityTimeline">
+        <div class="cw-empty">加载中…</div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ===== 中栏：协作消息流（主区域） ===== -->
+  <section class="wb-stream-panel">
+    <div class="wb-panel-header">
+      <span class="wb-panel-title">协作消息流</span>
+      <div class="wb-stream-controls">
+        <input type="text" class="wb-filter-input" id="wbFilterInput" placeholder="过滤消息（from/type/content）…" title="按关键词过滤消息">
+        <select class="wb-filter-select" id="wbTypeFilter" title="按类型过滤">
+          <option value="">全部类型</option>
+          <option value="announce">announce</option>
+          <option value="request">request</option>
+          <option value="response">response</option>
+          <option value="relay">relay</option>
+          <option value="directive">directive</option>
+          <option value="status">status</option>
+        </select>
+        <span class="cw-stream-count" id="cwStreamCount">0</span>
+        <button class="cw-icon-btn" id="cwClearStreamBtn" title="清空显示">清空</button>
+        <button class="cw-icon-btn" id="cwJumpToLatestBtn" title="滚动到最新消息" hidden>↓ 最新</button>
+      </div>
+    </div>
+    <div class="cw-stream wb-stream-large" id="cwStream">
+      <div class="cw-empty">等待消息…</div>
+    </div>
+  </section>
+
+  <!-- ===== 右栏：Director 控制台 ===== -->
+  <aside class="wb-action-panel">
+    <!-- 区1：Director 状态卡 -->
+    <section class="wb-panel wb-director-status-card">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">Director 控制台</span>
+      </div>
+      <div class="wb-director-card-body">
+        <div class="wb-director-state-large" id="wbDirectorStateLarge">
+          <span class="wb-director-state-dot"></span>
+          <span class="wb-director-state-text">未启用</span>
+        </div>
+        <div class="wb-director-info-compact">
+          <div class="wb-info-row">
+            <span class="wb-info-label">角色</span>
+            <span class="wb-info-value" id="wbDirectorRole">—</span>
+          </div>
+          <div class="wb-info-row">
+            <span class="wb-info-label">Epoch</span>
+            <span class="wb-info-value" id="wbDirectorEpoch">—</span>
+          </div>
+          <div class="wb-info-row">
+            <span class="wb-info-label">最后心跳</span>
+            <span class="wb-info-value" id="wbDirectorTick">—</span>
+          </div>
+          <div class="wb-info-row">
+            <span class="wb-info-label">自治模式</span>
+            <span class="wb-info-value" id="wbAutonomousMode">—</span>
+          </div>
+        </div>
+        <div class="wb-epoch-timeline" id="wbEpochTimeline">
+          <div class="wb-epoch-timeline-label">Epoch 推进</div>
+          <div class="wb-epoch-nodes" id="wbEpochNodes">
+            <span class="wb-epoch-empty">无历史</span>
+          </div>
+        </div>
+        <div class="wb-director-controls" id="wbDirectorControls">
+          <button class="cw-btn cw-btn-primary" id="wbDirectorStartBtn" title="启动 Director 子进程">
+            <span class="cw-btn-icon">▶</span><span>启动</span>
+          </button>
+          <button class="cw-btn cw-btn-ghost" id="wbDirectorRestartBtn" title="重启 Director 子进程" hidden>
+            <span class="cw-btn-icon">↻</span><span>重启</span>
+          </button>
+          <button class="cw-btn cw-btn-danger" id="wbDirectorStopBtn" title="停止 Director 子进程" hidden>
+            <span class="cw-btn-icon">■</span><span>停止</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 区2：快捷操作 -->
+    <section class="wb-panel wb-quick-actions">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">快捷操作</span>
+      </div>
+      <div class="wb-ops-list">
+        <button class="cw-btn cw-btn-primary" id="cwBroadcastBtn" title="向所有 agent 发布广播">
+          <span class="cw-btn-icon">📡</span><span>发布广播</span>
+        </button>
+        <button class="cw-btn cw-btn-ghost" id="cwDirectiveBtn" title="向协作流注入引导指令">
+          <span class="cw-btn-icon">⚡</span><span>注入引导</span>
+        </button>
+        <button class="cw-btn cw-btn-ghost" id="wbAgentCardBtn" title="查看本地 Agent Card">
+          <span class="cw-btn-icon">⚙</span><span>Agent Card</span>
+        </button>
+      </div>
+      <div class="wb-template-list">
+        <div class="wb-template-label">快捷指令模板</div>
+        <div class="wb-template-items" id="wbTemplateItems">
+          <button class="wb-template-btn" data-content="请优先处理用户请求" data-rule="ordering" data-priority="high">
+            优先处理用户请求
+          </button>
+          <button class="wb-template-btn" data-content="暂停当前任务等待指令" data-rule="constraint" data-priority="normal">
+            暂停任务等待指令
+          </button>
+          <button class="wb-template-btn" data-content="请汇报当前进度" data-rule="ordering" data-priority="normal">
+            汇报当前进度
+          </button>
+          <button class="wb-template-btn" data-content="切换至自治模式" data-rule="intervention" data-priority="high">
+            切换自治模式
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 区3：实时指标 -->
+    <section class="wb-panel wb-realtime-metrics">
+      <div class="wb-panel-header">
+        <span class="wb-panel-title">实时指标</span>
+      </div>
+      <div class="wb-metrics-body">
+        <div class="wb-metric-block">
+          <div class="wb-metric-label">消息类型分布</div>
+          <div class="wb-metric-chart" id="wbMsgTypeChart">
+            <div class="wb-metric-empty">暂无数据</div>
+          </div>
+        </div>
+        <div class="wb-metric-block">
+          <div class="wb-metric-label">Agent 活跃度 Top 3</div>
+          <div class="wb-metric-list" id="wbAgentRanking">
+            <div class="wb-metric-empty">暂无数据</div>
+          </div>
+        </div>
+        <div class="wb-metric-block">
+          <div class="wb-metric-label">最近广播</div>
+          <div class="wb-metric-broadcast" id="wbLastBroadcast">
+            <div class="wb-metric-empty">暂无广播</div>
+          </div>
+        </div>
+        <div class="wb-metric-block">
+          <div class="wb-metric-label">总消息趋势</div>
+          <div class="wb-metric-trend" id="wbMsgTrend">
+            <span class="wb-metric-trend-value">0</span>
+            <span class="wb-metric-trend-arrow">→</span>
+            <span class="wb-metric-trend-label">最近 1 小时</span>
+          </div>
+        </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+<!-- ========== 模态框：广播 ========== -->
+<div id="cwBroadcastModal" class="wb-dialog" hidden>
+  <div class="wb-dialog-overlay" data-close></div>
+  <div class="wb-dialog-box">
+    <div class="wb-dialog-header">
+      <h3>发布广播</h3>
+      <button class="wb-dialog-close" data-close>×</button>
+    </div>
+    <div class="wb-dialog-body">
+      <label class="cw-modal-label" for="cwBroadcastCollabSelect">协作目标</label>
+      <select class="modal-input" id="cwBroadcastCollabSelect">
+        <option value="new">🆕 发起新协作</option>
+      </select>
+      <textarea class="modal-input" id="cwBroadcastInput" rows="4" placeholder="输入广播内容…"></textarea>
+    </div>
+    <div class="wb-dialog-footer">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button class="btn btn-primary" id="cwBroadcastSubmitBtn">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 模态框：注入引导 ========== -->
+<div id="cwDirectiveModal" class="wb-dialog" hidden>
+  <div class="wb-dialog-overlay" data-close></div>
+  <div class="wb-dialog-box">
+    <div class="wb-dialog-header">
+      <h3>注入引导指令</h3>
+      <button class="wb-dialog-close" data-close>×</button>
+    </div>
+    <div class="wb-dialog-body">
+      <textarea class="modal-input" id="cwDirectiveInput" rows="4" placeholder="输入引导内容…"></textarea>
+      <div class="modal-form-row">
+        <label>规则类型</label>
+        <select id="cwDirectiveRuleType">
+          <option value="ordering">ordering（命令）</option>
+          <option value="constraint">constraint（约束）</option>
+          <option value="intervention">intervention（干预）</option>
+        </select>
+      </div>
+      <div class="modal-form-row">
+        <label>优先级</label>
+        <select id="cwDirectivePriority">
+          <option value="normal">normal</option>
+          <option value="high">high</option>
+        </select>
+      </div>
+    </div>
+    <div class="wb-dialog-footer">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button class="btn btn-primary" id="cwDirectiveSubmitBtn">注入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 抽屉：Agent Card 查看（独立组件） ========== -->
+<div id="wbAgentCardDrawer" class="wb-drawer">
+  <div class="wb-drawer-overlay"></div>
+  <div class="wb-drawer-panel">
+    <div class="wb-drawer-header">
+      <h3>Agent Card <span class="wb-card-title-id" id="wbCardTitleId">—</span></h3>
+      <button class="wb-drawer-close-btn">×</button>
+    </div>
+    <div class="wb-drawer-body">
+      <div class="wb-card-view" id="wbCardView">
+        <div class="wb-card-loading">加载中…</div>
+      </div>
+    </div>
+    <div class="wb-drawer-footer wb-card-actions">
+      <button class="btn btn-ghost" id="wbCardRefreshBtn" title="重新拉取最新数据">
+        <span>↻</span><span>刷新</span>
+      </button>
+      <button class="btn btn-primary" id="wbCardCopyJsonBtn" title="复制完整 JSON 到剪贴板">
+        <span>⧉</span><span>复制 JSON</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== Toast 通知 ========== -->
+<div id="toast" class="toast"></div>
+
+<!-- ========== 脚本 ========== -->
+<!-- CDN: Markdown + DOMPurify -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="/static/js/utils.js?v=20260724a"></script>
+<script src="/static/js/collab-sse.js?v=20260802a"></script>
+<script src="/static/js/collab-workbench.js?v=20260802a"></script>
+  <script src="/static/js/workbench.js?v=20260801e"></script>
+</body>
+</html>

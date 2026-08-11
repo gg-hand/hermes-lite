@@ -4,6 +4,8 @@
 
 一个自托管的个人 AI Agent，专注于长期对话、记忆沉淀与自主任务执行。
 
+> 📐 **架构蓝图**：想看设计与系统全貌，请读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ---
 
 ## 功能点
@@ -79,8 +81,17 @@
 
 ### 多模型协作
 - **主/巩固分离**：强模型对话 + 轻量模型巩固
-- **多提供商**：Anthropic / OpenAI / DeepSeek 兼容
+- **多提供商**：Anthropic / OpenAI / DeepSeek / Qwen 兼容
 - **全链路异步**：AsyncOpenAI / AsyncAnthropic，避免阻塞事件循环
+
+### 多 Agent 协作（Multi-Agent）
+- **文件黑板架构**：status.json / director.md / agents/*.md / collabs/*.md / audit.jsonl，本地协作零外部依赖
+- **Director + Worker 角色**：Director 协调/仲裁/信任分，Worker 自治协作；Director 故障自动进入自治模式
+- **A2A 跨设备**：HTTP/JSON-RPC 2.0 网关 + ed25519 签名，把黑板扩展跨机器场景
+- **协作协议**：request/response/consensus/end/extend/directive 消息，round 回合机制 + 滚动摘要上下文
+- **隔离设计**：`multiagent_{agent_id}` 专用会话 + 专用 system prompt，与主对话完全隔离
+- **外部 SDK**：`teage_liu.sdk.TeageAgent` 让外部 Agent 接入协作（详见 [docs/sdk/](docs/sdk/)）
+- **工作台**：`/workbench` 透明观察协作，`/api/multiagent/*` 提供 REST + SSE
 
 ### 配置与持久化
 - **热更新**：timeout / enabled / rules 即时生效，结构性变更需重启
@@ -105,13 +116,15 @@
 
 | 类别 | 技术 |
 |------|------|
-| 语言 | Python 3.10+ |
+| 语言 | Python 3.10+（生产 3.11） |
 | Web 框架 | FastAPI + Uvicorn |
-| LLM 客户端 | AsyncAnthropic + AsyncOpenAI |
+| LLM 客户端 | AsyncAnthropic + AsyncOpenAI（Anthropic / OpenAI / DeepSeek / Qwen） |
 | 向量存储 | ChromaDB + ONNX MiniLM-L6-v2 |
 | 结构化存储 | SQLite + FTS5 全文搜索 |
-| 前端 | 纯 HTML/CSS/JS（暗色主题，无框架依赖） |
+| 前端 | 纯 HTML/CSS/JS（Design-Token 双主题，无框架依赖） |
 | 流式 | Server-Sent Events (SSE) |
+| 多 Agent 协作 | 文件黑板 + watchdog + A2A（JSON-RPC）+ ed25519 签名 |
+| OCR | PaddleOCR → Tesseract → 视觉 LLM 分层降级 |
 
 ---
 
@@ -135,9 +148,9 @@ cp .env.example .env
 ### 3. 启动服务
 
 ```bash
-python src/server.py
+python -m teage_liu
 # 或
-uvicorn src.server:app --host 0.0.0.0 --port 8000
+uvicorn teage_liu.app:app --host 0.0.0.0 --port 8000
 ```
 
 服务默认监听 `http://localhost:8000`。
@@ -147,6 +160,7 @@ uvicorn src.server:app --host 0.0.0.0 --port 8000
 - 监控：`/monitor`
 - 调度：`/scheduler`
 - Workflow 编排：`/workflow`
+- 协作工作台：`/workbench`
 
 ---
 
@@ -163,6 +177,10 @@ uvicorn src.server:app --host 0.0.0.0 --port 8000
 - `security`：approval_timeout、read_paths 黑白名单
 - `skills.mcp`：MCP server HIL 配置
 - `tasks.schedules`：Cron 调度项
+- `workflow`：Workflow 引擎默认超时 / 重试 / 模板白名单
+- `multiagent` / `a2a`：多 Agent 协作开关、角色、黑板目录、A2A 端点
+
+> 敏感字段（API Key 等）经 `${VAR}` 占位符注入，`GET /config` 自动脱敏，`PUT /config` 写入时分离到 `.env`。
 
 ---
 
@@ -246,6 +264,7 @@ workflow:
 | `/monitor` | 运行监控 |
 | `/scheduler` | 调度管理 |
 | `/workflow` | Workflow 可视化编排 |
+| `/workbench` | 多 Agent 协作工作台 |
 
 ---
 
@@ -257,4 +276,4 @@ workflow:
 pytest tests/ -v
 ```
 
-100+ 测试用例，覆盖工具注册、记忆巩固、策略引擎、ReAct 循环、配置热更新、SQLite/ChromaDB 持久化、MCP 客户端、Skill 加载、Cron 调度、Workflow 引擎、信号池、Guardrails 等。
+数百个测试用例，覆盖工具注册、记忆巩固、策略引擎、ReAct 循环、配置热更新、SQLite/ChromaDB 持久化、MCP 客户端、Skill 加载、Cron 调度、Workflow 引擎、信号池、Guardrails，以及多 Agent 协作的端到端场景（self-talk / 双实例 / 跨设备 / 幂等 / 恢复）。

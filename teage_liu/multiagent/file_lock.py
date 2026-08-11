@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+
+import portalocker
 
 from teage_liu.logging_setup import logger
 from teage_liu.multiagent.blackboard import atomic_write, read_json
@@ -247,3 +247,66 @@ class LockManager:
             )
         new_status["version"] = expected_version + 1
         await atomic_write(self._status_path, json.dumps(new_status, ensure_ascii=False))
+
+
+class FileLock:
+    """跨进程文件锁，基于 portalocker.LOCK_EX。
+
+    用于 agent_card.md / director.md / status.json 跨进程并发写保护。
+
+    与 LockManager（进程内 CAS 锁，作用于 status.json.locks 字段）的区别：
+    - FileLock 是 OS 级文件锁（portalocker.LOCK_EX），跨进程可见
+    - 锁文件路径：{目标文件路径}.lock（与目标同目录，便于清理）
+    - 用于保护单文件原子写场景（如 agent_card.md 的 frontmatter 更新）
+
+    用法（异步上下文管理器）：
+        async with FileLock(agent_file):
+            ...  # 临界区：读-改-写 agent_file
+    """
+
+    def __init__(self, target_path: Path, timeout: float = 5.0) -> None:
+        """初始化跨进程文件锁。
+
+        Args:
+            target_path: 被保护的目标文件路径（锁文件会建在其旁边）
+            timeout: 获取锁的超时秒数（超时抛 portalocker.LockException）
+        """
+        self._target_path = Path(target_path)
+        # 锁文件路径：在目标文件同目录下追加 .lock 后缀
+        # 例：agents/worker_001.md → agents/worker_001.md.lock
+        self._lock_path = self._target_path.with_suffix(
+            self._target_path.suffix + ".lock"
+        )
+        self._timeout = timeout
+        self._lock: portalocker.Lock | None = None
+
+    async def __aenter__(self) -> "FileLock":
+        """获取锁（异步，同步 acquire 丢到 executor 避免阻塞事件循环）。"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._acquire_sync)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """释放锁。"""
+        if self._lock is not None:
+            try:
+                self._lock.release()
+            except Exception as e:
+                logger.warning("FileLock 释放失败 (%s): %s", self._lock_path, e)
+            self._lock = None
+
+    def _acquire_sync(self) -> None:
+        """同步获取锁（在 executor 中调用）。
+
+        与 audit_logger 一致使用 mode='a'（append，文件不存在时创建），
+        fail_when_locked=False 让 portalocker 在 timeout 内轮询等待。
+        """
+        # 确保锁文件父目录存在（agent_card.md 可能尚未创建）
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = portalocker.Lock(
+            str(self._lock_path),
+            mode="a",
+            timeout=self._timeout,
+            fail_when_locked=False,
+        )
+        self._lock.acquire()

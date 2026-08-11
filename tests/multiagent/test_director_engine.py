@@ -6,12 +6,20 @@
 - Worker 心跳监督（标记 degraded/offline + 强制释放锁）
 - 轮次推进（round_robin 模式）
 - SignatureVerifier（ed25519 + VerifyResult 三级）
+
+Task 7/8：已删除 3 个 dispatch 测试（test_director_dispatches_task_to_active_worker /
+test_director_dispatch_respects_target_agents / test_director_dispatch_is_idempotent），
+因为 _dispatch_tasks 方法已移除。保留 15 个基础设施测试。
+
+任务1.3：新增 2 个 _run_loop 异常容错测试。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -360,170 +368,94 @@ class TestSignatureVerifier:
         assert bad_result.failure_count == 1
 
 
-@pytest.mark.asyncio
-async def test_director_dispatches_task_to_active_worker(bb_root):
-    """Director._dispatch_tasks 扫描 type=task 消息并写入 type=assign 消息。"""
-    from teage_liu.multiagent.blackboard import (
-        Blackboard, append_message, read_messages,
-    )
-    from teage_liu.multiagent.director_engine import DirectorEngine
-    import yaml
-
-    bb = Blackboard(bb_root)
-    await bb.init_blackboard()
-
-    card = {
-        "agent_id": "worker_001", "role": "worker", "status": "active",
-        "protocol_version": "1.0.0", "agent_version": "1.0.0",
-        "capabilities": ["file_read"],
-        "last_heartbeat": "2026-07-23T10:00:00+00:00",
-        "heartbeat_interval_seconds": 10,
-        "trust_score": 100,
-    }
-    (bb_root / "agents" / "worker_001.md").write_text(
-        f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
-        encoding="utf-8",
-    )
-
-    director_md = {
-        "protocol_version": "1.0.0", "director_version": "1.0.0",
-        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
-        "last_director_tick": "2026-07-23T10:00:00+00:00",
-        "director_id": "director_001", "director_implementation": "script",
-        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
-        "turn_policy": {"mode": "freeform", "order": []},
-    }
-    (bb_root / "director.md").write_text(
-        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
-        encoding="utf-8",
-    )
-
-    await append_message(bb_root, {
-        "from": "user_dispatch", "to": "*",
-        "timestamp": "2026-07-23T10:00:01+00:00",
-        "type": "task", "content": "帮我读取 data/test.txt 文件",
-        "task_op_id": "task-001", "target_agents": [], "mode": "dispatch",
-    })
-
-    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
-    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
-    await director._dispatch_tasks()
-
-    messages = await read_messages(bb_root)
-    assign_msgs = [m for m in messages if m.get("type") == "assign"]
-    assert len(assign_msgs) == 1, f"期望 1 条 assign 消息，实际 {len(assign_msgs)}"
-    assign_msg = assign_msgs[0]
-    assert assign_msg["from"] == "director_001"
-    assert assign_msg["to"] == "worker_001"
-    assert assign_msg["assigned_to"] == "worker_001"
-    assert assign_msg["task_op_id"] == "task-001"
-    assert assign_msg["reply_to"] == 1
-    assert assign_msg["content"] == "帮我读取 data/test.txt 文件"
+# ============================================================
+# 任务1.3：_run_loop 异常容错测试
+# ============================================================
 
 
-@pytest.mark.asyncio
-async def test_director_dispatch_respects_target_agents(bb_root):
-    """当 task.target_agents 指定时，Director 分派给指定 agent。"""
-    from teage_liu.multiagent.blackboard import (
-        Blackboard, append_message, read_messages,
-    )
-    from teage_liu.multiagent.director_engine import DirectorEngine
-    import yaml
+class TestDirectorRunLoopExceptionTolerance:
+    """任务1.3：_run_loop 子任务异常容错测试。"""
 
-    bb = Blackboard(bb_root)
-    await bb.init_blackboard()
+    @pytest.mark.asyncio
+    async def test_run_loop_continues_on_subtask_exception(
+        self, bb_root: Path, director_config
+    ):
+        """单个子任务抛 RuntimeError 不应拖垮主循环，后续子任务仍被调用。
 
-    for aid in ["worker_001", "worker_002"]:
-        card = {
-            "agent_id": aid, "role": "worker", "status": "active",
-            "protocol_version": "1.0.0", "agent_version": "1.0.0",
-            "capabilities": [], "last_heartbeat": "2026-07-23T10:00:00+00:00",
-            "heartbeat_interval_seconds": 10, "trust_score": 100,
-        }
-        (bb_root / "agents" / f"{aid}.md").write_text(
-            f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
-            encoding="utf-8",
+        场景：mock _check_worker_heartbeats 抛 RuntimeError，
+        断言 _update_director_tick 和 _check_turn_timeout 仍被调用（≥2 次，
+        证明循环跑了至少 2 轮，没有因异常退出）。
+        """
+        engine = DirectorEngine(bb_root, director_config, agent_id="director_001")
+        engine._tick_interval = 0.01  # 加速测试
+
+        # mock _check_worker_heartbeats 抛异常（任务列表中第 2 项）
+        engine._check_worker_heartbeats = AsyncMock(side_effect=RuntimeError("test boom"))
+        # spy 后续任务，验证它们仍被调用
+        engine._check_turn_timeout = AsyncMock()
+        engine._observe_and_intervene = AsyncMock()
+        engine._flush_pending_messages = AsyncMock()
+        engine._arbitrate_conflicts = AsyncMock()
+        # tick（第 1 项）也用 spy，验证它被调用
+        engine._update_director_tick = AsyncMock()
+
+        await engine.start()
+        # 让至少 3 轮跑完（Windows timer 分辨率 ~15ms，给足 300ms）
+        await asyncio.sleep(0.3)
+        await engine.stop()
+
+        # heartbeat 抛了异常，但 tick 和 turn_timeout 仍被调用 ≥2 次
+        # （证明主循环没有因 heartbeat 异常退出）
+        assert engine._check_worker_heartbeats.call_count >= 2, (
+            "heartbeat 应被调用至少 2 次（说明循环没死）"
         )
+        assert engine._update_director_tick.call_count >= 2, (
+            "tick 应被调用至少 2 次（说明循环继续）"
+        )
+        assert engine._check_turn_timeout.call_count >= 2, (
+            "turn_timeout 应被调用至少 2 次（heartbeat 异常后仍执行）"
+        )
+        # 失败计数应大于 0（heartbeat 连续失败被记录）
+        assert engine._task_failure_counts.get("heartbeat", 0) > 0
+        # tick 成功执行，其失败计数应被衰减为 0
+        assert engine._task_failure_counts.get("tick", 0) == 0
 
-    director_md = {
-        "protocol_version": "1.0.0", "director_version": "1.0.0",
-        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
-        "last_director_tick": "2026-07-23T10:00:00+00:00",
-        "director_id": "director_001", "director_implementation": "script",
-        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
-        "turn_policy": {"mode": "freeform", "order": []},
-    }
-    (bb_root / "director.md").write_text(
-        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
-        encoding="utf-8",
-    )
+    @pytest.mark.asyncio
+    async def test_run_loop_restarts_after_10_failures(
+        self, bb_root: Path, director_config
+    ):
+        """子任务连续失败 11 次后 _running 变为 False（触发重启）。
 
-    await append_message(bb_root, {
-        "from": "user_dispatch", "to": "*",
-        "timestamp": "2026-07-23T10:00:01+00:00",
-        "type": "task", "content": "专门给 worker_002 的任务",
-        "task_op_id": "task-002", "target_agents": ["worker_002"], "mode": "dispatch",
-    })
+        场景：mock _update_director_tick 持续抛 RuntimeError，
+        断言经过 11 次失败后 _running 被设为 False，主循环退出。
+        """
+        engine = DirectorEngine(bb_root, director_config, agent_id="director_001")
+        engine._tick_interval = 0.001  # 极快加速测试
 
-    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
-    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
-    await director._dispatch_tasks()
+        # mock tick 持续抛异常（每次调用都失败）
+        engine._update_director_tick = AsyncMock(side_effect=RuntimeError("persistent boom"))
+        # 其他任务 mock 为正常
+        engine._check_worker_heartbeats = AsyncMock()
+        engine._check_turn_timeout = AsyncMock()
+        engine._observe_and_intervene = AsyncMock()
+        engine._flush_pending_messages = AsyncMock()
+        engine._arbitrate_conflicts = AsyncMock()
 
-    messages = await read_messages(bb_root)
-    assign_msgs = [m for m in messages if m.get("type") == "assign"]
-    assert len(assign_msgs) == 1
-    assert assign_msgs[0]["assigned_to"] == "worker_002"
+        await engine.start()
+        # 等待足够长让 11 次失败发生。
+        # Windows timer 分辨率 ~15ms + exc_info=True 日志开销 → 每轮 ~15ms，
+        # 11 轮 ≈ 200ms，给 2s 余量确保稳定。
+        await asyncio.sleep(2.0)
 
+        # _running 应已被设为 False（连续失败 11 次触发重启）
+        assert engine._running is False, (
+            "连续失败 11 次后 _running 应为 False，但仍是 True"
+        )
+        # 失败计数应 > 10
+        assert engine._task_failure_counts.get("tick", 0) > 10, (
+            f"tick 失败计数应 > 10，实际 = {engine._task_failure_counts.get('tick', 0)}"
+        )
+        # tick 被调用次数应 ≥ 11（至少 11 次失败才触发）
+        assert engine._update_director_tick.call_count >= 11
 
-@pytest.mark.asyncio
-async def test_director_dispatch_is_idempotent(bb_root):
-    """同一 task_op_id 的 task 不会被分派两次。"""
-    from teage_liu.multiagent.blackboard import (
-        Blackboard, append_message, read_messages,
-    )
-    from teage_liu.multiagent.director_engine import DirectorEngine
-    import yaml
-
-    bb = Blackboard(bb_root)
-    await bb.init_blackboard()
-
-    card = {
-        "agent_id": "worker_001", "role": "worker", "status": "active",
-        "protocol_version": "1.0.0", "agent_version": "1.0.0",
-        "capabilities": [], "last_heartbeat": "2026-07-23T10:00:00+00:00",
-        "heartbeat_interval_seconds": 10, "trust_score": 100,
-    }
-    (bb_root / "agents" / "worker_001.md").write_text(
-        f"---\n{yaml.safe_dump(card, sort_keys=False, allow_unicode=True)}---\n\n# Agent Card\n",
-        encoding="utf-8",
-    )
-
-    director_md = {
-        "protocol_version": "1.0.0", "director_version": "1.0.0",
-        "current_epoch": 1, "epoch_started_at": "2026-07-23T10:00:00+00:00",
-        "last_director_tick": "2026-07-23T10:00:00+00:00",
-        "director_id": "director_001", "director_implementation": "script",
-        "heartbeat": {"interval_seconds": 10, "timeout_seconds": 30},
-        "turn_policy": {"mode": "freeform", "order": []},
-    }
-    (bb_root / "director.md").write_text(
-        f"---\n{yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)}---\n\n# Director Protocol\n",
-        encoding="utf-8",
-    )
-
-    await append_message(bb_root, {
-        "from": "user_dispatch", "to": "*",
-        "timestamp": "2026-07-23T10:00:01+00:00",
-        "type": "task", "content": "幂等测试",
-        "task_op_id": "task-003", "target_agents": [], "mode": "dispatch",
-    })
-
-    config = {"multiagent": {"director": {"turn_timeout_seconds": 30}}}
-    director = DirectorEngine(bb_root=bb_root, config=config, agent_id="director_001")
-
-    await director._dispatch_tasks()
-    await director._dispatch_tasks()
-
-    messages = await read_messages(bb_root)
-    assign_msgs = [m for m in messages if m.get("type") == "assign"]
-    assert len(assign_msgs) == 1, f"期望 1 条 assign（幂等），实际 {len(assign_msgs)}"
+        await engine.stop()

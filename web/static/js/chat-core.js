@@ -21,8 +21,56 @@ function renderToolValue(value) {
 }
 
 // ========== 消息渲染 ==========
-function appendMessage(role, content, attachments, reasoning) {
+// Task 10 Step 2: 支持 collab_progress / collab_result 角色渲染
+// - collab_progress: 协作进度提示（灰色小字，如"调用 AgentB 正在分析…"）
+// - collab_result: 协作结果（以协作 Agent 身份显示，注入主对话流）
+// from 参数可选，仅 collab_result 使用（标识来源 agent）
+function appendMessage(role, content, attachments, reasoning, from) {
   welcomeScreenEl.style.display = 'none';
+
+  // Task 10 Step 2: 协作进度提示（灰色小字，非完整消息气泡）
+  if (role === 'collab_progress') {
+    const progressEl = document.createElement('div');
+    progressEl.className = 'msg-collab-progress';
+    const text = (content || '').trim();
+    progressEl.innerHTML =
+      '<span class="collab-progress-icon" aria-hidden="true">⏳</span>' +
+      '<span class="collab-progress-text">' + escapeHtml(text) + '</span>';
+    messagesEl.appendChild(progressEl);
+    scrollMessagesToBottom();
+    return progressEl;
+  }
+
+  // Task 10 Step 2: 协作结果（以协作 Agent 身份显示）
+  if (role === 'collab_result') {
+    const fromName = from || '协作 Agent';
+    const resultEl = document.createElement('div');
+    resultEl.className = 'message collab-result';
+    resultEl.innerHTML =
+      '<div class="msg-header">' +
+        '<span class="msg-avatar collab-agent">' + escapeHtml(fromName) + '</span>' +
+      '</div>' +
+      '<div class="message-bubble markdown">' + renderMarkdown(content || '') + '</div>';
+    messagesEl.appendChild(resultEl);
+    scrollMessagesToBottom();
+    return resultEl;
+  }
+
+  // 协作过程步骤（subagent 执行轨迹：协作 agent 的工具调用/操作，非完整消息）
+  if (role === 'collab_process') {
+    const fromName = from || '协作 Agent';
+    const stepEl = document.createElement('div');
+    stepEl.className = 'msg-collab-process';
+    stepEl.innerHTML =
+      '<span class="collab-process-avatar" title="' + escapeHtml(fromName) + '">' +
+        escapeHtml((fromName || 'A').charAt(0).toUpperCase()) +
+      '</span>' +
+      '<span class="collab-process-text">' + escapeHtml(content || '') + '</span>';
+    messagesEl.appendChild(stepEl);
+    scrollMessagesToBottom();
+    return stepEl;
+  }
+
   const msg = document.createElement('div');
   msg.className = 'message ' + (role === 'user' ? 'user' : 'assistant');
   const roleLabel = role === 'user' ? 'You' : 'Assistant';
@@ -57,6 +105,99 @@ function appendMessage(role, content, attachments, reasoning) {
   messagesEl.appendChild(msg);
   scrollMessagesToBottom();
   return msg;
+}
+
+// ========== 协作 Agent 嵌入式窗口（低层级内置聊天窗口） ==========
+// 其他（子）agent 的协作过程与结果在独立的内置卡片中展示，直观体现
+// "这是其他 agent 的消息窗口"，低于主会话 agent 一层；结果作为主 agent
+// 收集的信息，会话由主会话 agent 结束。
+var _collabCards = {}; // collabId -> {el, resultEl, processEl, titleEl, statusEl, fullText}
+
+function _collabCardEscape(s) { return escapeHtml(String(s == null ? "" : s)); }
+
+function openCollabCard(collabId, agentName, statusText) {
+  if (!collabId) return null;
+  if (_collabCards[collabId]) {
+    if (statusText) _setCollabCardStatus(collabId, statusText);
+    return _collabCards[collabId].el;
+  }
+  welcomeScreenEl.style.display = 'none';
+  var card = document.createElement('div');
+  card.className = 'collab-card';
+  card.dataset.collabId = collabId;
+  card.innerHTML =
+    '<div class="collab-card-header">' +
+      '<span class="collab-card-avatar" title="其他 Agent 协作窗口">🤝</span>' +
+      '<span class="collab-card-title">协作 Agent: ' + _collabCardEscape(agentName) + '</span>' +
+      '<span class="collab-card-status">' + _collabCardEscape(statusText || '协作中…') + '</span>' +
+      '<button class="collab-card-toggle" type="button" title="折叠/展开">—</button>' +
+    '</div>' +
+    '<div class="collab-card-body">' +
+      '<div class="collab-card-process"></div>' +
+      '<div class="collab-card-result"></div>' +
+    '</div>';
+  messagesEl.appendChild(card);
+  var state = {
+    el: card,
+    processEl: card.querySelector('.collab-card-process'),
+    resultEl: card.querySelector('.collab-card-result'),
+    titleEl: card.querySelector('.collab-card-title'),
+    statusEl: card.querySelector('.collab-card-status'),
+    fullText: "",
+  };
+  _collabCards[collabId] = state;
+  // 折叠/展开（头部或按钮点击均可）
+  var body = card.querySelector('.collab-card-body');
+  var toggle = card.querySelector('.collab-card-toggle');
+  function _toggleCollapse() {
+    var collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? '' : 'none';
+    toggle.textContent = collapsed ? '—' : '+';
+  }
+  toggle.addEventListener('click', function (e) {
+    e.stopPropagation();
+    _toggleCollapse();
+  });
+  card.querySelector('.collab-card-header').addEventListener('click', _toggleCollapse);
+  scrollMessagesToBottom();
+  return card;
+}
+
+function _setCollabCardStatus(collabId, text) {
+  var st = _collabCards[collabId];
+  if (st && st.statusEl) st.statusEl.textContent = text;
+}
+
+function appendCollabProcess(collabId, text) {
+  var st = _collabCards[collabId];
+  if (!st || !st.processEl) return;
+  var line = document.createElement('div');
+  line.className = 'collab-card-process-line';
+  line.textContent = text || '';
+  st.processEl.appendChild(line);
+  scrollMessagesToBottom();
+}
+
+function appendCollabResult(collabId, text) {
+  var st = _collabCards[collabId];
+  if (!st) return;
+  st.fullText += (text || "");
+  // 流式阶段：先以纯文本增量显示（避免逐 token 渲染 markdown 闪烁/断裂）
+  st.resultEl.textContent = st.fullText;
+  scrollMessagesToBottom();
+}
+
+function closeCollabCard(collabId) {
+  var st = _collabCards[collabId];
+  if (!st) return;
+  // 结束后用 markdown 渲染完整结果
+  if (st.fullText) {
+    st.resultEl.innerHTML = renderMarkdown(st.fullText);
+    enhanceCodeBlocks(st.resultEl);
+  }
+  _setCollabCardStatus(collabId, '✓ 完成');
+  st.el.classList.add('collab-card--done');
+  scrollMessagesToBottom();
 }
 
 // ========== 消息气泡 Hover 操作条（任务 2） ==========
@@ -1463,15 +1604,14 @@ async function sendMessage(textOverride) {
   const text = textOverride || messageInputEl.value.trim();
   if (!text) return;
 
-  // @director 指令检测：走多 agent 分派路径
+  // Task 10：@director 指令检测已移除
+  // Director 不再是任务分派器，而是观察者 + 按需引导者
+  // 用户操作改为通过协作观察窗的「发布广播」「注入引导」按钮，由 collab-workbench.js 处理
+  // 如输入 @director 前缀，提示用户改用协作观察窗
   var lowerText = text.toLowerCase();
   if (lowerText.startsWith('@director ') || lowerText.startsWith('@director\u3000')) {
-    var taskText = text.slice(text.indexOf(' ') + 1).trim();
-    if (!taskText) {
-      showToast('请在 @director 后输入任务描述', 'warning');
-      return;
-    }
-    return dispatchToDirector(taskText, text);
+    showToast('Director 已改为观察者，请使用侧栏 Director → 协作观察窗的「发布广播」或「注入引导」按钮', 'info');
+    return;
   }
 
   if (streamState === StreamState.STREAMING) {
@@ -1618,6 +1758,16 @@ async function sendMessage(textOverride) {
           break;
         case 'approval_resolved':
           updateApprovalCardStatus(evt.approval_id, evt.decision, evt.reason || '');
+          break;
+        case 'collab_progress':
+          // Task 10 Step 2: 协作进度提示注入主对话（如"调用 AgentB 正在分析…"）
+          // 非流式气泡，直接追加灰色小字提示
+          appendMessage('collab_progress', evt.content || evt.message || '');
+          break;
+        case 'collab_result':
+          // Task 10 Step 2: 协作结果注入主对话（以协作 Agent 身份显示）
+          // evt.from 标识来源 agent，evt.content 为结果内容
+          appendMessage('collab_result', evt.content || '', null, null, evt.from || evt.from_agent || '');
           break;
         case 'interrupt':
           _cleanupStreamRounds(rounds, streamMsg);
@@ -1784,6 +1934,10 @@ async function sendMessage(textOverride) {
 // 暴露给其他模块
 window.TeageChatCore = {
   appendMessage,
+  openCollabCard,
+  appendCollabProcess,
+  appendCollabResult,
+  closeCollabCard,
   describeToolAction,
   createStreamMessage,
   updateStreamBubble,
@@ -1808,228 +1962,13 @@ window.TeageChatCore = {
   renderToolValue,
 };
 
-// ========== 多 Agent 分派 ==========
+// ========== 多 Agent 分派（Task 10 已移除） ==========
 
-/**
- * 通过 @director 指令分派任务到多 agent 黑板。
- * @param {string} task - 任务描述
- * @param {string} originalText - 原始输入文本（含 @director 前缀）
- */
-async function dispatchToDirector(task, originalText) {
-  appendMessage('user', originalText);
-  scrollMessagesToBottom(true);
-  messageInputEl.value = '';
-  autoResize();
 
-  // 先检查 Director 状态
-  var directorRunning = false;
-  try {
-    var statusRes = await fetch(API_BASE + '/api/multiagent/director/status');
-    if (statusRes.ok) {
-      var statusData = await statusRes.json();
-      directorRunning = statusData.running;
-    }
-  } catch (e) { /* 忽略，继续尝试 dispatch */ }
+// Task 10: 协作消息不再侵入主对话 #messages
+// - dispatchToDirector / appendCollabMessage / updateCollabMessage 已移除
+// - createTaskBlock / updateTaskBlock / taskBlocks 已移除
+// - @director 指令路径已废弃（提示用户使用协作观察窗）
+// 协作消息流由 collab-workbench.js 通过 collab-message 事件接管，渲染到 #cwStream
 
-  // 创建任务块
-  var collabEl = appendCollabMessage('🎯 Director', directorRunning ? '已接收任务，正在分派…' : 'Director 未运行，任务已暂存。');
 
-  if (!directorRunning) {
-    var startBtn = document.createElement('button');
-    startBtn.className = 'wb-btn wb-btn-sm wb-btn-primary';
-    startBtn.textContent = '启动 Director';
-    startBtn.style.marginTop = '4px';
-    startBtn.addEventListener('click', async function() {
-      startBtn.disabled = true;
-      startBtn.textContent = '启动中…';
-      try {
-        var r = await fetch(API_BASE + '/api/multiagent/director/start', { method: 'POST' });
-        var d = await r.json();
-        if (d.ok) {
-          updateCollabMessage(collabEl, '🎯 Director', 'Director 已启动，正在分派…', 'success');
-          showToast('Director 已启动', 'success');
-        }
-      } catch (e) { showToast('启动失败', 'error'); }
-      startBtn.remove();
-    });
-    collabEl.appendChild(startBtn);
-  }
-
-  try {
-    var res = await fetch(API_BASE + '/api/multiagent/dispatch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task: task, target_agents: [], mode: 'dispatch' }),
-    });
-
-    if (res.status === 404) {
-      updateCollabMessage(collabEl, '🎯 Director', '❌ 多 agent 未启用，请在设置中开启', 'error');
-      showToast('多 agent 未启用，请在设置中开启', 'warning');
-      return;
-    }
-
-    var data = await res.json();
-    if (data.ok) {
-      // 创建折叠任务块
-      createTaskBlock(data.op_id, task);
-      // 移除临时 collab 气泡（任务块替代它）
-      if (collabEl && collabEl.parentNode) collabEl.remove();
-      showToast(data.message || '任务已分派', 'success');
-    } else {
-      throw new Error(data.detail || '分派失败');
-    }
-  } catch (err) {
-    updateCollabMessage(collabEl, '🎯 Director', '❌ 分派失败: ' + err.message, 'error');
-    showToast('分派失败: ' + err.message, 'error');
-  }
-}
-
-/**
- * 追加协作消息气泡到聊天流。
- * @param {string} role - 角色标签（如 "🎯 Director"）
- * @param {string} content - 消息内容
- * @returns {HTMLElement} 气泡元素（可用于后续更新）
- */
-function appendCollabMessage(role, content) {
-  var messagesEl = document.getElementById('messages');
-  if (!messagesEl) return null;
-
-  var msg = document.createElement('div');
-  msg.className = 'msg collab';
-  msg.innerHTML =
-    '<div class="role">' + escapeHtml(role) + '</div>' +
-    '<div class="bubble">' + escapeHtml(content) + '</div>';
-  messagesEl.appendChild(msg);
-  scrollMessagesToBottom(true);
-  return msg;
-}
-
-/**
- * 更新已有协作气泡的内容。
- * @param {HTMLElement} el - appendCollabMessage 返回的元素
- * @param {string} role - 角色标签
- * @param {string} content - 新内容
- * @param {string} level - 级别（success/error/info）
- */
-function updateCollabMessage(el, role, content, level) {
-  if (!el) return;
-  if (level) el.classList.add('collab-' + level);
-  var roleEl = el.querySelector('.role');
-  var bubbleEl = el.querySelector('.bubble');
-  if (roleEl) roleEl.textContent = role;
-  if (bubbleEl) bubbleEl.textContent = content;
-}
-
-// ========== 任务块（折叠时间线） ==========
-
-var taskBlocks = {};
-
-/**
- * 创建折叠任务块。
- * @param {string} op_id - 任务 ID
- * @param {string} taskText - 任务描述
- */
-function createTaskBlock(op_id, taskText) {
-  var messagesEl = document.getElementById('messages');
-  if (!messagesEl) return;
-
-  var block = document.createElement('div');
-  block.className = 'msg task-block';
-  block.dataset.opId = op_id;
-  block.innerHTML =
-    '<div class="task-block-header">' +
-      '<span class="task-block-icon">🎯</span>' +
-      '<span class="task-block-title">' + escapeHtml(taskText.substring(0, 60)) + '</span>' +
-      '<span class="task-block-badge badge-pending">⏳ pending</span>' +
-      '<span class="task-block-toggle">▸</span>' +
-    '</div>' +
-    '<div class="task-block-timeline" style="display:none">' +
-      '<div class="timeline-entry" data-ts="' + Date.now() + '">' +
-        '<span class="timeline-time">' + _formatTime(new Date().toISOString()) + '</span>' +
-        '<span class="timeline-from">user</span>' +
-        '<span class="timeline-content">提交任务</span>' +
-      '</div>' +
-    '</div>';
-
-  // 点击 header 切换折叠
-  var header = block.querySelector('.task-block-header');
-  var timeline = block.querySelector('.task-block-timeline');
-  var toggle = block.querySelector('.task-block-toggle');
-  header.addEventListener('click', function() {
-    var isHidden = timeline.style.display === 'none';
-    timeline.style.display = isHidden ? 'block' : 'none';
-    toggle.textContent = isHidden ? '▾' : '▸';
-  });
-
-  messagesEl.appendChild(block);
-  scrollMessagesToBottom(true);
-
-  taskBlocks[op_id] = { el: block, status: 'pending', timeline: timeline };
-}
-
-/**
- * 更新任务块状态和时间线。
- * @param {string} op_id - 任务 ID
- * @param {object} event - 事件数据 { status, from, content, ts, assigned_to }
- */
-function updateTaskBlock(op_id, event) {
-  var entry = taskBlocks[op_id];
-  if (!entry) return;
-
-  // 更新徽章
-  var badge = entry.el.querySelector('.task-block-badge');
-  if (badge && event.status) {
-    var badgeMap = {
-      pending: { text: '⏳ pending', cls: 'badge-pending' },
-      assigned: { text: '📤 assigned', cls: 'badge-assigned' },
-      processing: { text: '⚙️ processing', cls: 'badge-processing' },
-      completed: { text: '✅ completed', cls: 'badge-completed' },
-      failed: { text: '❌ failed', cls: 'badge-failed' },
-      timeout: { text: '⏱️ timeout', cls: 'badge-timeout' },
-    };
-    var b = badgeMap[event.status] || badgeMap.pending;
-    badge.textContent = b.text;
-    badge.className = 'task-block-badge ' + b.cls;
-    // 闪烁提示
-    badge.classList.add('badge-flash');
-    setTimeout(function() { badge.classList.remove('badge-flash'); }, 2000);
-  }
-
-  // 添加时间线条目
-  if (entry.timeline && event.content) {
-    var line = document.createElement('div');
-    line.className = 'timeline-entry';
-    line.innerHTML =
-      '<span class="timeline-time">' + _formatTime(event.ts || '') + '</span>' +
-      '<span class="timeline-from">' + escapeHtml(event.from || '') + '</span>' +
-      '<span class="timeline-content">' + escapeHtml(event.content.substring(0, 200)) + '</span>';
-    entry.timeline.appendChild(line);
-  }
-
-  // 自动展开 3 秒
-  if (entry.timeline.style.display === 'none') {
-    var toggle = entry.el.querySelector('.task-block-toggle');
-    entry.timeline.style.display = 'block';
-    if (toggle) toggle.textContent = '▾';
-    setTimeout(function() {
-      if (entry.timeline.style.display === 'block' && event.status !== 'processing') {
-        entry.timeline.style.display = 'none';
-        if (toggle) toggle.textContent = '▸';
-      }
-    }, 3000);
-  }
-}
-
-function _formatTime(ts) {
-  if (!ts) return '';
-  try {
-    var d = new Date(ts);
-    return d.getHours().toString().padStart(2,'0') + ':' +
-           d.getMinutes().toString().padStart(2,'0') + ':' +
-           d.getSeconds().toString().padStart(2,'0');
-  } catch (e) { return ts.substring(11, 19); }
-}
-
-// 暴露到 window 供控制台调试和事件监听器调用
-window.createTaskBlock = createTaskBlock;
-window.updateTaskBlock = updateTaskBlock;

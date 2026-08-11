@@ -150,3 +150,66 @@ class TestA2AClient:
             assert client._http_client is not None
         # 退出后应关闭
         assert client._closed is True
+
+
+class TestA2ARetryParams:
+    """任务 2.2：A2A 重试参数激进调整测试（timeout 10→3, retry 2→1, 指数退避）。"""
+
+    @pytest.mark.asyncio
+    async def test_retry_total_duration_under_8s(self):
+        """默认 timeout=3s, retry_count=1，重试总耗时 < 8s。
+
+        2 次调用 × 3s timeout + 0.5s 退避 ≈ 6.5s（ConnectError 立即返回，实际 ≈ 0.5s）。
+        """
+        import time
+
+        from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
+
+        # 使用默认配置（timeout=3, retry_count=1，新默认值）
+        config = {
+            "a2a": {
+                "remote_endpoints": [
+                    {"name": "device_b", "url": "http://127.0.0.1:18401"}
+                ],
+            }
+        }
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock,
+                   side_effect=httpx.ConnectError("Connection refused")):
+            client = A2AClient(config)
+            start = time.monotonic()
+            with pytest.raises(A2AClientError, match="Retry exhausted"):
+                await client.call_method("device_b", "test_method", {})
+            elapsed = time.monotonic() - start
+
+        # 2 次调用 + 1 次退避（0.5s），总耗时 < 8s（旧配置 30s → 新配置 < 8s）
+        assert elapsed < 8.0, f"重试总耗时 {elapsed:.2f}s 应 < 8s"
+
+    @pytest.mark.asyncio
+    async def test_retry_count_from_config(self):
+        """config retry_count=3 时 call_method 调用 4 次（初次 + 3 次重试）。"""
+        from teage_liu.multiagent.a2a_client import A2AClient, A2AClientError
+
+        config = {
+            "a2a": {
+                "remote_endpoints": [
+                    {"name": "device_b", "url": "http://127.0.0.1:18401"}
+                ],
+                "retry_count": 3,
+            }
+        }
+
+        call_count = 0
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ConnectError("Connection refused")
+
+        with patch("httpx.AsyncClient.post", new=mock_post):
+            client = A2AClient(config)
+            with pytest.raises(A2AClientError, match="Retry exhausted"):
+                await client.call_method("device_b", "test_method", {})
+
+        # 初次 + 3 次重试 = 4 次
+        assert call_count == 4, f"应调用 4 次（初次 + 3 次重试），实际 {call_count} 次"

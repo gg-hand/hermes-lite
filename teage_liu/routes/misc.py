@@ -98,6 +98,18 @@ def serve_workflow():
     )
 
 
+@router.get("/workbench")
+def serve_workbench():
+    """独立协作工作台页面（多 Agent 协作透明观察平台）"""
+    workbench_path = os.path.join(_WEB_DIR, "workbench.html")
+    if not os.path.exists(workbench_path):
+        raise HTTPException(status_code=404, detail="工作台页未找到")
+    return FileResponse(
+        workbench_path,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 # ---------- 工具清单 ----------
 
 @router.get("/tools")

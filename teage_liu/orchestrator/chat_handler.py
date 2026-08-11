@@ -55,6 +55,8 @@ class ChatHandler:
         cancel_event: Optional[threading.Event] = None,
         reasoning_cfg: Optional["ReasoningConfig"] = None,
         is_cron: bool = False,
+        extra_system_prompt: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> str:
         """主对话入口（非流式）。
 
@@ -65,6 +67,21 @@ class ChatHandler:
             4. 记录用户输入与 assistant 回复到 session_logger；
             5. 更新 history_buffer；
             6. 触发 consolidation。
+
+        extra_system_prompt: 可选的额外 system 上下文（如 multiagent 协作注入），
+            会作为独立 system 消息追加到 enhanced_history 末尾。与
+            system_prompt_override 互斥（override 优先）。
+
+        system_prompt_override: 协作会话专用 system prompt 覆盖。
+            当非 None 时（如 worker_adapter 注入协作专用 prompt），**完全绕开**
+            enhanced_context_builder，跳过主 SYSTEM_PROMPT / 用户画像 / 检索记忆 /
+            TodoList / 任务进度等用户会话专属上下文：
+            - system_text 直接设为 override
+            - enhanced_history 仅含会话历史 + 当前 user_input（不注入画像/记忆/Todo）
+            - tools_override 固定 None
+            适用场景：多 worker 协作会话（session_id 以 ``multiagent_`` 开头），
+            避免双 worker 共享主 SYSTEM_PROMPT 的 "Teage Liu" 自称导致身份混乱。
+            override 中应已含 agent_id 身份声明（见 prompts.build_collab_system_prompt）。
         """
         orch = self.orch
         # 记录当前 session_id，供 plan 工具通过 get_session_id 回调获取
@@ -103,13 +120,43 @@ class ChatHandler:
 
         # 2. 执行 React 循环
         # 构建含用户画像 + 检索记忆的增强上下文
-        system_text, enhanced_history, tools_override = await orch.enhanced_context_builder.build(
-            session_id, user_input, history
-        )
+        # 协作会话路径（system_prompt_override 非 None）：完全绕开主 SYSTEM_PROMPT，
+        # 不注入用户画像 / 检索记忆 / TodoList / 任务进度等用户会话专属上下文，
+        # 直接用 override 作为 system_text，enhanced_history 仅含会话历史 + 当前输入。
+        # 这避免双 worker 共享主 SYSTEM_PROMPT 的 "Teage Liu" 自称导致身份混乱。
+        if system_prompt_override is not None:
+            system_text = system_prompt_override
+            # condenser 压缩历史（与用户路径保持一致，避免协作历史膨胀）
+            condensed_history = await orch.enhanced_context_builder._apply_condenser(history)
+            enhanced_history = list(condensed_history) + [
+                {"role": "user", "content": user_input}
+            ]
+            tools_override = None
+            logger.debug(
+                "协作会话 %s 走 system_prompt_override 路径，绕开主 SYSTEM_PROMPT "
+                "(system_text 长度=%d, enhanced_history 长度=%d)",
+                session_id, len(system_text), len(enhanced_history),
+            )
+        else:
+            system_text, enhanced_history, tools_override = await orch.enhanced_context_builder.build(
+                session_id, user_input, history
+            )
+            # 主会话工具隔离：隐藏 worker 协作工具（send_remote_message 等）
+            tools_override = self._maybe_filter_main_session_tools(
+                session_id, tools_override
+            )
         # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history
         if pending_notice_content is not None:
             enhanced_history = list(enhanced_history) + [
                 {"role": "system", "content": pending_notice_content}
+            ]
+        # multiagent 协作注入的额外 system 上下文（如 Director 干预、协作队列消息）
+        # 注意：协作路径（system_prompt_override 非 None）已绕开 enhanced_context_builder，
+        # 此处仍允许 extra_system_prompt 作为补充上下文追加（如 worker_adapter 的
+        # _build_urgent_system_prompt 返回的协作上下文），但不与 override 冲突。
+        if extra_system_prompt:
+            enhanced_history = list(enhanced_history) + [
+                {"role": "system", "content": extra_system_prompt}
             ]
         enhanced_history_len = len(enhanced_history)
 
@@ -326,6 +373,56 @@ class ChatHandler:
 
         return filtered_response
 
+    def _maybe_filter_main_session_tools(
+        self,
+        session_id: str,
+        tools_override: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """主会话工具隔离：主会话隐藏 worker 协作工具。
+
+        对齐"两工具不互通"：主会话协作工具（list_collab_agents /
+        request_collaboration）与 worker 协作工具（send_remote_message /
+        list_remote_agents）互不可见。
+
+        判定依据：仅当主会话协作工具已注册（即 main_session_collab 激活，
+        工具注册门控 multiagent.enabled + main_session_collab.enabled +
+        register_tools + a2a.enabled 全满足）时，才从主会话工具集过滤掉
+        worker 协作工具。非主会话（cron: / multiagent_ 前缀）不处理；
+        worker 协作会话对主会话工具由 request_collaboration handler 的
+        contextvar 守卫兜底拒绝。
+
+        参数:
+            session_id: 当前会话 ID。
+            tools_override: 当前工具集（主会话路径通常为 None → 全量）。
+
+        返回:
+            过滤后的工具 schema 列表；无需过滤时原样返回。
+        """
+        if session_id and (
+            session_id.startswith("cron:") or session_id.startswith("multiagent_")
+        ):
+            return tools_override
+        orch = self.orch
+        registry = getattr(orch, "tool_registry", None)
+        if registry is None:
+            return tools_override
+        try:
+            core = getattr(registry, "_core_tools", {}) or {}
+            has_main_tools = "list_collab_agents" in core
+        except Exception:
+            has_main_tools = False
+        if not has_main_tools:
+            return tools_override
+        full = tools_override
+        if full is None:
+            try:
+                full = registry.get_tools_schema()
+            except Exception:
+                return tools_override
+        hide = {"send_remote_message", "list_remote_agents"}
+        filtered = [t for t in full if t.get("name") not in hide]
+        return filtered if filtered else full
+
     async def chat_stream(
         self,
         session_id: str,
@@ -334,6 +431,8 @@ class ChatHandler:
         reasoning_cfg: Optional["ReasoningConfig"] = None,
         is_cron: bool = False,
         stream_manager: Optional[Any] = None,
+        extra_system_prompt: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
     ):
         """流式主对话入口，异步生成器逐个 yield 事件 dict。
 
@@ -419,13 +518,33 @@ class ChatHandler:
         # 构建含用户画像 + 检索记忆的增强上下文
         # Phase 8 Task 5.7: _build_enhanced_context 返回三元组，第三项为
         # tools_override（用户会话固定 None；cron 会话为请求级过滤后的列表）
-        system_text, enhanced_history, tools_override = await orch.enhanced_context_builder.build(
-            session_id, user_input, history
-        )
+        if system_prompt_override is not None:
+            # 协作/覆盖路径（如 main_collab_{agent_id} 主会话协作响应）：
+            # 绕开主 SYSTEM_PROMPT / 用户画像 / 检索记忆，直接用 override 作 system_text
+            condensed_history = await orch.enhanced_context_builder._apply_condenser(history)
+            system_text = system_prompt_override
+            enhanced_history = list(condensed_history) + [
+                {"role": "user", "content": user_input}
+            ]
+            tools_override = None
+        else:
+            system_text, enhanced_history, tools_override = await orch.enhanced_context_builder.build(
+                session_id, user_input, history
+            )
+            # 主会话工具隔离：隐藏 worker 协作工具（send_remote_message 等）
+            tools_override = self._maybe_filter_main_session_tools(
+                session_id, tools_override
+            )
         # 规范 3 Task 8.4: 追加独立 system 消息到 enhanced_history（流式路径）
         if pending_notice_content is not None:
             enhanced_history = list(enhanced_history) + [
                 {"role": "system", "content": pending_notice_content}
+            ]
+        # 主会话协作引导段（条件注入，extra_system_prompt）：以独立 system
+        # 消息追加到 history 末尾，不替换主 SYSTEM_PROMPT。
+        if extra_system_prompt:
+            enhanced_history = list(enhanced_history) + [
+                {"role": "system", "content": extra_system_prompt}
             ]
         enhanced_history_len = len(enhanced_history)
 

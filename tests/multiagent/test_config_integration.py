@@ -58,13 +58,21 @@ multiagent:
     assert config["multiagent"]["worker"]["dangerous_tools"] == ["execute_command", "write_file", "call_tool"]
 
 
-def test_config_multiagent_disabled_default():
-    """multiagent.enabled 默认应为 False。"""
-    # 不设置 multiagent 段时应默认 disabled
-    config_path = Path("config.yaml")
-    if config_path.exists():
-        config = load_config(str(config_path))
-        assert config.get("multiagent", {}).get("enabled", False) is False
+def test_config_multiagent_disabled_default(tmp_path: Path):
+    """multiagent.enabled 默认应为 False（未配置 multiagent 段时）。"""
+    # 使用隔离的临时配置文件，避免读到用户本地 config.yaml
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+llm:
+  main_provider: deepseek
+  main_model: test
+  main_api_key: test
+""",
+        encoding="utf-8",
+    )
+    config = load_config(str(config_path))
+    assert config.get("multiagent", {}).get("enabled", False) is False
 
 
 def test_validate_config_schema_accepts_multiagent():

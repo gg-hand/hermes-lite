@@ -134,6 +134,20 @@ def create_a2a_router(bb_root: Path, config: dict) -> APIRouter:
         "agent_message": _agent_message,
     }
 
+    # 主会话协作平面（channel=main_session）：端到端传输 + 本地镜像。
+    # 闭包捕获本实例 worker agent_id，供 to==self 目标过滤。
+    multiagent_cfg = config.get("multiagent", {}) or {}
+    collab_local_agent_id = (
+        (multiagent_cfg.get("worker", {}) or {}).get("agent_id", "worker_001")
+    )
+
+    async def _collab_message(bb_root_, params_, lock_manager_, schema_validator_):
+        return await _collab_message_impl(
+            bb_root_, params_, lock_manager_, schema_validator_, collab_local_agent_id,
+        )
+
+    methods["collab_message"] = _collab_message
+
     def _check_rate_limit(request: Request) -> JSONResponse | None:
         """限流检查：超限返回 429 JSONResponse，否则返回 None。"""
         client_ip = request.client.host if request.client else "unknown"
@@ -567,10 +581,106 @@ async def _agent_message(
     collab_id = params.get("collab_id")
     if collab_id is not None:
         message["collab_id"] = collab_id
+    # 主会话协作平面（channel=main_session）等关键字段白名单透传，供对端
+    # worker 的 main-collab handler / 轮询基线识别高优与等待语义。
+    for _k in (
+        "channel", "priority", "deadline",
+        "wait_for_response", "collab_round", "wait_for",
+    ):
+        if _k in params:
+            message[_k] = params[_k]
     seq, deduplicated = await append_collab_message(
         bb_root, message, collab_id=collab_id
     )
     return {"ok": True, "seq": seq, "deduplicated": deduplicated}
+
+
+# 主会话协作（channel=main_session）消息白名单透传字段
+_MAIN_COLLAB_PASSTHROUGH = (
+    "channel", "type", "msg_type", "from", "to", "content",
+    "collab_id", "message_id", "priority", "deadline",
+    "wait_for_response", "collab_round", "capabilities_needed", "wait_for",
+)
+
+
+async def _collab_message_impl(
+    bb_root: Path, params: dict, lock_manager, schema_validator,
+    local_agent_id: str,
+) -> dict:
+    """主会话协作消息（channel=main_session）端到端传输 + 本地镜像。
+
+    与 agent_message（worker 协作平面）的区别：
+    - 路由靠消息字段而非端点解析：request 按 ``to`` 字段过滤
+      （to==self || to=="*"）；response/end 额外要求本地 index 存在该
+      collab（非参与者丢弃，防广播污染）。
+    - 命名空间约束：collab_id 必须以 ``main_`` 开头（主会话协作平面）。
+    - 只做"写入本地镜像 + ack"，**不做 worker 协作路由**（worker 的
+      main-collab handler 轮询 main_* collab 后按 channel 分流触发 LLM）。
+    - 消息带 ``message_id`` 跨端幂等去重。
+
+    Args:
+        bb_root: 黑板根目录。
+        params: JSON-RPC 参数（含 channel/type/from/to/content/collab_id/
+            message_id/priority/deadline/wait_for_response/collab_round）。
+        lock_manager: 锁管理器（本 handler 不使用，保持签名一致）。
+        schema_validator: schema 校验器（本 handler 不使用）。
+        local_agent_id: 本实例 worker agent_id（判定 to==self）。
+
+    Returns:
+        ``{ok, seq, deduplicated, collab_id}``；非目标/非参与者返回
+        ``{ok: False, ignored: "not_target"|"not_participant"}``。
+    """
+    from teage_liu.multiagent.blackboard import read_collab_index
+
+    from_id = params.get("from", "")
+    to_id = params.get("to", "")
+    content = params.get("content", "")
+    collab_id = params.get("collab_id", "")
+    message_id = params.get("message_id", "")
+    mtype = params.get("type", "request")
+
+    if not from_id or not to_id or not content or not collab_id:
+        raise SignatureError("collab_message: from/to/content/collab_id required")
+    if not message_id:
+        raise SignatureError("collab_message: message_id required")
+
+    # 命名空间约束：主会话协作 collab_id 以 main_ 开头
+    if not collab_id.startswith("main_"):
+        return {"ok": False, "ignored": "invalid_collab_namespace", "collab_id": collab_id}
+
+    # 路径沙箱：collab_id 用于构造 collabs/{collab_id}.md
+    safe = sanitize_path(collab_id, bb_root)
+
+    # 目标过滤：to==self || to=="*"
+    if to_id != local_agent_id and to_id != "*":
+        return {"ok": False, "ignored": "not_target", "collab_id": safe}
+
+    if mtype != "request":
+        # 非参与者丢弃：本地 index 无该 collab → 不镜像（防广播污染）
+        try:
+            index = await read_collab_index(bb_root)
+        except Exception:
+            index = []
+        if not any(e.get("collab_id") == safe for e in index):
+            return {"ok": False, "ignored": "not_participant", "collab_id": safe}
+
+    # 白名单透传构造消息
+    message: dict[str, Any] = {}
+    for _k in _MAIN_COLLAB_PASSTHROUGH:
+        if _k in params:
+            message[_k] = params[_k]
+
+    # 路径字段沙箱扫描（消息 content 内的路径字段必须相对）
+    _sanitize_message_paths(message)
+
+    seq, deduplicated = await append_collab_message(
+        bb_root, message, collab_id=safe
+    )
+    logger.info(
+        "collab_message 镜像写入: collab=%s type=%s from=%s to=%s seq=%s dedup=%s",
+        safe, mtype, from_id, to_id, seq, deduplicated,
+    )
+    return {"ok": True, "seq": seq, "deduplicated": deduplicated, "collab_id": safe}
 
 
 def _sanitize_message_paths(message: dict) -> None:

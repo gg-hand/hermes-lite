@@ -1179,16 +1179,37 @@
   const FAILURE_ALERT_THRESHOLD = 3;
 
   async function loadCronStats() {
-    const stats = await fetchJson('/cron_tools/runs/stats');
-    $('cronTodaySuccess').textContent = fmtNum(stats.today_success || 0);
-    $('cronTodayFailure').textContent = fmtNum(stats.today_failure || 0);
-    $('cronTodayTotal').textContent = fmtNum(stats.today_total || 0);
-    const dur = stats.total_duration_seconds;
-    $('cronTotalDuration').textContent = dur != null ? fmtMs(dur * 1000) : '—';
+    try {
+      const stats = await fetchJson('/cron_tools/runs/stats');
+      $('cronTodaySuccess').textContent = fmtNum(stats.today_success || 0);
+      $('cronTodayFailure').textContent = fmtNum(stats.today_failure || 0);
+      $('cronTodayTotal').textContent = fmtNum(stats.today_total || 0);
+      const dur = stats.total_duration_seconds;
+      $('cronTotalDuration').textContent = dur != null ? fmtMs(dur * 1000) : '—';
+    } catch (e) {
+      // 503 = 调度器未就绪，显示明确状态而非误导性的 0
+      const msg = (e && e.message && e.message.includes('503')) ? '未就绪' : '—';
+      $('cronTodaySuccess').textContent = msg;
+      $('cronTodayFailure').textContent = msg;
+      $('cronTodayTotal').textContent = msg;
+      $('cronTotalDuration').textContent = msg;
+      throw e;
+    }
   }
 
   async function loadFailureAlerts() {
-    const data = await fetchJson('/cron_tools/runs/recent?limit=100');
+    let data;
+    try {
+      data = await fetchJson('/cron_tools/runs/recent?limit=100');
+    } catch (e) {
+      const statusEl = $('failureAlertsStatus');
+      const cardsEl = $('cronAlertCards');
+      const msg = (e && e.message && e.message.includes('503')) ? '调度器未就绪' : '查询失败';
+      statusEl.textContent = msg;
+      statusEl.className = 'section-status is-unhealthy';
+      cardsEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">${msg}</div></div>`;
+      throw e;
+    }
     const runs = (data && data.runs) || [];
 
     // 按 schedule_id 分组，每组按 started_at 倒序，从最新一次起统计连续失败

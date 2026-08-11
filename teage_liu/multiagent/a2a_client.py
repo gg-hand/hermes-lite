@@ -39,8 +39,8 @@ class A2AClient:
     ):
         self._config = config.get("a2a", {}) or {}
         self._endpoints: list[dict] = self._config.get("remote_endpoints", []) or []
-        self._timeout = self._config.get("timeout_seconds", 10)
-        self._retry_count = self._config.get("retry_count", 2)
+        self._timeout = self._config.get("timeout_seconds", 3)  # 任务 2.2：10→3，对端不通时快速失败
+        self._retry_count = self._config.get("retry_count", 1)  # 任务 2.2：2→1（共 2 次调用）
         self._signer_id = signer_id
         self._private_key = private_key
         self._http_client: httpx.AsyncClient | None = None
@@ -129,7 +129,8 @@ class A2AClient:
                     attempt + 1, self._retry_count + 1, endpoint_name, e,
                 )
                 if attempt < self._retry_count:
-                    await asyncio.sleep(0.05 * (attempt + 1))  # 短退避（测试友好）
+                    # 任务 2.2：指数退避 0.5 → 1.0 → 2.0，上限 2.0s
+                    await asyncio.sleep(min(0.5 * (2 ** attempt), 2.0))
                 continue
 
         raise A2AClientError(f"Retry exhausted: {last_error}")
@@ -143,23 +144,27 @@ class A2AClient:
 
         失败的端点 result 为 A2AClientError 实例。
         """
-        tasks = [
-            (ep["name"], self.call_method(ep["name"], method, params))
-            for ep in self._endpoints
-        ]
+        # 先确保 HTTP client 已创建，避免并行时 _ensure_client 竞态
+        self._ensure_client()
 
-        results: dict[str, Any] = {}
-        for name, task in tasks:
+        async def _call(name: str) -> Any:
             try:
-                results[name] = await task
+                return await self.call_method(name, method, params)
             except A2AClientError as e:
-                results[name] = e
-        return results
+                return e
+
+        names = [ep["name"] for ep in self._endpoints]
+        results_list = await asyncio.gather(*[_call(n) for n in names])
+        return dict(zip(names, results_list))
 
     async def _sign_params(self, params: dict) -> dict:
-        """对参数签名（ed25519）。"""
-        # 序列化 params 为 canonical JSON
-        canonical = json.dumps(params, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        """对参数签名（ed25519）。
+
+        移除 signature 字段后序列化，与 sign_message 保持一致，
+        确保客户端签名内容与服务端验签内容相同。
+        """
+        msg_copy = {k: v for k, v in params.items() if k != "signature"}
+        canonical = json.dumps(msg_copy, sort_keys=True, ensure_ascii=False).encode("utf-8")
         signature = self._private_key.sign(canonical)
         params = {**params, "signature": signature.hex()}
         return params

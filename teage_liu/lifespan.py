@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -18,21 +17,11 @@ from teage_liu.background_loops import cleanup_loop, file_cleanup_loop, metrics_
 from teage_liu.background_task_registry import BackgroundTaskRegistry  # noqa: E402
 
 # 核心组件导入
-from teage_liu.config import (
-    load_config,
-    clear_config_cache,
-    validate_required_env_vars,
-)
-from teage_liu.orchestrator import Orchestrator
+from teage_liu.config import load_config
 from teage_liu.storage.chroma_store import _get_onnx_embedder
-from teage_liu.skill.loader import (
-    SkillLoader,
-    load_skill_to_registry,
-    register_skill_stub,
-)
+from teage_liu.skill.loader import register_skill_stub
 from teage_liu.mcp.client import MCPServerDef
-from teage_liu.mcp.manager import MCPManager, register_mcp_tools_to_registry
-from teage_liu.agent.cron_proposals import ProposalStore
+from teage_liu.mcp.manager import register_mcp_tools_to_registry
 from teage_liu.agent.cron_tools import register_cron_tools
 from teage_liu.agent.cron_tool_registry import CronToolRegistry
 from teage_liu.agent.cron_tool_writer import register_write_cron_tool
@@ -41,10 +30,10 @@ from teage_liu.agent.skill_tools import (
     register_skill_tools,
     _load_skill_state,
 )
-from teage_liu.tasks.scheduler import CronScheduler
-from teage_liu.tasks.cron_expr import CronExpr
 from teage_liu.agent.tools.file_tools import register_file_tools
 from teage_liu.agent.tools.shell_tools import register_bash_tool
+from teage_liu.agent.tools.a2a_tools import register_a2a_tools
+from teage_liu.agent.tools.main_session_collab_tools import register_main_session_collab_tools
 _CRON_TOOL_BASE_DIR = os.environ.get("TEAGE_CRON_TOOL_DIR", "cron_tool")
 
 # 导入为无条件绝对导入，若失败模块本身无法加载，因此标志恒为 True
@@ -107,9 +96,27 @@ async def lifespan(app: FastAPI):
             lambda c: AgentRegistry(bb_root, c.get("schema_validator")),
             deps=["schema_validator"], hot_reloadable=True,
         )
+        # 任务 2.1：watchdog callback 延迟绑定到 worker_adapter
+        # worker_adapter 在 watchdog_watcher 注册时尚未实例化，通过 holder 间接引用，
+        # 实例化后（container.get("multiagent_adapter")）填充 holder 激活回调。
+        worker_adapter_holder: list = []
+
+        def _on_collab_file_changed_deferred(evt, holder=worker_adapter_holder):
+            """watchdog 文件变更回调（延迟绑定到 worker_adapter）。
+
+            watchdog callback 是同步调用，asyncio.Event.set() 是同步安全操作。
+            holder 为空时（worker_adapter 尚未实例化）安全跳过。
+            """
+            adapter = holder[0] if holder else None
+            if adapter is not None:
+                adapter._on_collab_file_changed(evt)
+
+        director_v2_enabled = config.get("multiagent", {}).get("worker", {}).get("director_v2_enabled", True)
+        watchdog_callback = _on_collab_file_changed_deferred if director_v2_enabled else (lambda evt: None)
+
         container.register(
             "watchdog_watcher",
-            lambda c: WatchdogWatcher(bb_root, lambda evt: None),  # callback 由后续集成注入
+            lambda c: WatchdogWatcher(bb_root, watchdog_callback),
             deps=[], hot_reloadable=True,
         )
         container.register(
@@ -137,14 +144,25 @@ async def lifespan(app: FastAPI):
             from teage_liu.multiagent.worker_adapter import WorkerAdapter
             worker_cfg = config["multiagent"].get("worker", {})
             worker_agent_id = worker_cfg.get("agent_id", "worker_001")
-            container.register(
-                "multiagent_adapter",
-                lambda c: WorkerAdapter(
+
+            def _make_worker_adapter(c):
+                """构造 WorkerAdapter（注入 orchestrator + 可选 a2a_client）。"""
+                a2a_client = None
+                try:
+                    a2a_client = c.get("a2a_client")
+                except Exception:
+                    a2a_client = None
+                return WorkerAdapter(
                     bb_root=bb_root,
                     config=config,
                     agent_id=worker_agent_id,
                     orchestrator=c.get("orchestrator"),
-                ),
+                    a2a_client=a2a_client,
+                )
+
+            container.register(
+                "multiagent_adapter",
+                _make_worker_adapter,
                 deps=["orchestrator"], hot_reloadable=True,
             )
 
@@ -158,6 +176,10 @@ async def lifespan(app: FastAPI):
         # Plan 2 新增：启动 multiagent_adapter（DirectorEngine 或 WorkerAdapter）
         try:
             multiagent_adapter = container.get("multiagent_adapter")
+            # 任务 2.1：填充 worker_adapter_holder，激活 watchdog callback
+            if (director_v2_enabled and multiagent_adapter is not None
+                    and hasattr(multiagent_adapter, "_on_collab_file_changed")):
+                worker_adapter_holder.append(multiagent_adapter)
             if multiagent_adapter is not None and hasattr(multiagent_adapter, "start"):
                 await multiagent_adapter.start()
                 logger.info(
@@ -179,6 +201,81 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("A2A Gateway 启动失败: %s", e)
 
+        # 1.6.0 标准 A2A v1.0 路由注册 + TaskDriver 启动
+        try:
+            a2a_std_router = container.get("a2a_std_router")
+            if a2a_std_router is not None:
+                app.include_router(a2a_std_router)
+                adapter = getattr(a2a_std_router, "a2a_std_engine_adapter", None)
+                if adapter is not None and hasattr(adapter, "start"):
+                    await adapter.start()
+                # 1.6.0.1 审批桥（审批请求 → input-required）
+                try:
+                    from teage_liu.multiagent.a2a_std.approval_bridge import A2AApprovalBridge
+
+                    approval_manager = container.get("approval_manager")
+                    std_task_manager = getattr(a2a_std_router, "a2a_std_task_manager", None)
+                    if approval_manager is not None and std_task_manager is not None:
+                        from pathlib import Path as _BridgePath
+
+                        bridge_bb_root = _BridgePath(
+                            multiagent_cfg.get("blackboard_dir", "data/blackboard")
+                        )
+                        A2AApprovalBridge(
+                            approval_manager, std_task_manager, bridge_bb_root
+                        ).install()
+                        logger.info("A2A 审批桥已安装")
+                except Exception as e:
+                    logger.warning("A2A 审批桥安装失败: %s", e)
+                logger.info("A2A standard 路由已注册")
+        except Exception as e:
+            logger.error("A2A standard 启动失败: %s", e)
+
+    # 1.6.1 RemoteAgentAdapter 启动（仅 a2a.enabled + remote_endpoints + role=worker 时）
+    #       通过 HTTP A2A 把本 worker 注册到对端实例的 Gateway，并周期性发心跳。
+    a2a_remote_endpoints = a2a_cfg.get("remote_endpoints") or []
+    multiagent_role_for_raa = config.get("multiagent", {}).get("role", "worker")
+    if (a2a_cfg.get("enabled") and a2a_remote_endpoints
+            and multiagent_role_for_raa == "worker"):
+        try:
+            from pathlib import Path as _RAA_Path
+            from teage_liu.multiagent.remote_agent_adapter import RemoteAgentAdapter
+
+            multiagent_cfg_for_raa = config.get("multiagent", {}) or {}
+            raa_bb_root_str = multiagent_cfg_for_raa.get("blackboard_dir", "data/blackboard")
+            raa_bb_root = _RAA_Path(raa_bb_root_str)
+            raa_bb_root.mkdir(parents=True, exist_ok=True)
+
+            raa_worker_cfg = multiagent_cfg_for_raa.get("worker", {})
+            raa_agent_id = raa_worker_cfg.get("agent_id", "worker_001")
+
+            # 标准 A2A 模式：发现走 Agent Card（取代注册+心跳）
+            raa_std_cfg = a2a_cfg.get("standard", {}) or {}
+            raa_standard_mode = bool(
+                raa_std_cfg.get("enabled", True) and raa_std_cfg.get("mode") == "standard"
+            )
+            container.register(
+                "remote_agent_adapter",
+                lambda c: RemoteAgentAdapter(
+                    local_bb_root=raa_bb_root,
+                    config=config,
+                    agent_id=raa_agent_id,
+                    private_key=None,  # 最小实现：不签名（gateway 仅 append_message 要求签名）
+                    standard_mode=raa_standard_mode,
+                ),
+                deps=[],
+                hot_reloadable=True,
+            )
+            remote_adapter = container.get("remote_agent_adapter")
+            if remote_adapter is not None and hasattr(remote_adapter, "start"):
+                await remote_adapter.start()
+                logger.info(
+                    "RemoteAgentAdapter 启动完成 (agent_id=%s, endpoints=%d)",
+                    raa_agent_id, len(a2a_remote_endpoints),
+                )
+        except Exception as e:
+            logger.error("RemoteAgentAdapter 启动失败: %s", e)
+
     # 1.7 multiagent REST 路由注册（仅 multiagent.enabled=True 时）
     #    Plan 4 Task 5：从容器取出 multiagent_router 挂载到 FastAPI app。
     #    路由由 register_components 条件注册，此处仅负责挂载。
@@ -191,6 +288,15 @@ async def lifespan(app: FastAPI):
                 logger.info("multiagent REST 路由已注册")
         except Exception as e:
             logger.error("multiagent 路由注册失败: %s", e)
+
+        # 1.8 协作消息路由挂载（Task 3，D2 修复：与 multiagent_router 同条件挂载）
+        try:
+            collab_router = container.get("collab_router")
+            if collab_router is not None:
+                app.include_router(collab_router)
+                logger.info("collab 路由已注册")
+        except Exception as e:
+            logger.error("collab 路由注册失败: %s", e)
 
     # 2. 触发工厂创建（无状态组件）
     session_logger = container.get("session_logger")
@@ -224,6 +330,17 @@ async def lifespan(app: FastAPI):
     _register_skill_tools(container, orchestrator, skill_loader)
     _register_cron_tools(container, orchestrator, cron_scheduler, proposal_store)
     _register_file_tools(orchestrator, etl_engine, upload_manager)
+    _register_a2a_tools(container, orchestrator, config)
+    _register_main_session_collab_tools(container, orchestrator, config)
+
+    # 4.5 注入 registry 到 cron_scheduler，供创建调度时的 workflow 校验使用
+    # _load_persisted 在 __init__ 中调用时 registry 尚未就绪（跳过工具校验），
+    # 此处补注入后，schedules.py 创建调度校验可正常访问 registry
+    if cron_scheduler is not None and orchestrator is not None:
+        cron_scheduler.tool_registry = orchestrator.tool_registry
+        cron_scheduler.cron_tool_registry = getattr(
+            orchestrator, "cron_tool_registry", None
+        )
 
     # 5. 创建 asyncio.Event（替代 state.metrics_baseline_reset）
     app.state.metrics_reset_event = asyncio.Event()
@@ -284,6 +401,30 @@ async def lifespan(app: FastAPI):
                 logger.info("Director 进程已清理: %s", result.get("message"))
         except Exception as e:
             logger.warning("Director 清理失败: %s", e)
+
+    # 关闭标准 A2A 引擎适配器（TaskDriver）
+    a2a_cfg_shutdown = config.get("a2a", {}) or {}
+    if a2a_cfg_shutdown.get("enabled"):
+        try:
+            a2a_std_router = container.get("a2a_std_router")
+            adapter = getattr(a2a_std_router, "a2a_std_engine_adapter", None)
+            if adapter is not None and hasattr(adapter, "stop"):
+                await adapter.stop()
+                logger.info("A2A standard 引擎适配器已停止")
+        except Exception as e:
+            logger.warning("A2A standard 关闭失败: %s", e)
+
+    # 关闭 RemoteAgentAdapter（仅启动过时才停止）
+    if (a2a_cfg_shutdown.get("enabled")
+            and (a2a_cfg_shutdown.get("remote_endpoints") or [])
+            and config.get("multiagent", {}).get("role", "worker") == "worker"):
+        try:
+            remote_adapter = container.get("remote_agent_adapter")
+            if remote_adapter is not None and hasattr(remote_adapter, "stop"):
+                await remote_adapter.stop()
+                logger.info("RemoteAgentAdapter 已停止")
+        except Exception as e:
+            logger.warning("RemoteAgentAdapter 关闭失败: %s", e)
 
     close_container()
     logger.info("lifespan 关闭完成")
@@ -402,3 +543,127 @@ def _register_file_tools(orchestrator, etl_engine, upload_manager):
             logger.info("文件工具已注册")
     except Exception as e:
         logger.error("文件工具注册失败: %s", e)
+
+
+def _register_a2a_tools(container, orchestrator, config):
+    """A2A 协作工具注册（list_remote_agents / send_remote_message）。
+
+    仅在 a2a.enabled=True 时注册。从容器取 a2a_client 与 bb_root，
+    从 config 取本 worker agent_id 作为消息 from 字段。
+    """
+    if orchestrator is None:
+        return
+    a2a_cfg = config.get("a2a", {}) or {}
+    if not a2a_cfg.get("enabled"):
+        return
+    try:
+        from pathlib import Path as _Path
+
+        a2a_client = None
+        try:
+            a2a_client = container.get("a2a_client")
+        except Exception:
+            a2a_client = None
+
+        # bb_root 从 multiagent.blackboard_dir 取（与 WorkerAdapter 一致）
+        multiagent_cfg = config.get("multiagent", {}) or {}
+        bb_dir = multiagent_cfg.get("blackboard_dir", "data/blackboard")
+        bb_root = _Path(bb_dir)
+
+        # 本 worker agent_id（与 lifespan 1.5 节注册 WorkerAdapter 时一致）
+        worker_cfg = multiagent_cfg.get("worker", {})
+        local_agent_id = worker_cfg.get("agent_id", "worker_001")
+
+        # 标准 A2A 模式（a2a.standard.mode=standard）：工具走标准通道
+        std_client = None
+        std_cfg = a2a_cfg.get("standard", {}) or {}
+        if std_cfg.get("enabled", True) and std_cfg.get("mode") == "standard":
+            try:
+                from teage_liu.multiagent.a2a_std.client import StdA2AClient
+
+                std_client = StdA2AClient(config)
+            except Exception as e:
+                logger.warning("StdA2AClient 构建失败（回退 legacy）: %s", e)
+
+        if orchestrator.tool_registry:
+            register_a2a_tools(
+                orchestrator.tool_registry,
+                bb_root,
+                a2a_client,
+                local_agent_id,
+                std_client=std_client,
+            )
+            logger.info(
+                "A2A 工具已注册 (agent_id=%s, a2a_client=%s, std_client=%s)",
+                local_agent_id,
+                "yes" if a2a_client else "no",
+                "yes" if std_client else "no",
+            )
+    except Exception as e:
+        logger.error("A2A 工具注册失败: %s", e)
+
+
+def _register_main_session_collab_tools(container, orchestrator, config):
+    """主会话协作工具注册（list_collab_agents / request_collaboration）。
+
+    主会话协作平面走独立 A2A 端到端通道，需同时满足：
+    - ``multiagent.enabled``（黑板目录存在）
+    - ``multiagent.main_session_collab.enabled`` 且 ``register_tools``
+    - ``a2a.enabled``（A2A 统一传输）
+
+    任一不满足则静默降级（不注册），单实例/未配置 A2A 时主会话零影响。
+    """
+    if orchestrator is None:
+        return
+    multiagent_cfg = config.get("multiagent", {}) or {}
+    if not multiagent_cfg.get("enabled"):
+        return
+    msc = multiagent_cfg.get("main_session_collab", {}) or {}
+    if not msc.get("enabled", False) or not msc.get("register_tools", True):
+        return
+    a2a_cfg = config.get("a2a", {}) or {}
+    if not a2a_cfg.get("enabled"):
+        logger.info("main_session_collab 已启用但 a2a 未开启，主会话协作工具不注册（静默降级）")
+        return
+    try:
+        from pathlib import Path as _Path
+
+        a2a_client = None
+        try:
+            a2a_client = container.get("a2a_client")
+        except Exception:
+            a2a_client = None
+
+        bb_dir = multiagent_cfg.get("blackboard_dir", "data/blackboard")
+        bb_root = _Path(bb_dir)
+        worker_cfg = multiagent_cfg.get("worker", {})
+        local_agent_id = worker_cfg.get("agent_id", "worker_001")
+
+        # 标准 A2A 模式（a2a.standard.mode=standard）：工具走标准通道
+        std_client = None
+        std_cfg = a2a_cfg.get("standard", {}) or {}
+        if std_cfg.get("enabled", True) and std_cfg.get("mode") == "standard":
+            try:
+                from teage_liu.multiagent.a2a_std.client import StdA2AClient
+
+                std_client = StdA2AClient(config)
+            except Exception as e:
+                logger.warning("StdA2AClient 构建失败（回退 legacy）: %s", e)
+
+        if orchestrator.tool_registry:
+            register_main_session_collab_tools(
+                orchestrator.tool_registry,
+                bb_root,
+                local_agent_id,
+                a2a_client,
+                msc,
+                std_client=std_client,
+            )
+            logger.info(
+                "主会话协作工具已注册 (agent_id=%s, a2a_client=%s, std_client=%s)",
+                local_agent_id,
+                "yes" if a2a_client else "no",
+                "yes" if std_client else "no",
+            )
+    except Exception as e:
+        logger.error("主会话协作工具注册失败: %s", e)

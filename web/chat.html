@@ -9,7 +9,7 @@
   <!-- CSS: tokens → base → components → chat layout -->
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/base.css">
-  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/components.css?v=20260802a">
   <link rel="stylesheet" href="/static/css/chat.css">
 
   <!-- 主题初始化（防 FOUC，必须在 body 前执行） -->
@@ -38,8 +38,8 @@
       <button class="nav-item" data-tab="files">
         <span class="nav-icon">▦</span><span class="nav-label">文件</span>
       </button>
-      <button class="nav-item nav-item--toggle" data-action="toggle-director" id="btnDirector" title="Director 协作">
-        <span class="nav-icon">◎</span><span class="nav-label">Director</span>
+      <button class="nav-item nav-item--workbench" id="btnOpenWorkbench" title="打开协作工作台（独立页面）">
+        <span class="nav-icon">◎</span><span class="nav-label">协作</span>
         <span class="nav-status-dot" id="directorStatusDot"></span>
       </button>
     </nav>
@@ -176,93 +176,6 @@
              accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif">
     </div>
     </div><!-- /.chat-pane -->
-    <section class="collab-pane" id="collabPane" hidden>
-      <div class="wb-header">
-        <div class="wb-director-control" id="directorControl">
-          <span class="wb-director-indicator" id="directorIndicator">○</span>
-          <span class="wb-director-state" id="directorState">未运行</span>
-          <button class="wb-btn wb-btn-sm wb-btn-primary" id="directorStartBtn">启动</button>
-          <button class="wb-btn wb-btn-sm wb-btn-ghost" id="directorStopBtn" style="display:none">停止</button>
-          <button class="wb-btn wb-btn-sm wb-btn-ghost" id="directorRestartBtn" style="display:none">重启</button>
-        </div>
-        <div class="wb-avatar">◎</div>
-        <div class="wb-title-group">
-          <div class="wb-title">Director 工作台</div>
-          <div class="wb-subtitle">中间人 · 协调多Agent协作</div>
-        </div>
-        <div class="wb-state" id="wbState"><span class="wb-state-dot"></span><span class="wb-state-text">未启用</span></div>
-      </div>
-      <div class="wb-tabs">
-        <button class="wb-tab active" data-wb-tab="guide">协作指引</button>
-        <button class="wb-tab" data-wb-tab="roster">Agent名册</button>
-        <button class="wb-tab" data-wb-tab="connect">接入说明</button>
-      </div>
-      <div class="wb-body" id="wbBody">
-        <div class="wb-pane active" data-wb-pane="guide">
-          <div class="wb-status-row">
-            <span class="wb-status-dot"></span>
-            <span class="wb-status-label">Director 状态</span>
-            <span class="wb-status-val" id="wbStatusVal">未启用</span>
-          </div>
-          <div class="wb-section">
-            <h5>如何发起协作</h5>
-            <div class="wb-step"><span class="wb-num">1</span><div class="wb-txt">在输入框使用 <code>@director</code> 唤起 Director，它会把任务拆解并分派给合适的 agent。例：<code>@director 帮我对比这三个方案</code></div></div>
-            <div class="wb-step"><span class="wb-num">2</span><div class="wb-txt">也可点击下方 <b>分派任务</b> 按钮，Director 会引导你选择目标 agent 和任务类型。</div></div>
-            <div class="wb-step"><span class="wb-num">3</span><div class="wb-txt">Director 会自动汇总各 agent 结果，你可以追问或让某个 agent 接力。</div></div>
-          </div>
-          <div class="wb-section">
-            <h5>支持的协作模式</h5>
-            <div class="wb-step"><span class="wb-num">·</span><div class="wb-txt"><b>分派</b>：同一任务发给多个 agent，汇总对比</div></div>
-            <div class="wb-step"><span class="wb-num">·</span><div class="wb-txt"><b>接力</b>：任务按顺序在 agent 间传递</div></div>
-            <div class="wb-step"><span class="wb-num">·</span><div class="wb-txt"><b>辩论</b>：多个 agent 对同一问题给出不同视角</div></div>
-          </div>
-        </div>
-        <div class="wb-pane" data-wb-pane="roster">
-          <div class="agents-list" id="agentsList">
-            <p class="wb-empty">暂无活跃 agents</p>
-          </div>
-          <div class="wb-msg-log-section">
-            <button class="wb-msg-log-toggle" id="msgLogToggle">消息记录 ▸</button>
-            <div class="wb-msg-log" id="msgLogContainer" style="display:none">
-              <p class="wb-empty">点击加载…</p>
-            </div>
-          </div>
-        </div>
-        <div class="wb-pane" data-wb-pane="connect">
-          <div class="wb-section"><h5>接入新 Agent 要求</h5></div>
-          <div class="wb-card">
-            <div class="wb-card-title">必须项</div>
-            <ul class="wb-req-list">
-              <li>提供 <code>agent_card.md</code>：含 agent_id、role、endpoint</li>
-              <li>endpoint 为 URL 格式（http:// 或 https://）</li>
-              <li>实现 4 个原子操作：join_blackboard / speak / listen / heartbeat</li>
-              <li>所有协议文件路径使用<b>相对路径</b>（相对于 BB_ROOT）</li>
-            </ul>
-          </div>
-          <div class="wb-card">
-            <div class="wb-card-title">推荐项</div>
-            <ul class="wb-req-list">
-              <li>支持 ed25519 签名验证（A2AGateway）</li>
-              <li>JSON-RPC 2.0 协议，全链路异步</li>
-              <li>心跳间隔 ≤ 30s，超时自动标记离线</li>
-            </ul>
-          </div>
-          <div class="wb-card">
-            <div class="wb-card-title">接入步骤</div>
-            <ul class="wb-req-list">
-              <li>1. 在共享黑板目录放置 agent_card.md</li>
-              <li>2. Director 自动发现并注册</li>
-              <li>3. 首次 heartbeat 后进入在线状态</li>
-              <li>4. 即可被 @director 分派任务</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-      <div class="wb-footer">
-        <button class="wb-btn wb-btn-ghost" id="wbCollapseBtn">收起</button>
-        <button class="wb-btn wb-btn-primary" id="wbDispatchBtn">分派任务</button>
-      </div>
-    </section>
   </main>
 </div>
 
@@ -270,40 +183,6 @@
   <a href="#" id="btnShowCheatsheet" class="cheatsheet-link">⌨ 快捷键</a>
   <span class="chat-footer-divider">·</span>
   <span class="chat-footer-text">teage-liu v0.1.0</span>
-</div>
-
-<!-- 分派任务对话框 -->
-<div class="modal-overlay" id="dispatchModal" style="display:none">
-  <div class="modal-card dispatch-card">
-    <div class="modal-header">
-      <h3>分派任务</h3>
-      <button class="modal-close" id="dispatchCloseBtn">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>任务描述</label>
-        <textarea class="form-input dispatch-task-input" id="dispatchTaskInput" rows="4" placeholder="描述你要分派给 agent 的任务…"></textarea>
-      </div>
-      <div class="form-group">
-        <label>目标 Agent（可多选，空则广播）</label>
-        <div class="dispatch-agent-list" id="dispatchAgentList">
-          <p class="wb-empty">加载中…</p>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>协作模式</label>
-        <div class="dispatch-mode-row">
-          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="dispatch" checked><span>分派</span></label>
-          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="relay"><span>接力</span></label>
-          <label class="dispatch-mode-opt"><input type="radio" name="dispatchMode" value="debate"><span>辩论</span></label>
-        </div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="wb-btn wb-btn-ghost" id="dispatchCancelBtn">取消</button>
-      <button class="wb-btn wb-btn-primary" id="dispatchSubmitBtn" disabled>提交分派</button>
-    </div>
-  </div>
 </div>
 
 <!-- 设置弹窗（高级设置） -->
@@ -360,18 +239,21 @@
 
 <!-- JS 模块（顺序敏感） -->
 <script src="/static/js/utils.js"></script>
-<script src="/static/js/chat-core.js?v=20260723b"></script>
+<script src="/static/js/chat-core.js?v=20260802a"></script>
 <script src="/static/js/chat-session.js"></script>
 <script src="/static/js/chat-memory.js"></script>
 <script src="/static/js/chat-schedule-badge.js"></script>
 <script src="/static/js/chat-files.js"></script>
 <!-- multiagent 模块（Plan 4 Task 2/3/4） -->
-<script src="/js/multiagent-settings.js"></script>
-<script src="/js/multiagent-sse.js?v=20260723b"></script>
-<script src="/js/multiagent-render.js"></script>
-<link rel="stylesheet" href="/css/multiagent.css?v=20260723b">
+<script src="/js/multiagent-settings.js?v=20260728b"></script>
+<script src="/js/multiagent-sse.js?v=20260724a"></script>
+<script src="/js/multiagent-render.js?v=20260801e"></script>
+<link rel="stylesheet" href="/css/multiagent.css?v=20260724a">
+<!-- 协作桥接：监听协作消息注入主对话（独立工作台在 /workbench 页面） -->
+<script src="/static/js/collab-sse.js?v=20260802a"></script>
+<script src="/static/js/chat-collab-bridge.js?v=20260802a"></script>
 <script src="/static/js/chat-settings.js"></script>
-<script src="/static/js/chat-main.js?v=20260723b"></script>
+<script src="/static/js/chat-main.js?v=20260724a"></script>
 
 <script>
 // 强调色选择器绑定

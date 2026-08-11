@@ -14,6 +14,7 @@ tool_registry / policy_engine / audit_logger）。
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -378,3 +379,35 @@ class ToolExecutor:
                     current_cancel_event.reset(token)
                 except ImportError:
                     pass
+
+    async def execute_tool_with_dispatch_async(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
+        """异步执行工具调用（阻塞型工具专用）。
+
+        把 :meth:`execute_tool_with_dispatch` 整体放到工作线程
+        （``asyncio.to_thread``）执行，避免阻塞事件循环线程。用于
+        ``ToolDef.blocking=True`` 的工具（如 subagent 协作等待响应）。
+
+        取消语义：``cancel_event`` 经 ``asyncio.to_thread`` 的 context 拷贝
+        自动带入工作线程，由 ``execute_tool_with_dispatch`` 内部分发到工具
+        handler；即使外层 task 被取消，工作线程也会在工具自身的有界等待
+        （如协作 timeout）内终止。
+
+        参数:
+            tool_name: 工具名称。
+            tool_input: 工具输入参数 dict。
+            cancel_event: 可选的取消事件。
+
+        返回:
+            执行结果字符串。
+        """
+        return await asyncio.to_thread(
+            self.execute_tool_with_dispatch,
+            tool_name,
+            tool_input,
+            cancel_event,
+        )

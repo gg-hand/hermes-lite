@@ -54,6 +54,9 @@ def _setup_logging(log_file: str) -> logging.Logger:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
+    # 禁用 uvicorn 访问日志（与 app.py 请求中间件重复，避免每个请求双倍输出）
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
     # 已有 handler 时跳过（防止重复配置，也防止清掉早期 handler）
     if root_logger.handlers:
         return logging.getLogger("teage_liu.server")

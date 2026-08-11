@@ -1,5 +1,6 @@
 [Unit]
 Description=Teage Liu AI Agent
+Documentation=https://github.com/gg-hand/Teage-liu
 After=network-online.target
 Wants=network-online.target
 
@@ -10,13 +11,21 @@ Group=deploy
 WorkingDirectory=/opt/teage-liu
 EnvironmentFile=/opt/teage-liu/.env
 
+# 端口策略：
+#   - 后端服务监听 127.0.0.1:7007（仅本机，不对外暴露）
+#   - Nginx 监听 88 端口对外，反向代理到 127.0.0.1:7007
+#   - 如需直接对外（无 nginx），把 --host 改为 0.0.0.0
+# TEAGE_PORT 环境变量可在 .env 中覆盖（变更需 systemctl daemon-reload + restart）
+Environment="TEAGE_HOST=127.0.0.1"
+Environment="TEAGE_PORT=7007"
+
 # 启动前安全告警：TEAGE_API_KEY 未设置时打印 WARNING（不阻断）
 ExecStartPre=/bin/bash -c 'if [ -z "${TEAGE_API_KEY}" ]; then echo "WARNING: TEAGE_API_KEY 未设置，API 端点无认证保护"; else echo "TEAGE_API_KEY 已设置，API 认证将启用"; fi'
 
-# 启动命令（可调整 port 和 host）
+# 启动命令（host/port 与上方环境变量保持一致）
 ExecStart=/opt/teage-liu/.venv/bin/uvicorn teage_liu.app:app \
-  --host 0.0.0.0 \
-  --port 8000 \
+  --host 127.0.0.1 \
+  --port 7007 \
   --workers 1 \
   --loop uvloop \
   --http httptools \

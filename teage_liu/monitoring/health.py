@@ -85,6 +85,8 @@ class HealthChecker:
 
         # 检查注册表：每项为 (check_name, default_severity, callable)
         self._checks: List[tuple] = self._build_checks()
+        # 上次检查状态（仅状态变化时记录日志，避免轮询刷屏）
+        self._last_status: Dict[str, str] = {}
 
     def _build_checks(self) -> List[tuple]:
         """组装全部检查项。可在子类中覆盖以增删检查项。"""
@@ -398,18 +400,26 @@ class HealthChecker:
             except Exception as exc:
                 result = CheckResult(severity, f"检查执行异常: {exc}")
 
-            # 日志策略：ok 不输出，warning→WARNING，critical→ERROR
-            if result.status == "warning":
-                logger.warning(
-                    "健康检查 [%s] 警告: %s", name, result.message,
-                    extra={"system": "health", "check_name": name, "check_status": "warning"},
-                )
-            elif result.status == "critical":
-                logger.error(
-                    "健康检查 [%s] 严重: %s", name, result.message,
-                    extra={"system": "health", "check_name": name, "check_status": "critical"},
-                )
-            # ok: 不输出日志，避免 30s 轮询刷屏
+            # 日志策略：仅在状态变化时记录，避免轮询刷屏
+            prev = self._last_status.get(name)
+            if result.status != prev:
+                if result.status == "warning":
+                    logger.warning(
+                        "健康检查 [%s] 警告: %s", name, result.message,
+                        extra={"system": "health", "check_name": name, "check_status": "warning"},
+                    )
+                elif result.status == "critical":
+                    logger.error(
+                        "健康检查 [%s] 严重: %s", name, result.message,
+                        extra={"system": "health", "check_name": name, "check_status": "critical"},
+                    )
+                elif prev in ("warning", "critical"):
+                    logger.info(
+                        "健康检查 [%s] 已恢复: %s", name, result.message,
+                        extra={"system": "health", "check_name": name, "check_status": "ok"},
+                    )
+                self._last_status[name] = result.status
+            # 状态未变: 不输出日志
 
             checks[name] = result
             summary.total += 1
@@ -428,14 +438,22 @@ class HealthChecker:
         else:
             overall = "healthy"
 
-        # 仅在非 healthy 时记录整体日志
-        if overall != "healthy":
-            log_fn = logger.error if overall == "unhealthy" else logger.warning
-            log_fn(
-                "健康检查结果: %s (critical=%d warning=%d ok=%d)",
-                overall, summary.critical, summary.warning, summary.ok,
-                extra={"system": "health", "overall": overall},
-            )
+        # 仅在整体状态变化时记录，避免轮询刷屏
+        prev_overall = self._last_status.get("__overall__")
+        if overall != prev_overall:
+            if overall != "healthy":
+                log_fn = logger.error if overall == "unhealthy" else logger.warning
+                log_fn(
+                    "健康检查结果: %s (critical=%d warning=%d ok=%d)",
+                    overall, summary.critical, summary.warning, summary.ok,
+                    extra={"system": "health", "overall": overall},
+                )
+            elif prev_overall in ("degraded", "unhealthy"):
+                logger.info(
+                    "健康检查恢复: healthy (ok=%d)", summary.ok,
+                    extra={"system": "health", "overall": "healthy"},
+                )
+            self._last_status["__overall__"] = overall
 
         # 构建响应（CheckResult → 纯 dict）
         return {

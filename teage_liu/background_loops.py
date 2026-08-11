@@ -191,10 +191,10 @@ async def metrics_persist_loop(metrics_collector=None, metrics_store=None,
                 next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
                 sleep_until = min(next_flush, next_midnight)
                 sleep_seconds = (sleep_until - now).total_seconds()
-            logger.info("metrics_persist_loop: 准备 sleep %.1f 秒 (is_first=%s)",
-                        sleep_seconds, is_first_flush)
+            logger.debug("metrics_persist_loop: 准备 sleep %.1f 秒 (is_first=%s)",
+                         sleep_seconds, is_first_flush)
             await asyncio.sleep(sleep_seconds)
-            logger.info("metrics_persist_loop: sleep 返回，开始执行 flush")
+            logger.debug("metrics_persist_loop: sleep 返回，开始执行 flush")
 
             if reset_event is not None and reset_event.is_set():
                 baseline = metrics_collector.snapshot()
@@ -213,8 +213,13 @@ async def metrics_persist_loop(metrics_collector=None, metrics_store=None,
 
             await asyncio.to_thread(metrics_store.upsert_daily, target_date, delta)
             baseline = current_snap
-            logger.info("metrics flush 完成: date=%s, delta_llm_calls=%d, is_first=%s",
-                        target_date, delta.get("llm_calls_total", 0), is_first_flush)
+            delta_llm = delta.get("llm_calls_total", 0)
+            # 有增量数据或首次 flush 才记 INFO，否则降为 DEBUG 避免刷屏
+            if delta_llm > 0 or is_first_flush:
+                logger.info("metrics flush 完成: date=%s, delta_llm_calls=%d, is_first=%s",
+                            target_date, delta_llm, is_first_flush)
+            else:
+                logger.debug("metrics flush 完成（无增量）: date=%s", target_date)
             is_first_flush = False
         except asyncio.CancelledError:
             raise

@@ -97,3 +97,28 @@ async def test_check_and_recover_rebuilds_missing_status(bb_root: Path, recovery
     assert (bb_root / "status.json").exists()
     result = json.loads((bb_root / "status.json").read_text(encoding="utf-8"))
     assert "agent_a" in result["active_agents"]
+
+
+# ---------------- Task 4: _initial_status 默认值统一 ----------------
+
+
+def test_initial_status_director_status_offline():
+    """_initial_status 的 director_status 应为 offline（Director 未启动）。"""
+    from teage_liu.multiagent.recovery import _initial_status
+    status = _initial_status()
+    assert status["director_status"] == "offline", \
+        f"director_status 应为 offline，实际: {status['director_status']}"
+    assert status["director_signature"] == "", "director_signature 应为空"
+
+
+def test_initial_status_consistent_with_blackboard_init():
+    """_initial_status 关键字段与 Blackboard.init_blackboard 保持一致。"""
+    from teage_liu.multiagent.recovery import _initial_status
+    status = _initial_status()
+    # 与 blackboard.py 的 init_blackboard 初始 status 保持一致
+    assert status["director_status"] == "offline"
+    assert status["phase"] == "init", f"phase 应为 init，实际: {status['phase']}"
+    assert status["recovery_stage"] == "idle", \
+        f"recovery_stage 应为 idle，实际: {status['recovery_stage']}"
+    assert status["epoch"] == 0, f"epoch 应为 0，实际: {status['epoch']}"
+    assert status["recovery_progress"] == {}, "recovery_progress 应为空 dict"

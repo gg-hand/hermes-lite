@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +31,7 @@ def _make_worker_card(agent_id: str) -> dict:
         "agent_version": "1.0.0",
         "protocol_version": "1.0.0",
         "created_at": "2026-07-20T09:55:00Z",
-        "last_heartbeat": "2026-07-20T10:00:00Z",
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         "heartbeat_interval_seconds": 10,
         "status": "active",
         "role": "worker",

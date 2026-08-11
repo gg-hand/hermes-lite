@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -85,9 +86,16 @@ def _init_blackboard_sync(bb_root: Path) -> None:
 
 
 @pytest.fixture
-def bb_root(tmp_path: Path) -> Path:
-    """同步初始化黑板目录。"""
+def bb_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """同步初始化黑板目录并隔离 TEAGE_BB_ROOT 环境变量。
+
+    multiagent_routes.create_multiagent_router 优先读 TEAGE_BB_ROOT 环境变量
+    决定 bb_root（与 collab_router 一致）。若先前测试用 os.environ[...] 直接
+    赋值未清理，会污染本套件读取的 blackboard 目录。这里用 monkeypatch.setenv
+    强制指向当前 tmp_path，测试结束自动还原，杜绝跨套件污染。
+    """
     _init_blackboard_sync(tmp_path)
+    monkeypatch.setenv("TEAGE_BB_ROOT", str(tmp_path))
     return tmp_path
 
 
@@ -117,7 +125,7 @@ def _make_agent_card(agent_id: str = "worker_001", role: str = "worker") -> dict
         "agent_version": "1.0.0",
         "protocol_version": "1.0.0",
         "created_at": "2026-07-21T00:00:00Z",
-        "last_heartbeat": "2026-07-21T00:00:00Z",
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         "heartbeat_interval_seconds": 10,
         "status": "registering",
         "role": role,
@@ -312,6 +320,37 @@ def test_determine_director_state_fault_for_stale_tick():
     assert state == "fault"
 
 
+def test_determine_director_fault_reason_healthy_is_empty():
+    """healthy 状态的 fault_reason 应为空字符串。"""
+    from datetime import datetime, timezone
+
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reason = _determine_director_fault_reason({"last_director_tick": now_iso}, "healthy")
+    assert reason == ""
+
+
+def test_determine_director_fault_reason_fault_contains_timeout_info():
+    """fault 状态的 fault_reason 应包含心跳超时与阈值信息。"""
+    from datetime import datetime, timedelta, timezone
+
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    old_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    reason = _determine_director_fault_reason({"last_director_tick": old_iso}, "fault")
+    assert "心跳超时" in reason
+    assert "120 秒" in reason
+
+
+def test_determine_director_fault_reason_unknown_for_missing_metadata():
+    """元数据缺失时 unknown 状态应返回明确原因。"""
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    assert "元数据缺失" in _determine_director_fault_reason(None, "unknown")
+    assert "未上报心跳" in _determine_director_fault_reason({}, "unknown")
+
+
 def test_detect_event_type_director_state_change():
     """_detect_event_type 检测 director 状态变更。"""
     from teage_liu.api.multiagent_routes import _detect_event_type
@@ -349,85 +388,190 @@ def test_format_sse():
     assert block.endswith("\n\n")
 
 
-# =============================================================================
-# Task 1 v3: dispatch_task + get_task_status 字段名统一
-# =============================================================================
+# ============================================================================
+# Director 状态判定 v2：融合进程级状态与心跳延迟
+# 解决问题：Director 停止后心跳过期被误判为 fault（红色故障），
+#          实际应区分"主动停止（休眠）"与"故障崩溃"
+# ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_dispatch_task_writes_compliant_message(app_with_multiagent: FastAPI, bb_root: Path):
-    """dispatch_task 端点写入 schema 合规的消息。"""
-    from teage_liu.multiagent.blackboard import read_messages
+def test_determine_director_state_v2_stopped_when_not_running():
+    """Director 未启动时（无 PID 文件），即使心跳过期也应返回 stopped 而非 fault。"""
+    from datetime import datetime, timedelta, timezone
 
-    with TestClient(app_with_multiagent) as client:
-        resp = client.post("/api/multiagent/dispatch", json={
-            "task": "测试任务",
-            "target_agents": [],
-            "mode": "dispatch",
-        })
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is True
-    op_id = data["op_id"]
+    old_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    director_md = {"last_director_tick": old_iso}
+    director_status = {"running": False, "state": "stopped", "pid": None}
 
-    messages = await read_messages(bb_root)
-    task_msgs = [m for m in messages if m.get("task_op_id") == op_id]
-    assert len(task_msgs) == 1
-    msg = task_msgs[0]
-    assert msg["from"] == "user_dispatch"
-    assert msg["to"] == "*"
-    assert msg["type"] == "task"
-    assert msg["content"] == "测试任务"
-    assert "timestamp" in msg
-    assert msg["task_op_id"] == op_id
-    assert msg["target_agents"] == []
-    assert msg["mode"] == "dispatch"
-    # 不应有旧字段
-    assert "op_id" not in msg or msg.get("op_id") is None
-    assert "ts" not in msg
+    state = _determine_director_state_v2(director_md, director_status)
+    assert state == "stopped"  # 而非 fault
 
 
-@pytest.mark.asyncio
-async def test_get_task_status_uses_task_op_id(app_with_multiagent: FastAPI, bb_root: Path):
-    """get_task_status 端点使用 task_op_id 查询消息（v3 修复）。"""
-    from teage_liu.multiagent.blackboard import append_message
+def test_determine_director_state_v2_crashed_when_pid_file_exists():
+    """Director 进程崩溃（有 PID 文件但进程不在），应返回 crashed。"""
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
 
-    await append_message(bb_root, {
-        "from": "user_dispatch", "to": "*",
-        "timestamp": "2026-07-23T10:00:00+00:00",
-        "type": "task", "content": "查询测试任务",
-        "task_op_id": "query-task-001", "target_agents": [], "mode": "dispatch",
-    }, validate=True)
+    director_md = {"last_director_tick": ""}
+    director_status = {"running": False, "state": "crashed", "pid": 12345}
 
-    with TestClient(app_with_multiagent) as client:
-        resp = client.get("/api/multiagent/tasks/query-task-001")
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["op_id"] == "query-task-001"
-    assert data["status"] == "pending"
-    assert len(data["timeline"]) == 1
-    assert data["timeline"][0]["ts"] == "2026-07-23T10:00:00+00:00"
+    state = _determine_director_state_v2(director_md, director_status)
+    assert state == "crashed"
 
 
-@pytest.mark.asyncio
-async def test_get_task_status_fallback_to_op_id_for_legacy(app_with_multiagent: FastAPI, bb_root: Path):
-    """get_task_status 端点兼容旧消息（fallback 查 op_id）。"""
-    from teage_liu.multiagent.blackboard import append_message
+def test_determine_director_state_v2_starting_when_running_no_heartbeat():
+    """Director 刚启动（进程运行中但无心跳），应返回 starting。"""
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
 
-    # 写入旧格式消息（op_id 而非 task_op_id）
-    await append_message(bb_root, {
-        "op_id": "legacy-task-001",
-        "from": "user_dispatch",
-        "to": "*",
-        "timestamp": "2026-07-23T10:00:00+00:00",
-        "type": "task", "content": "旧格式任务",
-    })
+    director_md = {"last_director_tick": ""}
+    director_status = {"running": True, "state": "starting", "pid": 12345}
 
-    with TestClient(app_with_multiagent) as client:
-        resp = client.get("/api/multiagent/tasks/legacy-task-001")
+    state = _determine_director_state_v2(director_md, director_status)
+    assert state == "starting"
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["op_id"] == "legacy-task-001"
+
+def test_determine_director_state_v2_healthy_when_running_recent_tick():
+    """Director 运行中 + 新鲜心跳 → healthy。"""
+    from datetime import datetime, timezone
+
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state = _determine_director_state_v2(
+        {"last_director_tick": now_iso},
+        {"running": True, "state": "healthy", "pid": 1},
+    )
+    assert state == "healthy"
+
+
+def test_determine_director_state_v2_fault_when_running_but_tick_stale():
+    """Director 进程在跑但心跳严重过期（>120s）→ 仍判定为 fault（进程僵死）。"""
+    from datetime import datetime, timedelta, timezone
+
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
+
+    old_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    state = _determine_director_state_v2(
+        {"last_director_tick": old_iso},
+        {"running": True, "state": "degraded", "pid": 1},
+    )
+    assert state == "fault"
+
+
+def test_determine_director_state_v2_fallback_to_heartbeat_when_no_proc_status():
+    """无 director_status 时，回退到只看心跳的旧行为（向后兼容）。"""
+    from datetime import datetime, timezone
+
+    from teage_liu.api.multiagent_routes import _determine_director_state_v2
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state = _determine_director_state_v2({"last_director_tick": now_iso}, None)
+    assert state == "healthy"
+
+
+def test_determine_director_fault_reason_stopped_suggests_sleep():
+    """stopped 状态的 fault_reason 应提示休眠/未启动。"""
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    reason = _determine_director_fault_reason({}, "stopped")
+    assert "未启动" in reason or "休眠" in reason
+
+
+def test_determine_director_fault_reason_crashed_indicates_crash():
+    """crashed 状态的 fault_reason 应提示进程崩溃。"""
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    reason = _determine_director_fault_reason({}, "crashed")
+    assert "崩溃" in reason
+
+
+def test_determine_director_fault_reason_starting_indicates_starting():
+    """starting 状态的 fault_reason 应提示启动中。"""
+    from teage_liu.api.multiagent_routes import _determine_director_fault_reason
+
+    reason = _determine_director_fault_reason({}, "starting")
+    assert "启动" in reason
+
+
+def test_get_status_returns_stopped_when_director_not_running(monkeypatch, bb_root: Path):
+    """Director 未启动时，/status 端点应返回 stopped 而非 fault。
+
+    场景：Director 从未启动或已被主动停止，director.md 中的心跳可能为空或过期。
+    旧逻辑仅看心跳过期会误判为 fault（红色故障），新逻辑应识别为 stopped（休眠）。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import yaml
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from teage_liu.api.multiagent_routes import create_multiagent_router
+    from teage_liu.container import Container
+    from teage_liu.multiagent.director_manager import DirectorManager
+
+    class StoppedDirectorManager(DirectorManager):
+        """Mock：Director 已停止（休眠）。"""
+
+        async def start(self):
+            return {"ok": True, "message": "已启动"}
+
+        async def stop(self):
+            return {"ok": True, "message": "已停止"}
+
+        async def status(self):
+            return {
+                "running": False,
+                "state": "stopped",
+                "pid": None,
+                "last_heartbeat": None,
+            }
+
+        async def restart(self):
+            return {"ok": True, "message": "已重启"}
+
+    # 写入过期心跳到 director.md（模拟 Director 曾运行过但已停止）
+    old_iso = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    director_md = {
+        "director_id": "test_director",
+        "current_epoch": 1,
+        "last_director_tick": old_iso,
+    }
+    yaml_str = yaml.safe_dump(director_md, sort_keys=False, allow_unicode=True)
+    (bb_root / "director.md").write_text(
+        f"---\n{yaml_str}---\n\n# Director Protocol\n",
+        encoding="utf-8",
+    )
+
+    # 替换工厂函数，返回 Stopped 状态的 mock
+    # 注：create_multiagent_router 内部通过 `from teage_liu.multiagent.director_manager import create_director_manager`
+    # 导入，因此 patch 源模块属性才能在导入时生效
+    monkeypatch.setattr(
+        "teage_liu.multiagent.director_manager.create_director_manager",
+        lambda config: StoppedDirectorManager(),
+    )
+
+    config = {
+        "multiagent": {
+            "enabled": True,
+            "role": "worker",
+            "blackboard_dir": str(bb_root),
+        },
+    }
+    container = Container(config)
+    app = FastAPI()
+    app.include_router(create_multiagent_router(container))
+
+    with TestClient(app) as client:
+        resp = client.get("/api/multiagent/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["director"]["state"] == "stopped"  # 而非 fault
+        # fault_reason 应提示休眠而非故障
+        assert "休眠" in data["director"]["fault_reason"] or "未启动" in data["director"]["fault_reason"]
+
+
+# 注：原 Task 1 v3 的 dispatch_task / get_task_status 测试已移除
+# 这些端点在 agent 自主协作架构重设计（2026-07-23）中已被删除
+# 协作消息现由 collab 端点（/api/multiagent/collab/*）处理
+# 详见 docs/plans/2026-07-23-agent自主协作架构重设计.md

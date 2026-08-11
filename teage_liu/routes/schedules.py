@@ -28,6 +28,7 @@ from teage_liu.app import (
     get_audit_logger,
     get_cron_scheduler,
     get_orchestrator,
+    get_proposal_store,
     get_session_logger,
 )
 from teage_liu.schemas.schedules import (
@@ -424,3 +425,25 @@ def delete_schedule_memory(schedule_id: str, memory_id: str,
         "已删除调度项 %s 的隔离记忆: %s", schedule_id, memory_id
     )
     return {"status": "ok", "deleted_id": memory_id}
+
+
+# ---------- 待确认提议数（侧边栏徽章用） ----------
+
+
+@router.get("/schedules/pending-count")
+def get_pending_proposal_count(
+    proposal_store=Depends(get_proposal_store),
+):
+    """返回待用户确认的提议数量（status=pending_confirm）。
+
+    用于前端侧边栏调度徽章显示。proposal_store 未初始化时返回 0，
+    不返回 503 以免徽章逻辑被阻塞（徽章仅为辅助提示）。
+    """
+    if proposal_store is None:
+        return {"count": 0}
+    try:
+        count = sum(1 for p in proposal_store.list() if p.status == "pending_confirm")
+    except Exception as e:
+        logger.warning("统计待确认提议数失败: %s", e)
+        return {"count": 0}
+    return {"count": count}

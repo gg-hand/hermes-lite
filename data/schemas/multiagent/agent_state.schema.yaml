@@ -1,0 +1,69 @@
+$schema: http://json-schema.org/draft-07/schema#
+title: agent_state
+description: |
+  Worker 跨重启状态文件 schema（agents/{agent_id}.state.json）。
+  用于持久化已处理消息 seq / 已响应 request seq 等幂等性状态，
+  防止 Worker 重启后重复处理历史消息。
+type: object
+required:
+  - last_collab_seq
+  - responded_request_seqs
+  - processed_msg_seqs
+  - processed_urgent_seqs
+  - executed_op_ids
+  - last_updated_at
+properties:
+  last_collab_seq:
+    type: integer
+    description: 已处理的协作消息最大 seq（兜底字段，主要靠下面的精确集合）
+    minimum: 0
+  responded_request_seqs:
+    type: array
+    description: 本 agent 已写过 accept=True response 的 request seq 集合
+    items:
+      type: integer
+      minimum: 1
+    uniqueItems: true
+  processed_msg_seqs:
+    type: array
+    description: 本 agent 已处理过的协作消息 seq 集合（兜底，防止普通队列消息重复入队）
+    items:
+      type: integer
+      minimum: 1
+    uniqueItems: true
+  processed_urgent_seqs:
+    type: array
+    description: 本 agent 已处理过的紧急消息 seq 集合（intervention directive）
+    items:
+      type: integer
+      minimum: 1
+    uniqueItems: true
+  executed_op_ids:
+    type: array
+    description: 本 agent 已执行过的 A2A 任务 op_id 集合（含失败任务，失败也标记为已执行）
+    items:
+      type: string
+    uniqueItems: true
+  last_updated_at:
+    type: string
+    description: 最后更新时间（ISO 8601 格式，UTC 时区）
+    format: date-time
+  sleep_state:
+    type: string
+    description: |
+      Worker 休眠状态机：
+      - "active"：活跃模式，完整轮询
+      - "sleeping"：休眠模式，仅廉价 mtime 探针
+      持久化跨重启，避免重启后立即全速轮询。
+    enum: ["active", "sleeping"]
+    default: "active"
+  empty_poll_count:
+    type: integer
+    description: 当前连续空轮询计数（达到 sleep_after_empty_polls 阈值后进入休眠）
+    minimum: 0
+    default: 0
+  sleep_entered_at:
+    type: string
+    description: 进入休眠模式的时间（ISO 8601 格式，UTC 时区）；非休眠状态为空字符串
+    default: ""
+additionalProperties: false

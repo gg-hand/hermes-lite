@@ -320,6 +320,43 @@ class ReactLoop:
             tool_name, tool_input, cancel_event
         )
 
+    def tool_is_blocking(self, tool_name: str) -> bool:
+        """判断工具是否为阻塞型（需 asyncio.to_thread 执行）。
+
+        委托到 tool_registry.is_blocking_tool；tool_registry 缺失时返回 False。
+        """
+        registry = getattr(self, "tool_registry", None)
+        if registry is None:
+            return False
+        is_blocking = getattr(registry, "is_blocking_tool", None)
+        if is_blocking is None:
+            return False
+        try:
+            return bool(is_blocking(tool_name))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("tool_is_blocking 查询失败 %s: %s", tool_name, e)
+            return False
+
+    async def execute_tool_with_dispatch_async(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
+        """异步执行阻塞型工具（to_thread 桥接）。
+
+        委托到 ToolExecutor.execute_tool_with_dispatch_async；_tool_executor
+        缺失（__new__ 测试实例）时降级为 asyncio.to_thread 包同步方法。
+        """
+        executor = getattr(self, "_tool_executor", None)
+        if executor is not None and hasattr(executor, "execute_tool_with_dispatch_async"):
+            return await executor.execute_tool_with_dispatch_async(
+                tool_name, tool_input, cancel_event
+            )
+        return await asyncio.to_thread(
+            self._execute_tool_with_dispatch, tool_name, tool_input, cancel_event
+        )
+
     async def run(
         self,
         user_input: str,

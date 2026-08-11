@@ -44,6 +44,7 @@ LLM 失败后的重试限制（已知限制）：
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -291,6 +292,7 @@ class WorkerAdapter:
         agent_id: str = "worker_001",
         orchestrator=None,
         state_store: "WorkerStateStore | None" = None,
+        a2a_client=None,
     ):
         self._bb_root = bb_root
         self._config = config.get("multiagent", {}).get("worker", {})
@@ -301,6 +303,8 @@ class WorkerAdapter:
         self._director_monitor_task: asyncio.Task | None = None
         self._autonomous = AutonomousModeController(bb_root, agent_id)
         self._blackboard = Blackboard(bb_root)
+        # A2A 客户端注入（主会话协作响应回传用；None 时仅本地镜像，无跨端回传）
+        self._a2a_client = a2a_client
 
         # 简单属性供测试直接设置（兼容测试的 _autonomous_mode / _autonomous_epoch）
         self._autonomous_mode = False
@@ -1458,6 +1462,11 @@ class WorkerAdapter:
                 self._agent_id, cid, msg.get("seq"),
             )
             return
+        # 双平面分流：主会话协作消息（channel=main_session）走独立 main-collab
+        # 处理路径，**不进** worker 协作路由（request/response/directive 等）。
+        if msg.get("channel") == "main_session":
+            await self._handle_main_collab_message(msg)
+            return
         msg_type = msg.get("type")
         msg_seq = msg.get("seq")
 
@@ -1805,6 +1814,232 @@ class WorkerAdapter:
                     return
                 prompt = f"Agent {from_label} 协作请求：{msg.get('content', '')}\n请决定是否参与并回复。"
                 await self._trigger_urgent_llm(prompt=prompt, context_msg=msg)
+
+    async def _handle_main_collab_message(self, msg: dict) -> None:
+        """处理主会话协作消息（channel=main_session，独立通道）。
+
+        由 ``_handle_collab_message`` 首行按 channel 分流进入，**不进** worker
+        协作路由（request/response/directive 等均不在此处理）。
+
+        分流：
+        - request：from!=self 且 to==self||"*" → ``_trigger_main_collab_llm``
+          触发响应 + 幂等标记。from==self 跳过（不响应自己的请求）。
+        - response/consensus：仅幂等标记（发起方工具轮询本地镜像读取，此处
+          不触发新 LLM）。
+        - end：归档（collab 完成）+ 幂等标记。
+        """
+        mtype = msg.get("type")
+        msg_seq = msg.get("seq")
+        from_id = msg.get("from", "")
+        to_id = msg.get("to", "")
+
+        if mtype == "request":
+            # 自己发的请求跳过（不响应自己的请求）
+            if from_id == self._agent_id:
+                return
+            # 目标过滤：to==self || to=="*"
+            if to_id and to_id != "*" and to_id != self._agent_id:
+                return
+            # 幂等检查
+            if isinstance(msg_seq, int) and self._dk(
+                msg.get("collab_id"), msg_seq, msg.get("message_id")
+            ) in self._processed_msg_seqs:
+                return
+            logger.info(
+                "main-collab 收到协作请求并触发响应: collab=%s from=%s to=%s",
+                msg.get("collab_id"), from_id, to_id,
+            )
+            await self._trigger_main_collab_llm(msg)
+            await self._mark_msg_processed(
+                msg_seq, msg.get("collab_id"), msg.get("message_id")
+            )
+        elif mtype in ("response", "consensus", "end"):
+            # 发起方工具轮询本地镜像读取响应，此处仅幂等标记，不触发新 LLM
+            await self._mark_msg_processed(
+                msg_seq, msg.get("collab_id"), msg.get("message_id")
+            )
+            if mtype in ("consensus", "end"):
+                # 协作完成：归档（幂等）
+                try:
+                    from teage_liu.multiagent.blackboard import archive_collab
+
+                    cid = msg.get("collab_id")
+                    if cid:
+                        await archive_collab(self._bb_root, cid)
+                except Exception as e:
+                    logger.warning(
+                        "main-collab 归档失败 %s: %s", msg.get("collab_id"), e,
+                    )
+        # 其他类型（announce/relay 等）在主会话协作平面中无 LLM 触发语义，忽略
+
+    async def _trigger_main_collab_llm(self, context_msg: dict) -> None:
+        """触发主会话协作响应（独立路径）。
+
+        不复用 worker 协作的 ``_trigger_urgent_llm``（避免其 round/consensus/
+        fallback 逻辑纠缠）。独立 session ``main_collab_{agent_id}`` + 服务性
+        响应上下文 ``build_main_collab_system_prompt``。LLM 回复后写 response
+        （channel=main_session, to=请求方）并 A2A 回传发起方。
+        """
+        from teage_liu.llm.prompts import build_main_collab_system_prompt
+
+        if self._orchestrator is None:
+            logger.warning("main-collab 响应跳过：orchestrator 未注入")
+            return
+
+        collab_id = context_msg.get("collab_id")
+        from_id = context_msg.get("from", "")
+        content = context_msg.get("content", "")
+
+        session_id = f"main_collab_{self._agent_id}"
+        system_prompt_override = build_main_collab_system_prompt(self._agent_id)
+        prompt = (
+            f"[协作请求(高优)] 来自另一实例的用户代理（agent `{from_id}`）：\n"
+            f"{content}\n\n"
+            f"请处理上述任务并直接返回结果。若使用 send_remote_message 工具回复，"
+            f"请把 target_agent_id 设为 `{from_id}`。"
+        )
+
+        # 用流式执行捕获协作 agent 的执行过程（工具调用步骤），供发起方主对话展示。
+        # 结果文本仅累积最终响应（过程不进主 LLM 上下文，仅前端展示）。
+        _MAX_PROCESS_STEPS = 5
+
+        def _summarize_tool_call(name, tool_input):
+            """把一次工具调用简化为一行过程描述。"""
+            name = name or "工具"
+            try:
+                if isinstance(tool_input, dict):
+                    brief = {k: v for k, v in list(tool_input.items())[:2]}
+                    detail = json.dumps(brief, ensure_ascii=False)[:60]
+                    return f"调用 {name}（{detail}）"
+                return f"调用 {name}"
+            except Exception:
+                return f"调用 {name}"
+
+        from teage_liu.multiagent.blackboard import append_collab_message
+
+        async def _send_relay(kind: str, content: str) -> None:
+            """写一条过程/结果流 relay 消息（本地镜像 + A2A 回传）。"""
+            if not collab_id or not content:
+                return
+            try:
+                relay_msg = {
+                    "channel": "main_session",
+                    "type": "relay",
+                    "kind": kind,  # process=过程步骤 / result=结果流分块
+                    "from": self._agent_id,
+                    "to": from_id or "*",
+                    "content": content,
+                    "collab_id": collab_id,
+                    "message_id": f"main_msg_{uuid.uuid4().hex[:16]}",
+                    "collab_round": 1,
+                }
+                await append_collab_message(
+                    self._bb_root, relay_msg, collab_id=collab_id
+                )
+                if self._a2a_client is not None:
+                    await self._a2a_client.call_all_endpoints(
+                        "collab_message", relay_msg
+                    )
+            except Exception as e:
+                logger.warning("main-collab relay 发送失败: %s", e)
+
+        response_text = ""
+        process_steps: list[str] = []
+        try:
+            async with self._llm_lock:
+                _stream = self._orchestrator.chat_stream(
+                    session_id,
+                    prompt,
+                    extra_system_prompt=None,
+                    system_prompt_override=system_prompt_override,
+                )
+                # 结果流分块：累积 buffer，按 长度≥150 或 时间≥1s flush 一次
+                _result_buffer = ""
+                _last_flush = time.time()
+                _stage_hint_sent = False
+                async for event in _stream:
+                    etype = event.get("type")
+                    if etype == "tool":
+                        desc = _summarize_tool_call(
+                            event.get("name", ""), event.get("input") or {}
+                        )
+                        if len(process_steps) < _MAX_PROCESS_STEPS:
+                            process_steps.append(desc)
+                            await _send_relay("process", desc)
+                        if not _stage_hint_sent:
+                            _stage_hint_sent = True
+                    elif etype == "text":
+                        # 首个文本增量前发阶段提示（知识型任务无工具调用时也能看到过程）
+                        if not _stage_hint_sent:
+                            _stage_hint_sent = True
+                            await _send_relay(
+                                "process",
+                                "收到任务，开始分析并组织回答…",
+                            )
+                        _chunk = event.get("text", "")
+                        response_text += _chunk
+                        _result_buffer += _chunk
+                        if len(_result_buffer) >= 150 or (time.time() - _last_flush) >= 1.0:
+                            await _send_relay("result", _result_buffer)
+                            _result_buffer = ""
+                            _last_flush = time.time()
+                # flush 剩余结果
+                if _result_buffer:
+                    await _send_relay("result", _result_buffer)
+        except Exception as e:
+            logger.warning("main-collab LLM 流式响应失败，回退同步: %s", e)
+            response_text = ""
+
+        if not response_text:
+            # 流式不可用/无文本：回退同步 chat
+            try:
+                async with self._llm_lock:
+                    response_text = await self._orchestrator.chat(
+                        session_id,
+                        prompt,
+                        extra_system_prompt=None,
+                        system_prompt_override=system_prompt_override,
+                    )
+            except Exception as e:
+                logger.warning("main-collab LLM 响应失败: %s", e)
+                response_text = f"[协作响应失败] {e}"
+            if response_text and collab_id:
+                # 回退路径：整段作为结果 relay（前端仍以流式/卡片展示）
+                await _send_relay("result", response_text)
+
+        response_msg = {
+            "channel": "main_session",
+            "type": "response",
+            "from": self._agent_id,
+            "to": from_id or "*",
+            "content": response_text,
+            "message_id": f"main_msg_{uuid.uuid4().hex[:16]}",
+            "collab_round": 1,
+        }
+        if collab_id:
+            response_msg["collab_id"] = collab_id
+
+        # 本地镜像写（工作台 SSE 可见 + 发起方经 A2A 回传后镜像）
+        try:
+            from teage_liu.multiagent.blackboard import append_collab_message
+
+            await append_collab_message(
+                self._bb_root, response_msg, collab_id=collab_id
+            )
+        except Exception as e:
+            logger.warning("main-collab 响应本地写入失败: %s", e)
+
+        # A2A 回传发起方（best-effort；对端网关按 collab_id 存在性过滤）
+        try:
+            if self._a2a_client is not None:
+                await self._a2a_client.call_all_endpoints(
+                    "collab_message", response_msg
+                )
+        except Exception as e:
+            logger.warning("main-collab 响应 A2A 回传失败: %s", e)
+        logger.info(
+            "main-collab 响应已写并回传: collab=%s to=%s", collab_id, from_id or "*",
+        )
 
     async def _handle_directive(self, msg: dict) -> None:
         """处理 Director directive（按 rule_type 分类：intervention 紧急 / 其他入队）。

@@ -173,8 +173,8 @@
 .modal {
   position: relative;
   z-index: 1;
-  width: 100%;
-  max-width: 560px;
+  width: 640px;
+  max-width: calc(100vw - var(--space-7));
   max-height: calc(100vh - var(--space-7));
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -188,8 +188,8 @@
 .modal-content {
   position: relative;
   z-index: 1;
-  width: 100%;
-  max-width: 560px;
+  width: 640px;
+  max-width: calc(100vw - var(--space-7));
   max-height: calc(100vh - var(--space-7));
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -246,9 +246,12 @@
   background: var(--bg-hover);
 }
 
-/* 设置弹窗：VSCode 风格侧边导航布局 */
+/* 设置弹窗：VSCode 风格侧边导航布局，固定尺寸 */
 #settingsModal .modal {
-  max-width: min(880px, 92vw);
+  width: 880px;
+  max-width: calc(100vw - var(--space-7));
+  height: 600px;
+  max-height: calc(100vh - var(--space-7));
 }
 /* 覆盖通用 modal-body：禁止整体滚动，由 nav/content 各自独立滚动 */
 #settingsModal .modal-body {
@@ -1104,4 +1107,179 @@ pre:hover .copy-btn { opacity: 1; }
   .form-row > * {
     width: 100%;
   }
+}
+
+/* ============================================================
+   Task 10 Step 3: 协作消息样式（主对话注入渲染）
+   - msg-collab-progress: 协作进度提示（灰色小字，非气泡）
+   - message.collab-result: 协作结果（带 agent 标识的气泡）
+   ============================================================ */
+
+/* 协作进度提示 */
+.msg-collab-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: transparent;
+}
+
+/* 协作过程步骤（subagent 执行轨迹：工具调用/操作，任务派发式展示） */
+.msg-collab-process {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 var(--space-1) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  border-left: 2px solid rgba(34, 211, 238, 0.35);
+}
+
+.collab-process-avatar {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #22d3ee;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+}
+
+.collab-process-text {
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.collab-progress-icon {
+  animation: collab-pulse 1.5s ease-in-out infinite;
+}
+
+/* ========== 协作 Agent 嵌入式窗口（低层级内置聊天窗口） ========== */
+.collab-card {
+  margin: var(--space-2) 0 var(--space-2) var(--space-6);
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  border-radius: 10px;
+  background: rgba(34, 211, 238, 0.04);
+  overflow: hidden;
+  font-size: var(--text-xs, 12px);
+}
+
+.collab-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: rgba(34, 211, 238, 0.08);
+  border-bottom: 1px solid rgba(34, 211, 238, 0.15);
+  cursor: pointer;
+}
+
+.collab-card-avatar {
+  flex: 0 0 auto;
+}
+
+.collab-card-title {
+  font-weight: 700;
+  font-size: var(--text-xs, 12px);
+  color: #22d3ee;
+}
+
+.collab-card-status {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.collab-card--done .collab-card-status {
+  color: #34d399;
+}
+
+.collab-card-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.collab-card-body {
+  padding: var(--space-2) var(--space-3);
+}
+
+.collab-card-process-line {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid rgba(34, 211, 238, 0.3);
+  margin: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.collab-card-result {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.4);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.collab-card-result.markdown {
+  white-space: normal;
+}
+
+@keyframes collab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* 协作结果消息 */
+.message.collab-result {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.message.collab-result .msg-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.message.collab-result .msg-avatar {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--glass-bg-active, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--border);
+}
+
+.message.collab-result .message-bubble {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  padding: 0;
 }

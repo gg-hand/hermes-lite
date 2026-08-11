@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -27,8 +27,15 @@ _RESTART_REQUIRED_KEYS = {
     "security.rules",
     "schedules",
     "multiagent.blackboard_dir",
+    "multiagent.main_session_collab",
     "a2a.listen_host",
     "a2a.listen_port",
+    # 标准 A2A 面：叶子级精确匹配（card 身份/mode 变更需重启）
+    "a2a.standard.enabled",
+    "a2a.standard.mode",
+    "a2a.standard.base_url",
+    "a2a.standard.endpoint_url",
+    "a2a.standard.task_store_path",
 }
 
 _MISSING = object()
@@ -252,12 +259,134 @@ def _resolve_component(getter_func, container_key: str):
         return None
 
 
-def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
+# ---------------------------------------------------------------------------
+# LLMClient 精准热重载（核心修复）
+# ---------------------------------------------------------------------------
+# orchestrator 注册为 hot_reloadable=False（持有大量运行时状态，整体重建会丢会话），
+# 因此 llm 段变更时 container.reload 不会重建 orchestrator，LLMClient 也不会更新。
+# 本节实现"精准热更新"：检测 llm 段关键字段变更，单独重建 LLMClient 并替换到
+# orchestrator 及其子组件的所有引用点，保持运行时状态（history_buffer/chroma_store 等）
+# 不变。失败时回滚到旧 LLMClient，避免半成功状态。
+
+# 影响 LLMClient 实例的配置字段（变更需重建 LLMClient）
+_LLM_RELOAD_KEYS = {
+    "main_api_key", "consolidation_api_key",
+    "main_provider", "consolidation_provider",
+    "main_model", "consolidation_model",
+    "main_base_url", "consolidation_base_url",
+}
+
+
+def _llm_config_changed(old_config: dict, new_config: dict) -> bool:
+    """检测 llm 段中影响 LLMClient 的字段是否变更。
+
+    对比 ``_LLM_RELOAD_KEYS`` 中列出的字段，任一不同即返回 True。
+    其余 llm 字段（如 activity_timeout / max_context_tokens）走原有
+    热更新路径或不影响 LLMClient 实例。
+    """
+    old_llm = (old_config or {}).get("llm", {}) or {}
+    new_llm = (new_config or {}).get("llm", {}) or {}
+    for key in _LLM_RELOAD_KEYS:
+        if old_llm.get(key) != new_llm.get(key):
+            return True
+    return False
+
+
+def _reload_llm_client(orchestrator: Any, new_config: dict) -> bool:
+    """重建 LLMClient 并替换到 orchestrator 及其子组件的所有引用点。
+
+    原子性策略：先创建新 LLMClient，成功后才批量替换所有引用点；
+    失败则保留旧 LLMClient 不变，返回 False。
+
+    引用点清单（基于 Orchestrator.__init__ 装配链路）：
+    - ``orchestrator.llm_client``（顶层引用）
+    - ``orchestrator.react_loop.llm_client``
+    - ``orchestrator.consolidation_engine.llm_client``
+    - ``orchestrator.memory_retriever.llm_client``
+    - ``orchestrator.condenser.llm_client`` + ``condenser._token_counter``
+      （仅 LLMSummaryCondenser 持有 llm_client，MaskingCondenser 无）
+    - ``orchestrator.session_mgr._llm_client``（私有属性）
+
+    参数:
+        orchestrator: Orchestrator 实例。
+        new_config: 已解析的新配置字典（含真实 API Key，非占位符）。
+
+    返回:
+        True 表示重建并替换成功；False 表示创建失败（已回滚）。
+    """
+    from teage_liu.orchestrator.factories import create_llm_client
+
+    metrics = getattr(orchestrator, "metrics", None)
+    old_llm_client = getattr(orchestrator, "llm_client", None)
+
+    try:
+        new_llm_client = create_llm_client(new_config, metrics=metrics)
+    except Exception as e:
+        logger.warning("LLMClient 重建失败（保留旧实例）: %s", e)
+        return False
+
+    if new_llm_client is None:
+        # create_llm_client 内部已 try/except 并返回 None（如 API Key 缺失），
+        # 保留旧实例避免把可用 LLMClient 替换成 None。
+        logger.warning(
+            "LLMClient 重建返回 None（保留旧实例）。请检查 llm 段配置完整性。"
+        )
+        return False
+
+    # 批量替换所有引用点（getattr 守护兼容旧版本/未装配组件）
+    orchestrator.llm_client = new_llm_client
+
+    react_loop = getattr(orchestrator, "react_loop", None)
+    if react_loop is not None:
+        react_loop.llm_client = new_llm_client
+
+    consolidation_engine = getattr(orchestrator, "consolidation_engine", None)
+    if consolidation_engine is not None:
+        consolidation_engine.llm_client = new_llm_client
+
+    memory_retriever = getattr(orchestrator, "memory_retriever", None)
+    if memory_retriever is not None:
+        memory_retriever.llm_client = new_llm_client
+
+    # condenser: 仅 LLMSummaryCondenser 持有 llm_client；
+    # MaskingCondenser 无此属性，getattr 守护跳过
+    condenser = getattr(orchestrator, "condenser", None)
+    if condenser is not None and hasattr(condenser, "llm_client"):
+        condenser.llm_client = new_llm_client
+        # token_counter 与 llm_client 绑定（factories.py 中 token_counter 来自 llm_client）
+        new_token_counter = getattr(new_llm_client, "count_messages_tokens", None)
+        if hasattr(condenser, "_token_counter"):
+            condenser._token_counter = new_token_counter
+
+    # session_mgr 用私有属性 _llm_client
+    session_mgr = getattr(orchestrator, "session_mgr", None)
+    if session_mgr is not None and hasattr(session_mgr, "_llm_client"):
+        session_mgr._llm_client = new_llm_client
+
+    logger.info(
+        "LLMClient 热重载成功: main=%s/%s, consolidation=%s/%s",
+        new_config.get("llm", {}).get("main_provider", "?"),
+        new_config.get("llm", {}).get("main_model", "?"),
+        new_config.get("llm", {}).get("consolidation_provider", "?"),
+        new_config.get("llm", {}).get("consolidation_model", "?"),
+    )
+    return True
+
+
+def _apply_runtime_config(
+    new_config: dict, old_config: Optional[dict] = None
+) -> Dict[str, bool]:
     """将可热更新的运行时配置即时应用到内存中的 orchestrator 组件。
 
     重构后：通过 DI 容器 / app.dependency_overrides 获取组件，不再反射 server 模块
     全局变量。生产环境由 lifespan 初始化容器；测试环境通过
     ``app.dependency_overrides[get_orchestrator] = lambda: mock_orch`` 注入。
+
+    参数:
+        new_config: 已解析的新配置字典。
+        old_config: 可选的旧配置字典，传入时用于检测 llm 段变更并触发
+                    LLMClient 精准重建（绕过 orchestrator hot_reloadable=False 限制）。
+                    默认 None 时不触发 LLM 重建（向后兼容旧调用方）。
     """
     from teage_liu.app import (
         get_orchestrator,
@@ -381,5 +510,40 @@ def _apply_runtime_config(new_config: dict) -> Dict[str, bool]:
                 logger.info("热更新 files.ocr: %s", ocr_applied)
         except Exception as e:
             logger.warning("热更新 files.ocr 失败: %s", e)
+
+    # LLMClient 精准热重载（核心修复）：
+    # orchestrator 注册为 hot_reloadable=False，container.reload 不会重建它，
+    # 因此 llm 段变更（API Key / model / provider / base_url）时需在此单独重建
+    # LLMClient 并替换到所有引用点。仅当显式传入 old_config 时触发，保持向后兼容。
+    if old_config is not None and _llm_config_changed(old_config, new_config):
+        if _reload_llm_client(orchestrator, new_config):
+            applied["llm.reload"] = True
+            logger.info("热更新 llm.reload: LLMClient 已重建并替换所有引用点")
+            # 同步更新容器中独立组件持有的 llm_client 引用（etl_engine / parser）。
+            # 这些组件在 lifespan 创建时从 orchestrator.llm_client 拿到引用并缓存，
+            # 不参与 _reload_llm_client 的批量替换，需在此单独更新。
+            # 影响：files 段 llm_fallback 开启时，文件解析的 vision LLM OCR 路径
+            # 会用到 llm_client；不更新会导致 API Key 变更后 OCR 仍用旧 Key 报错。
+            try:
+                from teage_liu.app import get_etl_engine
+                etl_engine = _resolve_component(get_etl_engine, "etl_engine")
+                if etl_engine is not None:
+                    new_llm = getattr(orchestrator, "llm_client", None)
+                    if new_llm is not None:
+                        if hasattr(etl_engine, "llm_client"):
+                            etl_engine.llm_client = new_llm
+                        # parser 是 etl_engine 的内部组件，也持有 llm_client
+                        parser_obj = getattr(etl_engine, "parser", None)
+                        if parser_obj is not None and hasattr(parser_obj, "llm_client"):
+                            parser_obj.llm_client = new_llm
+                        logger.info("已同步 etl_engine/parser 的 llm_client 引用")
+            except Exception as e:
+                logger.warning("同步 etl_engine llm_client 引用失败: %s", e)
+        else:
+            applied["llm.reload"] = False
+            logger.warning(
+                "llm 段配置变更但 LLMClient 重建失败，仍使用旧实例。"
+                "请检查 llm 段配置完整性（main_api_key / main_model 等）"
+            )
 
     return applied

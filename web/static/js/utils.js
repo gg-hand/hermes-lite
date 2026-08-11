@@ -209,7 +209,9 @@ function closeModal(id) {
 
 // ========== Cron 表达式下次运行预览 ==========
 /**
- * 用 croniter 计算 cron 表达式接下来的 N 次运行时间。
+ * 用内置轻量 cron 解析器计算 cron 表达式接下来的 N 次运行时间。
+ * 纯 JS 实现，无外部 CDN 依赖（原 croniter 包已从 npm 下架）。
+ * 支持 5 字段标准 cron（分 时 日 月 周），语法：* 数字 , - /
  * @param {string} expr - 5 字段 cron 表达式
  * @param {number} count - 计算次数，默认 5
  * @returns {string} - 形如 "7/8 14:30 · 7/8 15:00 · ..."；表达式非法返回 '表达式无效'
@@ -218,28 +220,80 @@ function previewCronNext(expr, count) {
   const n = count || 5;
   if (!expr || typeof expr !== 'string' || !expr.trim()) return '—';
   const trimmed = expr.trim();
-  // 优先使用 croniter 全局（CDN 引入）
-  if (typeof window.croniter !== 'undefined') {
-    try {
-      const it = window.croniter.parse(trimmed, new Date());
-      const arr = [];
-      let d = it.next();
-      if (!d || isNaN(d.getTime())) throw new Error('parse fail');
-      arr.push(formatCronSlot(d));
-      for (let i = 1; i < n; i++) {
-        d = it.next();
-        if (!d) break;
-        arr.push(formatCronSlot(d));
-      }
-      return arr.join(' · ');
-    } catch (e) {
-      return '表达式无效';
-    }
+  const fields = trimmed.split(/\s+/);
+  if (fields.length !== 5) return '表达式无效';
+
+  // 解析每个字段为有效值集合
+  const minuteSet = _parseCronField(fields[0], 0, 59);
+  const hourSet = _parseCronField(fields[1], 0, 23);
+  const domSet = _parseCronField(fields[2], 1, 31);
+  const monthSet = _parseCronField(fields[3], 1, 12);
+  const dowSet = _parseCronField(fields[4], 0, 6); // 0=Sunday
+  if (minuteSet === null || hourSet === null || domSet === null
+      || monthSet === null || dowSet === null) {
+    return '表达式无效';
   }
-  // 降级：仅做 5 段格式校验
-  const parts = trimmed.split(/\s+/);
-  if (parts.length !== 5) return '表达式无效';
-  return '（需联网载入 croniter 才能预览）';
+
+  // 从当前时间下一分钟开始逐分钟扫描，最多扫描 366 天避免死循环
+  const results = [];
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+                         now.getHours(), now.getMinutes() + 1, 0, 0);
+  const limit = new Date(start.getTime() + 366 * 24 * 60 * 60 * 1000);
+  const cursor = new Date(start);
+  while (results.length < n && cursor <= limit) {
+    const dow = cursor.getDay(); // 0=Sunday
+    if (minuteSet.has(cursor.getMinutes())
+        && hourSet.has(cursor.getHours())
+        && domSet.has(cursor.getDate())
+        && monthSet.has(cursor.getMonth() + 1)
+        && dowSet.has(dow)) {
+      results.push(formatCronSlot(cursor));
+    }
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return results.length > 0 ? results.join(' · ') : '一年内无匹配时刻';
+}
+
+/**
+ * 解析 cron 单字段为有效值集合。
+ * 支持语法: 通配符、数字、区间(a-b)、列表(a,b,c)、步长(通配符/n 或 a-b/n)
+ * @returns {Set<number>|null} null 表示语法非法
+ */
+function _parseCronField(field, min, max) {
+  if (field === '*') {
+    const s = new Set();
+    for (let i = min; i <= max; i++) s.add(i);
+    return s;
+  }
+  const s = new Set();
+  for (const part of field.split(',')) {
+    // 处理 step: a-b/n 或 */n
+    const stepMatch = part.match(/^(.*)\/(\d+)$/);
+    let range = part;
+    let step = 1;
+    if (stepMatch) {
+      range = stepMatch[1];
+      step = parseInt(stepMatch[2], 10);
+      if (isNaN(step) || step < 1) return null;
+    }
+    let lo, hi;
+    if (range === '*') {
+      lo = min; hi = max;
+    } else if (range.includes('-')) {
+      const segs = range.split('-');
+      if (segs.length !== 2) return null;
+      lo = parseInt(segs[0], 10);
+      hi = parseInt(segs[1], 10);
+    } else {
+      const v = parseInt(range, 10);
+      if (isNaN(v)) return null;
+      lo = v; hi = stepMatch ? max : v; // 单值带 step 时视为 v-max/step
+    }
+    if (isNaN(lo) || isNaN(hi) || lo < min || hi > max || lo > hi) return null;
+    for (let i = lo; i <= hi; i += step) s.add(i);
+  }
+  return s.size > 0 ? s : null;
 }
 
 function formatCronSlot(d) {

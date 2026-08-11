@@ -49,50 +49,37 @@
    */
   function updateStatus(status) {
     var navDot = document.getElementById("directorStatusDot");
-    var wbState = document.getElementById("wbState");
-    var wbStatusVal = document.getElementById("wbStatusVal");
-    var wbStatusDot = document.querySelector(".wb-status-dot");
+    // Task 9: 旧工作台元素 wbState / wbStatusVal / wbStatusDot 已被新协作观察窗替换
+    // 新观察窗的 Director 状态由 collab-workbench.js 的 setDirectorState() 维护
+    // 这里仅保留 nav-dot 渲染（侧栏圆点），其他元素缺失时优雅降级
 
     if (!status || !status.enabled) {
       // 未启用态
       if (navDot) { navDot.className = "nav-status-dot state-disabled"; }
-      if (wbState) {
-        wbState.className = "wb-state";
-        var stateText = wbState.querySelector(".wb-state-text");
-        if (stateText) stateText.textContent = STATE_LABELS.disabled;
+      // 同步新观察窗的 Director 状态
+      if (window.CollabWorkbench && typeof window.CollabWorkbench.setDirectorState === "function") {
+        window.CollabWorkbench.setDirectorState("disabled");
       }
-      if (wbStatusVal) { wbStatusVal.textContent = STATE_LABELS.disabled; wbStatusVal.className = "wb-status-val"; }
-      if (wbStatusDot) { wbStatusDot.className = "wb-status-dot"; }
-      renderAgents([]);
       return;
     }
 
     var directorState = (status.director && status.director.state) || "unknown";
     var stateClass = "state-" + directorState;
-    var stateLabel = STATE_LABELS[directorState] || directorState;
-    var onlineCount = (status.agents || []).filter(function (a) {
-      return a.status === "active" || a.status === "online";
-    }).length;
 
-    // 更新 nav-item 状态圆点
+    // 更新 nav-item 状态圆点（保留）
     if (navDot) { navDot.className = "nav-status-dot " + stateClass; }
 
-    // 更新工作台头部状态药丸
-    if (wbState) {
-      wbState.className = "wb-state " + stateClass;
-      var stateText2 = wbState.querySelector(".wb-state-text");
-      if (stateText2) stateText2.textContent = stateLabel;
+    // Task 9：协作观察窗的 Director 状态由 collab-workbench.js 接管
+    // 当 multiagent 启用且 Director 健康时，显示为「观察中」
+    if (window.CollabWorkbench && typeof window.CollabWorkbench.setDirectorState === "function") {
+      // directorState: healthy/degraded/autonomous/fault/unknown
+      // 新观察窗只关心：观察中 / 已注入引导 / 未启用 / 未知
+      var cwState = "observing";
+      if (directorState === "fault" || directorState === "unknown") {
+        cwState = "unknown";
+      }
+      window.CollabWorkbench.setDirectorState(cwState);
     }
-
-    // 更新指引 tab 状态条
-    if (wbStatusVal) {
-      wbStatusVal.textContent = stateLabel + " · " + onlineCount + " agents 在线";
-      wbStatusVal.className = "wb-status-val " + stateClass;
-    }
-    if (wbStatusDot) { wbStatusDot.className = "wb-status-dot " + stateClass; }
-
-    // 更新 Agent 列表
-    renderAgents(status.agents || []);
   }
 
   /**
@@ -208,7 +195,7 @@
           "</span>" +
           "</div>" +
           '<div class="wb-msg-content">' +
-          escapeHtml((msg.content || "").substring(0, 200)) +
+          (typeof renderMarkdown === "function" ? renderMarkdown(msg.content || "") : escapeHtml((msg.content || "").substring(0, 500))) +
           "</div>" +
           "</div>"
         );
@@ -226,15 +213,24 @@
   };
 
   // 页面加载完成后检查 multiagent 状态
+  // 404 = multiagent 未启用（路由未注册），静默降级为 disabled，不产生控制台噪音
   document.addEventListener("DOMContentLoaded", function () {
     fetch("/api/multiagent/status")
       .then(function (resp) {
+        if (resp.status === 404) {
+          // multiagent 未启用，静默降级
+          return null;
+        }
         if (resp.ok) {
           return resp.json();
         }
-        throw new Error("multiagent disabled");
+        throw new Error("multiagent status fetch failed: " + resp.status);
       })
       .then(function (status) {
+        if (status === null) {
+          updateStatus({ enabled: false });
+          return;
+        }
         updateStatus(status);
         if (status.enabled && window.MultiagentSSE) {
           window.MultiagentSSE.start();

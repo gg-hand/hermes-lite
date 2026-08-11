@@ -1659,12 +1659,19 @@ class LLMClient:
             "consolidation_provider", self.main_provider
         )
         self.consolidation_model: str = llm_config.get("consolidation_model", "")
+        # consolidation_api_key 解析优先级：
+        # 1. config 中显式配置的 consolidation_api_key
+        # 2. consolidation_provider 对应的默认环境变量（如 DEEPSEEK_API_KEY）
+        # 3. main_api_key（前端 placeholder "留空则同主对话 Key" 的实现）
+        # 第 3 级回退避免用户只配 main_api_key 不配 consolidation_api_key 时报错。
         self.consolidation_api_key: str = self._resolve_api_key(
             llm_config.get("consolidation_api_key"),
             self.consolidation_provider,
         )
+        if not self.consolidation_api_key and self.main_api_key:
+            self.consolidation_api_key = self.main_api_key
         self.consolidation_base_url: Optional[str] = (
-            llm_config.get("consolidation_base_url") or None
+            llm_config.get("consolidation_base_url") or self.main_base_url
         )
 
         # 上下文窗口配置
