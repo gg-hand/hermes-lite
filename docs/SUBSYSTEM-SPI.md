@@ -335,6 +335,32 @@ class EnvironmentBranch(Branch):
 
 **要点**:`setup` 无 try/except(配置开但坏 → 启动失败);`build_injections` 按稳定度选层;枝干只依赖 `snapshot` / `host` / `host_port` 与自己的配置——与主干、其他枝干零耦合。
 
+### 13.1 观测枝干示例:audit(observe 只读,M2 首个实验性扩展,2026-08-21 已落地)
+
+```python
+# branches/audit.py(完整实现见仓库;此处展示关键形态)
+class AuditBranch(Branch):
+    name = "audit"
+    capabilities = ["observe"]          # 只读约束:钩子返回 action 一律忽略
+
+    async def after(self, snapshot, response) -> list:
+        # 终态钩子:action 忽略,数据经 host_port 消息通道落盘(kind 带前缀)
+        # snapshot 为终态快照(round/messages 为对话结束后状态)
+        await self.host_port.storage_write("audit.conversations", [{
+            "session_id": snapshot.session_id,
+            "response_text": response.text[:200],
+            "rounds": snapshot.round,
+        }])
+        return []
+```
+
+要点:
+- `capabilities = ["observe"]`:只读;L3 订阅声明;钩子返回 action 一律忽略 + 记录;
+- 所有写经 `host_port.storage_write`,kind 必须带 `audit.` 前缀(§15-A3 跨前缀拒绝);
+- 钩子内 await 全部 try/except 降级(best-effort,失败不影响对话);
+- `after` / `on_error` 收到的是**终态快照**(round 为实际轮次,2026-08-21 修复);
+- 同语言 observe 扩展目前仅收 L2 摘要(钩子),L3 原始事件投递仅对 stdio 异语言扩展接线(见 CORE-缺口记录.md)。
+
 ---
 
 ## 14. 迁移历史(老系统 → teage_liu2)

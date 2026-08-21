@@ -1,8 +1,64 @@
 # teage_liu2 接口示例文档(Interfaces)
 
-> **定位**:与 [CORE.md](./CORE.md) 配套的**可运行示例**。展示一个完整枝干从实现到注册的每一步,以及 core 各接口的典型用法。示例可直接跑(`python 或 pytest`),也可作为新模块的模板。
+> **定位**:与 [CORE.md](./CORE.md) 配套的**可运行示例**。展示一个完整枝干从实现到注册的每一步,以及 core 各接口的典型用法。
+>
+> **契约源**:`teage_liu2/PROTOCOL/`(协议 v1.0.0)为唯一契约源;本文档与 `core/` 代码同步(发现不一致时以代码为准)。示例签名基于 **Snapshot + Action 交互模型**(阶段 2 落地),**不再使用 BranchContext 可变对象**。
 >
 > 示例中 `TODO(你)` 处为需要替换的实际逻辑。
+
+---
+
+## 0. 新签名速查(Snapshot + Action)
+
+### Branch 11 钩子(`core/hooks.py`)
+
+```python
+class Branch(ABC):
+    name: str = "branch"                 # extension_name,^[a-z0-9_]+$(禁点)
+    capabilities: List[str] = []         # observe / tool_executor / llm / self_hosted_storage
+    host_port: Any = None                # 进程内能力端口(装配自动注入,见下)
+
+    async def setup(self, config: dict, host: Any) -> None        # host = 宿主能力声明(纯数据)
+    async def teardown(self) -> None                              # 幂等可重入
+    async def build_injections(self, snapshot: Snapshot) -> List[Injection]
+    async def inject_round(self, snapshot: Snapshot) -> Optional[Injection]
+    async def before(self, snapshot: Snapshot) -> List[Action]
+    async def pre_tool_call(self, snapshot, name, input) -> ToolDecision
+    async def on_tool_call(self, snapshot, name, input) -> Any    # 未实现返回 NotImplemented
+    async def post_tool_call(self, snapshot, name, input, result, duration) -> List[Action]
+    async def after_step(self, snapshot, summary: StepSummary) -> List[Action]
+    async def after(self, snapshot: Snapshot, response: AfterResponse) -> List[Action]
+    async def on_error(self, snapshot: Snapshot, error: Any) -> List[Action]
+```
+
+**交互模型**:Snapshot **不可变只读**;变更一律经返回 Action[](core 立即应用 + 原子批次)。终态钩子(`after`/`on_error`)返回的 action 一律忽略 + 记录(HOOK_TERMINAL_ACTION_IGNORED),数据写入走 `host_port.storage_write`。
+
+### Action 6 种(`core/actions.py`)
+
+| Action | 用途 |
+|--------|------|
+| `AppendMessage(message=...)` | 追加一条消息(**仅 role=user**;叠加) |
+| `SetTools(tools=[...])` | 整体覆盖工具 schema 列表(后注册覆盖先注册) |
+| `SetExtra(key="branch.name", value=...)` | 写入枝干间共享数据(**key 白名单 `^[a-z0-9_]+\.[a-z0-9_.]+$`**) |
+| `SetStop(reason="...")` | 拦截整个对话(短路后续同名钩子,跳过 LLM → done(intercepted)) |
+| `SetSystem(text="...")` | 覆盖基础 system |
+| `ModifyToolSchema(name=..., description=..., input_schema=...)` | 按工具名定向修改单个工具 schema |
+
+### host_port 接口(`core/transport.py` InProcessHostPort,装配自动注入)
+
+同语言扩展访问宿主能力的**唯一通道** = host_port 消息(storage_*/invoke_llm/task_*),**不得以对象引用访问宿主存储**。kind 必须带 `{extension_name}.` 前缀(跨前缀拒绝)。
+
+```python
+await self.host_port.storage_write(kind, docs)              # kind 必须带 "branch_name." 前缀
+await self.host_port.storage_read(kind, doc_id)
+await self.host_port.storage_query(kind, limit=None, **filters)
+await self.host_port.storage_delete(kind, doc_id)
+await self.host_port.invoke_llm(role="main", messages=[...], system=None, max_tokens=None)
+self.host_port.register_task(task_id, description="")       # 宿主登记扩展侧任务(可观测)
+self.host_port.cancel_task(task_id)
+```
+
+`host_port` 在装配时由 registry 注入(可能为 None 当未配置通道时),使用前判空。
 
 ---
 
@@ -13,14 +69,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Dict, List
 
-from teage_liu2.core.hooks import Branch, BranchContext
-from teage_liu2.core.injection import (
-    Injection,
-    L_STABLE_SYSTEM,
-    L_PREFIX,
-)
+from teage_liu2.core.actions import Action, SetExtra, SetTools
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.injection import Injection, L_STABLE_SYSTEM
+from teage_liu2.core.types import Snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -29,23 +83,26 @@ class WeatherBranch(Branch):
     """天气查询枝干:注入工具说明 + 声明工具 + 执行工具 + 审计。"""
 
     name = "weather"
+    capabilities: List[str] = ["tool_executor"]   # 声明工具执行能力(§12)
 
-    async def setup(self, config: dict, core: Any) -> None:
-        """setup 只做资源准备与配置自校验;配置开但坏 → 抛错 = 启动失败。"""
+    async def setup(self, config: dict, host: Any) -> None:
+        """setup 只做资源准备与配置自校验;配置开但坏 → 抛错 = 启动失败。
+        host = 宿主能力声明(纯数据,含 storage 通道与 kind 前缀)。
+        """
         self.api_key = config.get("api_key", "")
-        self.audit = core.storage_provider          # 持久态通道
+        self.kind_prefix = host["storage"]["kind_prefix"]   # = "weather"
         if not self.api_key:
             raise ValueError("weather.api_key 未配置(配置开了却坏了必须暴露)")
 
-    async def build_injections(self, ctx: BranchContext) -> list[Injection]:
+    async def build_injections(self, snapshot: Snapshot) -> List[Injection]:
         """声明注入:工具说明放稳定区(参与前缀缓存)。"""
         return [
             Injection(L_STABLE_SYSTEM, "你可以调用天气查询工具获取实时天气。", priority=10),
         ]
 
-    async def before(self, ctx: BranchContext) -> None:
-        """填充工具 schema(ctx.tools);LLM 据此决定是否 tool_use。"""
-        ctx.tools = [{
+    async def before(self, snapshot: Snapshot) -> List[Action]:
+        """填充工具 schema(SetTools);LLM 据此决定是否 tool_use。"""
+        return [SetTools(tools=[{
             "name": "get_weather",
             "description": "查询城市实时天气",
             "input_schema": {
@@ -53,36 +110,39 @@ class WeatherBranch(Branch):
                 "properties": {"city": {"type": "string"}},
                 "required": ["city"],
             },
-        }]
+        }])]
 
-    async def on_tool_call(self, ctx: BranchContext, tool_name: str, tool_input: dict) -> Any:
+    async def on_tool_call(self, snapshot: Snapshot, name: str, input: dict) -> Any:
         """执行工具;未实现的工具返回 NotImplemented(主干跳过)。"""
-        if tool_name != "get_weather":
+        if name != "get_weather":
             return NotImplemented
         # TODO(你):实际天气 API 调用
-        return f"{tool_input.get('city', '?')} 晴,25°C"
+        return f"{input.get('city', '?')} 晴,25°C"
 
-    async def after(self, ctx: BranchContext, response: Any) -> None:
-        """正常完成后审计(持久态经 StorageProvider 落盘)。"""
-        self.audit.write("weather.audit", {
-            "session_id": ctx.session_id,
-            "round": ctx.round,
-            "response": response.text[:100],
-        })
+    async def after(self, snapshot: Snapshot, response: Any) -> List[Action]:
+        """正常完成后审计(终态钩子:返回 action 一律忽略,落盘走 host_port 消息)。"""
+        if self.host_port is not None:
+            await self.host_port.storage_write("weather.audit", [{
+                "session_id": snapshot.session_id,
+                "round": snapshot.round,
+                "text": response.text[:100],
+            }])
+        return []
 ```
 
 **要点**:
-- `setup` 无 try/except——配置开但坏 → 启动失败;
+- `setup` 无 try/except——配置开但坏 → 启动失败;`host` 是**纯数据声明**(非对象引用);
 - `build_injections` 按稳定度选层(稳定内容 → STABLE_SYSTEM,动态 → PREFIX/BEFORE_INPUT);
 - `on_tool_call` 只处理自己的工具,其余返回 `NotImplemented`;
-- `after` 用 `core.storage_provider` 落盘(持久态三态模型)。
+- 变更快照一律经 Action(此处 `SetTools`),绝不直接改 `snapshot`;
+- `after` 是终态钩子,数据写入走 `host_port.storage_write`(kind 带 `weather.` 前缀),不返回 action。
 
 ---
 
 ## 2. 注册与配置(装配点)
 
 ```python
-# server/app.py 内(唯一改动点)
+# server/app.py 内(唯一改动点,composition root)
 from teage_liu2.branches.weather import WeatherBranch
 
 registry.register_factory("weather", lambda cfg: WeatherBranch(cfg))
@@ -97,7 +157,7 @@ core:
       api_key: ${WEATHER_API_KEY}   # 敏感值走 .env 占位符
 ```
 
-**铁律**:添加/移除枝干只需改装配点 + 配置,**core/ 零改动**(M2 guardrails 已实测)。
+**铁律**:添加/移除枝干只需改装配点 + 配置,**core/ 零改动**(guardrails 已实测)。注册后 `host_port` 由 registry 自动注入(`registry.set_host_port_factory` 已在 app.py 装配)。
 
 ---
 
@@ -118,110 +178,156 @@ core:
 ## 4. 拦截示例(护栏模式)
 
 ```python
+from teage_liu2.core.actions import Action, SetExtra, SetStop
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.types import Snapshot
+
+
 class SensitiveGuard(Branch):
     name = "sensitive_guard"
 
-    async def before(self, ctx: BranchContext) -> None:
+    async def before(self, snapshot: Snapshot) -> List[Action]:
         for word in self.denylist:
-            if word in ctx.user_input:
-                ctx.stop = True                      # 置 stop → 主干跳过 LLM 直接 done
-                ctx.extra["sensitive_guard.denied"] = word
-                return
+            if word in snapshot.user_input:
+                # SetStop → 短路后续 before → 跳过收口与 LLM → done(intercepted)
+                return [SetExtra(key="sensitive_guard.denied", value=word),
+                        SetStop(reason="blocked")]
+        return []
 ```
 
 - 拦截后事件流:单个 `done`(`termination_reason="intercepted"`),无 step 事件;
-- 完整实现见现有枝干 `branches/guardrails.py`。
+- 完整实现见现有枝干 `branches/guardrails.py`(block/warn 双模式)。
 
 ---
 
 ## 5. 轮次间注入示例(inject_round,I2)
 
 ```python
+from teage_liu2.core.injection import Injection, L_BEFORE_INPUT
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.types import Snapshot
+from typing import Optional
+
+
 class RoundMemoBranch(Branch):
     """每轮注入当前工具执行进度(记忆枝干雏形)。"""
 
     name = "round_memo"
 
-    async def inject_round(self, ctx: BranchContext) -> str | None:
-        if ctx.round == 1:
-            return "进度:任务刚开始"
-        return f"进度:第 {ctx.round} 轮,已完成步骤见上文"
+    async def inject_round(self, snapshot: Snapshot) -> Optional[Injection]:
+        if snapshot.round == 1:
+            return Injection(L_BEFORE_INPUT, "进度:任务刚开始")
+        return Injection(L_BEFORE_INPUT, f"进度:第 {snapshot.round} 轮,已完成步骤见上文")
 ```
 
-- `inject_round` 在 loop 每轮 step 前调用,返回文本注入当前输入/工具结果前(自动合并相邻 user 消息,保持交替);
-- 返回 `None` = 本轮不注入。
+- `inject_round` 在 loop 每轮 step 前调用,**layer 强制 BEFORE_INPUT**;返回 `None` = 本轮不注入;
+- 全收集合并(注册序拼接,同 key 去重),自动合并相邻 user 消息,保持交替。
 
 ---
 
 ## 6. 状态存储示例(三态模型)
 
 ```python
+from teage_liu2.core.actions import Action, SetExtra
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.types import Snapshot
+
+
 class MemoryBranch(Branch):
     """会话态 + 持久态演示。"""
 
-    async def setup(self, config, core):
-        self.session_store = core.session_store      # 会话态(内存,重启即失)
-        self.storage = core.storage_provider         # 持久态(重启保留)
+    name = "memory"
 
-    async def before(self, ctx):
-        # 会话态:同会话跨轮计数
-        state = self.session_store.get(ctx.session_id)
-        state.setdefault("turns", 0)
-        state["turns"] += 1
-        ctx.extra["memory.turns"] = state["turns"]   # 对话态:本轮临时
+    async def before(self, snapshot: Snapshot) -> List[Action]:
+        # 会话态:经 snapshot.extra 会话内延续(core 构建快照时已从
+        # SessionStore 恢复同 session 的 extra 基座,结束自动写回)。
+        # 不经 SessionStore 直访(§5 L-10 唯一通道 = extra)。
+        turns = snapshot.extra.get("memory.turns", 0) + 1
+        return [SetExtra(key="memory.turns", value=turns)]
 
-    async def teardown(self):
+    async def after(self, snapshot: Snapshot, response: Any) -> List[Action]:
+        # 持久态:经 host_port.storage_write(kind 带 "memory." 前缀);
+        # 重启后 setup 时自恢复。
+        if self.host_port is not None:
+            await self.host_port.storage_write("memory.facts", [{
+                "session_id": snapshot.session_id,
+                "text": response.text[:200],
+            }])
+        return []
+
+    async def teardown(self) -> None:
         # 持久态经 StorageProvider(重启 setup 时自恢复);core 不替你冲刷
         ...
 ```
 
 | 态 | 放哪 | 重启后 |
 |----|------|--------|
-| 对话态 | `ctx.extra["{branch}.{key}"]` | 消失 |
-| 会话态 | `core.session_store.get(session_id)` | 消失(内存) |
-| 持久态 | `core.storage_provider` 或自持 | 保留 |
+| 对话态 | `snapshot.extra["{branch}.{key}"]`(SetExtra 写入) | 消失 |
+| 会话态 | `snapshot.extra` 会话内延续(构建恢复 / 结束写回) | 消失(契约) |
+| 持久态 | `host_port.storage_write`(宿主存储)或自持 | 保留 |
 
 ---
 
-## 7. 后台任务示例(TaskRegistry)
+## 7. 后台任务示例
 
 ```python
-class PollBranch(Branch):
-    async def setup(self, config, core):
-        self.tasks = core.task_registry
+import asyncio
 
-        async def poll():
+from teage_liu2.core.hooks import Branch
+
+
+class PollBranch(Branch):
+    async def setup(self, config, host) -> None:
+        self._task = asyncio.create_task(self._poll())   # 自身进程内协程
+        if self.host_port is not None:
+            # 宿主登记(可观测/协调取消);任务归属扩展进程,宿主不承载执行(T-4)
+            self.host_port.register_task("poll", description="poll loop")
+
+    async def _poll(self) -> None:
+        try:
             while True:
                 await asyncio.sleep(30)
                 # TODO(你):轮询逻辑(注意取消时清理)
+        except asyncio.CancelledError:
+            pass  # teardown 取消
 
-        self.tasks.create_task(poll())   # 注册后台任务
-
-    async def teardown(self):
-        pass  # 冲刷由 shutdown 编排:①TaskRegistry.cancel_all 统一取消
+    async def teardown(self) -> None:
+        self._task.cancel()   # 扩展自取消;宿主 shutdown cancel_all 兜底
 ```
 
-- 枝干后台任务一律经 `core.task_registry.create_task`,关闭时统一取消,不泄漏。
+- 同语言扩展后台任务直接 `asyncio.create_task`(宿主只经 `host_port.register_task` 登记);
+- `teardown` 自取消;宿主 shutdown 与热重载重建时 `cancel_all` 兜底,不泄漏。
 
 ---
 
-## 8. 钩子内调 LLM(防递归约定)
+## 8. 钩子内调 LLM(invoke_llm 消息,防递归约定)
 
 ```python
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.types import Snapshot
+
+
 class ConsolidationBranch(Branch):
-    """after 里做记忆巩固 —— 必须直调 core.llm_client,禁止调 pipeline。"""
+    """after 里做记忆巩固 —— 必须经 host_port.invoke_llm,禁止调 pipeline。"""
 
-    async def setup(self, config, core):
-        self.llm = core.llm_client          # ✅ 正确来源
+    name = "consolidation"
+    capabilities = ["llm"]          # 声明 llm 能力(未声明 → 宿主拒绝,capability_not_declared)
 
-    async def after(self, ctx, response):
-        summary = await self.llm.chat_main(  # 直调 backend,不重入钩子链
-            messages=[{"role": "user", "content": f"总结:{response.text}"}],
-        )
-        ...
+    async def after(self, snapshot: Snapshot, response: Any) -> list:
+        if self.host_port is not None:
+            result = await self.host_port.invoke_llm(
+                role="main",   # 多角色路由:main / consolidation(LLMClient.chat_role)
+                messages=[{"role": "user", "content": f"总结:{response.text}"}],
+            )
+            # result = {"content_blocks": [...], "stop_reason": ..., "usage": ...}
+            # TODO(你):提取事实后经 host_port.storage_write 落盘
+        return []
 ```
 
-- **禁止** `core.pipeline.chat_stream(...)`(重入钩子链 → 递归)。
+- **禁止** `core.pipeline.chat_stream(...)`(重入钩子链 → 递归,§15-A5);
+- `invoke_llm` 走宿主 `LLMClient.chat_role` 直调(协议级防重入)+ 并发信号量硬边界(§15-A6);
+- **冷路径通道**:用于 after / on_error / setup / 后台任务;**禁止用于 before / inject_round**(直接加首 token 延迟,违反 §18.6 预算);
+- 失败 → 抛异常(`{code}: {message}`),扩展自行降级(记忆巩固失败仅告警)。
 
 ---
 
@@ -280,6 +386,9 @@ assert done["termination_reason"] == "normal"
 ```bash
 # 全部契约测试(含枝干测试)
 pytest tests_core/ tests_branches/
+
+# 行为套件(协议黄金用例,17/17)
+python PROTOCOL/behavior-suite/runner.py
 
 # 新增枝干自己的测试(推荐:放 tests_branches/test_<name>.py)
 # 至少覆盖:enabled:false 照常 / setup 失败启动失败 / 钩子被正确调用

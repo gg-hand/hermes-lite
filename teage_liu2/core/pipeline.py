@@ -279,8 +279,15 @@ class ChatPipeline:
 
             # 6. after 钩子(仅正常完成;断连/异常不触发;终态钩子 action 一律忽略)
             if done_event is not None:
+                # 终态快照(§5 L-10 与 _persist_session_extra 同源):after 是
+                # 终态钩子,观测枝干读 snapshot.round/messages/extra 应拿到
+                # 对话结束后的终态,而非构建时的初始快照(2026-08-21 首个
+                # 扩展接入实验发现:此前传初始 snapshot,round 恒为 0)
+                final_snapshot = getattr(
+                    self._mode_instance, "final_snapshot", None
+                ) or snapshot
                 await self.hooks.after_all(
-                    snapshot,
+                    final_snapshot,
                     AfterResponse(
                         # 与 done.response 单一事实源一致(loop = 最后轮文本);
                         # 禁止全轮 text_delta 拼接(P2-1 回归锚定)
@@ -305,7 +312,10 @@ class ChatPipeline:
             # 收尾只对完整对话生效;终态钩子 action 一律忽略)
             if done_event is None:
                 await self.hooks.on_error_all(
-                    snapshot, Exception(error_message or "对话未完成(中断/失败/拦截)")
+                    # 终态快照(与 after 同源):on_error 也是终态钩子,
+                    # 观测枝干读 round/messages/extra 取对话终态
+                    getattr(self._mode_instance, "final_snapshot", None) or snapshot,
+                    Exception(error_message or "对话未完成(中断/失败/拦截)"),
                 )
             # 会话态 extra 写回(§5 L-10):done/error 路径均写回最终快照 extra,
             # 跨同 session 多次对话延续。最终快照 = 形态实例推进后的终态

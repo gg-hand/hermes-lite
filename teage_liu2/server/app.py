@@ -30,6 +30,7 @@ from .session_locks import SessionLocks
 
 # 装配点例外(composition root):注册枝干工厂必须感知枝干类;
 # 运行时逻辑(路由/传输)不感知枝干 —— 依赖铁律对 core 与运行时保持。
+from ..branches.audit import AuditBranch  # noqa: E402
 from ..branches.guardrails import GuardrailsBranch  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,8 @@ def create_app(
 
     registry = BranchRegistry()
     registry.register_factory("guardrails", lambda cfg: GuardrailsBranch(cfg))
+    # 首个实验性扩展(2026-08-21):audit 观测枝干(observe 只读,经 host_port 落盘)
+    registry.register_factory("audit", lambda cfg: AuditBranch(cfg))
     # 协议桥装配:transport 条目经 supervisor.launcher 创建(进程已 spawn);
     # 同语言扩展注入 host_port(进程内通道,§18.2 消息语义零成本)
     registry.set_extension_launcher(supervisor.launcher)
