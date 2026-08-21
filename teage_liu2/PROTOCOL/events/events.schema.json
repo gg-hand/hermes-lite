@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/events/v1.0.0",
+  "title": "events 域事件",
+  "description": "事件流是内核唯一的对外输出通道。全部事件 schema 化。事件演进: 'custom:*' 为自定义事件, core 透传不解析。",
+  "definitions": {
+    "Event": {
+      "type": "object",
+      "description": "事件基类。type 为判别字段。消费方对未知 type 的策略 = 透传或记录, 绝不崩溃。",
+      "properties": {
+        "type": { "type": "string" },
+        "session_id": { "type": "string" }
+      },
+      "required": ["type", "session_id"]
+    },
+    "StepStartEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "step_start" },
+        "session_id": { "type": "string" },
+        "step": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["type", "session_id", "step"],
+      "additionalProperties": false
+    },
+    "TextDeltaEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "text_delta" },
+        "session_id": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "session_id", "text"],
+      "additionalProperties": false
+    },
+    "ReasoningDeltaEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "reasoning_delta" },
+        "session_id": { "type": "string" },
+        "text": { "type": "string" },
+        "signature": { "type": "string" }
+      },
+      "required": ["type", "session_id", "text"],
+      "additionalProperties": false
+    },
+    "StepEndEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "step_end" },
+        "session_id": { "type": "string" },
+        "content_blocks": { "type": "array", "items": { "type": "object" } },
+        "stop_reason": { "type": "string" },
+        "usage": { "type": "object" }
+      },
+      "required": ["type", "session_id", "content_blocks", "stop_reason", "usage"],
+      "additionalProperties": false
+    },
+    "ToolUseEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "tool_use" },
+        "session_id": { "type": "string" },
+        "name": { "type": "string" },
+        "input": { "type": "object" },
+        "original_input": { "type": "object" },
+        "effective_input": { "type": "object" }
+      },
+      "required": ["type", "session_id", "name", "input"],
+      "additionalProperties": false
+    },
+    "ToolResultEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "tool_result" },
+        "session_id": { "type": "string" },
+        "name": { "type": "string" },
+        "tool_use_id": { "type": "string" },
+        "result": { "type": "string" },
+        "is_error": { "type": "boolean" },
+        "modified": { "type": "boolean" }
+      },
+      "required": ["type", "session_id", "name", "tool_use_id", "result", "is_error"],
+      "additionalProperties": false
+    },
+    "DoneEvent": {
+      "type": "object",
+      "description": "对话结束事件。统一 9 键, 所有终止路径一致(观测枝干可依赖)。",
+      "properties": {
+        "type": { "const": "done" },
+        "session_id": { "type": "string" },
+        "response": { "type": "string" },
+        "messages": { "type": "array", "items": { "type": "object" } },
+        "is_complete": { "type": "boolean" },
+        "termination_reason": {
+          "type": "string",
+          "enum": [
+            "normal", "max_loops", "user_cancel", "no_tool_executor",
+            "llm_error", "intercepted", "tool_rejected"
+          ],
+          "description": "终止原因。与 errors 域 TerminationReason 同步(7 值枚举)。"
+        },
+        "usage": { "type": ["object", "null"] },
+        "content_blocks": { "type": "array", "items": { "type": "object" } },
+        "stop_reason": { "type": "string" }
+      },
+      "required": [
+        "type", "session_id", "response", "messages", "is_complete",
+        "termination_reason", "usage", "content_blocks", "stop_reason"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorEvent": {
+      "type": "object",
+      "description": "对话失败事件。不产生 done。",
+      "properties": {
+        "type": { "const": "error" },
+        "session_id": { "type": "string" },
+        "message": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["type", "session_id", "message"],
+      "additionalProperties": false
+    },
+    "StepSummary": {
+      "type": "object",
+      "properties": {
+        "round": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" },
+        "content_blocks": { "type": "array", "items": { "type": "object" } },
+        "tool_uses": { "type": "array", "items": { "type": "object" } },
+        "usage": { "type": "object" },
+        "duration": { "type": "number" }
+      },
+      "required": ["round", "text", "content_blocks", "tool_uses", "usage", "duration"],
+      "additionalProperties": false
+    },
+    "AfterResponse": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "content_blocks": { "type": "array", "items": { "type": "object" } },
+        "usage": { "type": ["object", "null"] },
+        "done_event": { "$ref": "#/definitions/DoneEvent" }
+      },
+      "required": ["text", "content_blocks", "usage", "done_event"],
+      "additionalProperties": false
+    }
+  }
+}

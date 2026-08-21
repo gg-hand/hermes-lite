@@ -1,0 +1,51 @@
+{
+  "id": "invoke-llm-12",
+  "protocol_version": "v1.0.0",
+  "description": "invoke_llm 消息(§transport T-3/§15-A4/A5/A6): 扩展调 LLM 的唯一协议通道, 走 LLMAdapter 直调(协议级防重入 —— 不进 pipeline/钩子链); 未声明 llm capability 的扩展调用被拒(capability_not_declared, §15-A4); role 多角色路由(未配置后端降级 main, §17); 并发信号量硬边界(INVOKE_LLM_MAX_CONCURRENCY, §15-A6)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "llm_ext",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": ["llm"]
+      },
+      {
+        "name": "plain_ext",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-12",
+    "user_input": "invoke_llm 测试",
+    "llm_ops": [
+      { "op": "invoke_llm", "extension": "llm_ext", "role": "main", "messages": [{ "role": "user", "content": "hi" }] },
+      { "op": "invoke_llm", "extension": "plain_ext", "role": "main", "messages": [{ "role": "user", "content": "hi" }] },
+      { "op": "invoke_llm_unknown_role", "extension": "llm_ext", "role": "consolidation", "messages": [{ "role": "user", "content": "hi" }] },
+      { "op": "invoke_llm_concurrent", "extension": "llm_ext", "count": 10 }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:llm_result",
+        "payload": {
+          "llm_ext_success": { "type": "boolean" },
+          "plain_ext_rejected": { "type": "boolean" },
+          "unknown_role_fallback_main": { "type": "boolean" },
+          "concurrency_max": { "type": "integer" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

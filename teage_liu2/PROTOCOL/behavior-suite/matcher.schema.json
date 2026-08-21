@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/behavior-suite/matcher/v1.0.0",
+  "title": "行为套件断言匹配器",
+  "description": "断言匹配器规范(语言无关黄金用例集的可执行保障)。所有宿主实现内置同一语义的匹配器解释器。匹配器语义的任何变更走协议版本化(§evolution)。",
+  "definitions": {
+    "FieldPath": {
+      "type": "string",
+      "description": "点路径表达式(JSONPath 子集: '.' 分隔 + 数组下标), 如 'snapshot.messages.0.role'、'usage.output_tokens'。"
+    },
+    "RegexMatcher": {
+      "type": "object",
+      "properties": {
+        "regex": { "type": "string" }
+      },
+      "required": ["regex"],
+      "additionalProperties": false
+    },
+    "RangeMatcher": {
+      "type": "object",
+      "properties": {
+        "range": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "数值闭区间 [lo, hi]。"
+        }
+      },
+      "required": ["range"],
+      "additionalProperties": false
+    },
+    "TypeMatcher": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["string", "int", "number", "boolean", "object", "array", "null"] }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    "LengthMatcher": {
+      "type": "object",
+      "properties": {
+        "length": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["length"],
+      "additionalProperties": false
+    },
+    "AbsentMatcher": {
+      "type": "object",
+      "description": "负断言: 断言该事件/钩子调用在整条事件流/全部 invocations 任意位置都不出现。作用域 = 全程(自用例开始至结束)。不参与有序逐项匹配。",
+      "properties": {
+        "absent": { "const": true }
+      },
+      "required": ["absent"],
+      "additionalProperties": true
+    },
+    "ScalarMatcher": {
+      "oneOf": [
+        { "type": "string", "description": "字面量 = 相等(字符串)" },
+        { "type": "number", "description": "字面量 = 相等(数值)" },
+        { "type": "boolean", "description": "字面量 = 相等(布尔)" },
+        { "type": "null", "description": "字面量 = 相等(null)" },
+        { "$ref": "#/definitions/RegexMatcher" },
+        { "$ref": "#/definitions/RangeMatcher" },
+        { "$ref": "#/definitions/TypeMatcher" },
+        { "$ref": "#/definitions/LengthMatcher" }
+      ]
+    },
+    "ObjectMatcher": {
+      "type": "object",
+      "description": "对象匹配: 默认子集匹配(期望对象 = 实际对象的递归子集; 期望未列出的字段不断言)。点路径寻址(FieldPath)与嵌套对象匹配是同一语义的两种表达, 解释器可任选其一实现(§14.3 字段寻址, 如 'snapshot.messages.0.role' 等价于嵌套对象 {snapshot:{messages:[{role:...}]}})。",
+      "additionalProperties": { "$ref": "#/definitions/Matcher" }
+    },
+    "ArrayMatcher": {
+      "type": "array",
+      "description": "数组匹配: 默认逐项有序匹配。",
+      "items": { "$ref": "#/definitions/Matcher" }
+    },
+    "Matcher": {
+      "description": "通用匹配器: 标量匹配器 + 对象子集匹配 + 数组逐项有序匹配 + absent 负断言。\n解释器优先级(所有宿主实现内置同一语义): ① absent ② 标量匹配器(regex/range/type/length) ③ 数组逐项有序 ④ 对象子集——标量匹配器优先于对象子集, 消除 '{regex:...}' 同时匹配 ScalarMatcher 与 ObjectMatcher 的歧义。",
+      "anyOf": [
+        { "$ref": "#/definitions/AbsentMatcher" },
+        { "$ref": "#/definitions/ScalarMatcher" },
+        { "$ref": "#/definitions/ArrayMatcher" },
+        { "$ref": "#/definitions/ObjectMatcher" }
+      ]
+    },
+    "SnapshotAssert": {
+      "type": "object",
+      "description": "快照视图断言: 断言该扩展收到的快照视图(§4.4'下一个扩展看到前序 action 应用后的快照'逐条锚定)。",
+      "additionalProperties": { "$ref": "#/definitions/Matcher" }
+    },
+    "ActionAssert": {
+      "type": "object",
+      "description": "action 断言: 断言该钩子返回的 action 列表(按 op 匹配)。",
+      "additionalProperties": { "$ref": "#/definitions/Matcher" }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/transport/v1.0.0",
+  "title": "transport 域 — 传输协议消息",
+  "description": "core 与扩展(同/异语言)之间的消息封装。双绑定形态: stdio=跨进程唯一通道, in-process=消息语义零成本实现。",
+  "definitions": {
+    "MessageType": {
+      "type": "string",
+      "enum": [
+        "invoke_hook", "invoke_tool", "invoke_llm",
+        "storage_write", "storage_read", "storage_query", "storage_delete",
+        "task_register", "task_cancel",
+        "event", "heartbeat", "shutdown"
+      ]
+    },
+    "EncodingType": {
+      "enum": ["full", "delta"],
+      "description": "帧编码标识。full=完整快照; delta=极简增量(append/overwrite, 与 action 语义对齐)。"
+    },
+    "FrameLimits": {
+      "type": "object",
+      "description": "序列化边界(§15-A7)。阈值具体数值为本协议常量, 宿主实现必须实施, 不可无界; 与 core/transport.py FRAME_MAX_BYTES / JSON_MAX_DEPTH 一致。",
+      "properties": {
+        "frame_max_bytes": { "type": "integer", "const": 4194304 },
+        "json_max_depth": { "type": "integer", "const": 64 }
+      },
+      "required": ["frame_max_bytes", "json_max_depth"],
+      "additionalProperties": false
+    },
+    "TransportFrame": {
+      "type": "object",
+      "properties": {
+        "type": { "$ref": "#/definitions/MessageType" },
+        "payload": { "type": "object" },
+        "encoding": { "$ref": "#/definitions/EncodingType" },
+        "protocol_version": { "type": "string" }
+      },
+      "required": ["type", "payload", "encoding", "protocol_version"],
+      "additionalProperties": false
+    },
+    "InvokeHook": {
+      "type": "object",
+      "properties": {
+        "hook": { "type": "string" },
+        "snapshot": { "type": "object" },
+        "args": { "type": "object" }
+      },
+      "required": ["hook", "snapshot", "args"],
+      "additionalProperties": false
+    },
+    "InvokeTool": {
+      "type": "object",
+      "description": "工具执行专用消息: 仅 name+input, 免快照序列化(性能优化)。",
+      "properties": {
+        "name": { "type": "string" },
+        "input": { "type": "object" }
+      },
+      "required": ["name", "input"],
+      "additionalProperties": false
+    },
+    "InvokeLlm": {
+      "type": "object",
+      "description": "扩展调 LLM 的唯一协议通道。走 LLMAdapter 直调, 协议级防重入(不进钩子链)。",
+      "properties": {
+        "role": { "type": "string" },
+        "messages": { "type": "array", "items": { "type": "object" } },
+        "system": { "type": ["string", "null"] },
+        "max_tokens": { "type": ["integer", "null"] }
+      },
+      "required": ["role", "messages"],
+      "additionalProperties": true
+    },
+    "TaskRegister": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["task_id", "description"],
+      "additionalProperties": false
+    },
+    "TaskCancel": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string" }
+      },
+      "required": ["task_id"],
+      "additionalProperties": false
+    }
+  }
+}

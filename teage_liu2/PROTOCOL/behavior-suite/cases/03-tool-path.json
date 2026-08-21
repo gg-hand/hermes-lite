@@ -1,0 +1,78 @@
+{
+  "id": "tool-path-03",
+  "protocol_version": "v1.0.0",
+  "description": "工具路径四连时序: pre_tool_call 链(reject 短路/modify 叠加) → tool_use 事件(含 effective_input) → on_tool_call 执行 → tool_result 回喂。ext_policy 返回 modify(new_input), ext_tools 执行; tool_use 事件应携带 effective_input。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_policy",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["pre_tool_call"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_tools",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["on_tool_call"],
+        "capabilities": ["tool_executor"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-03",
+    "user_input": "调用工具",
+    "tool_use_name": "get_weather",
+    "tool_use_input": { "city": "beijing" },
+    "ext_policy_decision": { "decision": "modify", "input": { "city": "shanghai" } },
+    "ext_tools_result": "晴 25°C"
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "pre_tool_call",
+        "extension": "ext_policy",
+        "order": 1
+      },
+      {
+        "hook": "on_tool_call",
+        "extension": "ext_tools",
+        "order": 1
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "tool_use",
+        "payload": {
+          "name": "get_weather",
+          "input": { "city": "beijing" },
+          "effective_input": { "city": "shanghai" },
+          "original_input": { "city": "beijing" }
+        }
+      },
+      {
+        "type": "tool_result",
+        "payload": {
+          "name": "get_weather",
+          "result": "晴 25°C",
+          "is_error": false,
+          "modified": true
+        }
+      },
+      {
+        "type": "done",
+        "payload": {
+          "is_complete": true,
+          "termination_reason": "normal"
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}

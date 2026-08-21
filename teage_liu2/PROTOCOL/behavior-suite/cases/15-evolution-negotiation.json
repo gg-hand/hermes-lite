@@ -1,0 +1,55 @@
+{
+  "id": "evolution-negotiation-15",
+  "protocol_version": "v1.0.0",
+  "description": "evolution 版本协商(§evolution V-2 / §10.2): core 与扩展握手互验 protocol_version(semver)。major 不匹配(任一方向破坏性变更)→ 拒绝(可读错误, 启动失败); major 匹配且扩展 minor ≤ core minor → proceed; 扩展 minor > core minor → downgrade(扩展按 core 能力子集降级运行, 双版本共存过渡期); 非法版本字符串拒绝。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_ok",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": [],
+        "capabilities": []
+      },
+      {
+        "name": "ext_minor_newer",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.2.0",
+        "hooks_implemented": [],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-15",
+    "user_input": "evolution 版本协商测试",
+    "core_version": "v1.0.0",
+    "negotiations": [
+      { "label": "major_match_minor_equal", "extension_version": "v1.0.0", "expect": "proceed" },
+      { "label": "major_match_minor_newer", "extension_version": "v1.2.0", "expect": "downgrade" },
+      { "label": "major_match_minor_older", "extension_version": "v1.0.0", "expect": "proceed" },
+      { "label": "major_mismatch_newer", "extension_version": "v2.0.0", "expect": "reject" },
+      { "label": "major_mismatch_older", "extension_version": "v0.5.0", "expect": "reject" },
+      { "label": "missing_version", "extension_version": null, "expect": "downgrade" },
+      { "label": "invalid_version", "extension_version": "not-semver", "expect": "reject" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:negotiation_result",
+        "payload": {
+          "proceed_cases": { "type": "integer" },
+          "downgrade_cases": { "type": "integer" },
+          "reject_cases": { "type": "integer" },
+          "all_actions_match": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

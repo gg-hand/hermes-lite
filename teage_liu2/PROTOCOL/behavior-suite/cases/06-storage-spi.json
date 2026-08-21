@@ -1,0 +1,45 @@
+{
+  "id": "storage-spi-06",
+  "protocol_version": "v1.0.0",
+  "description": "存储 SPI 契约(§6/§18.4/§15-A3): write 支持批量 docs[](单次往返多条); query 支持 limit 防全量加载; kind 必须匹配 ^[a-z0-9_.]+$; 扩展只能读写自己 '{extension_name}.' 前缀(kind 前缀读写隔离, 跨前缀访问拒绝)。存储操作结果经 custom:storage_result 观测事件上报(evolution custom 扩展点, core 透传); 该事件通道随阶段 3 transport storage_* 消息接线后全量对拍, 阶段 1 由 Python 宿主实现冒烟覆盖 SPI 语义。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "audit",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-06",
+    "user_input": "存储 SPI 契约测试",
+    "storage_ops": [
+      { "op": "write", "kind": "audit.events", "docs": [{ "event": "chat_start" }, { "event": "chat_done" }] },
+      { "op": "write", "kind": "audit.meta", "docs": [{ "v": 1 }] },
+      { "op": "query", "kind": "audit.events", "limit": 1 },
+      { "op": "write", "kind": "other.cross_prefix", "docs": [{ "forbidden": true }] }
+    ],
+    "illegal_kind": "Bad;DROP"
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:storage_result",
+        "payload": {
+          "write_batch_ids": { "length": 2 },
+          "query_limit_docs": { "length": 1 },
+          "prefix_isolation": { "type": "boolean" },
+          "cross_prefix_rejected": { "type": "boolean" },
+          "illegal_kind_rejected": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

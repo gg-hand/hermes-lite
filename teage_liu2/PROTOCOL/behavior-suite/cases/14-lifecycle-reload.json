@@ -1,0 +1,40 @@
+{
+  "id": "lifecycle-reload-14",
+  "protocol_version": "v1.0.0",
+  "description": "热重载生命周期(§5 L-3 接近原子 + 回滚保旧链 / lifecycle 域): build 新链 → setup 全部成功 → teardown 旧链 → 原子替换; 任一步失败 → 回滚(teardown 新链, 旧链引用不中断, 旧链后台任务不取消)。setup/teardown 幂等可重入(L2 热重载反复调用); 扩展进程重建时序 spawn → 握手 → setup → teardown 旧 → 替换。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["setup", "before", "teardown"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-14",
+    "user_input": "热重载生命周期测试",
+    "reload_cycles": [
+      { "config_change": "add_extension_b", "expect_success": true },
+      { "config_change": "setup_failure", "expect_success": false }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:reload_result",
+        "payload": {
+          "reload_success_entries": { "type": "integer" },
+          "rollback_preserved_old_chain": { "type": "boolean" },
+          "setup_idempotent_reentrant": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

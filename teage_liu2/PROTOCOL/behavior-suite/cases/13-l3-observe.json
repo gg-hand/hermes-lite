@@ -1,0 +1,41 @@
+{
+  "id": "l3-observe-13",
+  "protocol_version": "v1.0.0",
+  "description": "L3 观测通知(§3.2/§18.5/§transport T-1): 事件流三层不变量 —— L1(text_delta/reasoning_delta)宿主内部直传绝不进 transport; L2(StepSummary/AfterResponse)经钩子快照+action; L3(tool_use/tool_result/step_end 原始事件)异步批处理旁路(50ms/64 条先到触发)经 event 消息投递声明 observe 的扩展; 每观测扩展有界队列(1024)满则丢弃最旧 + 计数随心跳上报(§15-A6); L3 是 best-effort, 绝不影响主对话流。外壳直通事件(step_start/done/error)不投 L3。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "obs",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-13",
+    "user_input": "L3 观测测试",
+    "l3_events": [
+      { "type": "tool_use", "name": "echo", "input": {} },
+      { "type": "tool_result", "tool_use_id": "u1", "result": "r", "is_error": false },
+      { "type": "step_end", "content_blocks": [], "stop_reason": "end_turn" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:l3_result",
+        "payload": {
+          "observe_received_types": { "type": "array" },
+          "l1_never_in_transport": { "type": "boolean" },
+          "bounded_queue_no_drop": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

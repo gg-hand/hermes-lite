@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/lifecycle/v1.0.0",
+  "title": "lifecycle 域 — 生命周期与扩展声明",
+  "description": "扩展生命周期协议(setup/teardown/热重载/进程重建)与扩展声明模型。",
+  "definitions": {
+    "ProtocolVersion": {
+      "type": "string",
+      "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$",
+      "description": "semver 版本号, 如 'v1.0.0'。"
+    },
+    "TransportType": {
+      "enum": ["stdio", "in-process"],
+      "description": "stdio=跨进程(异语言)唯一通道; in-process=同语言进程内绑定(消息语义零成本实现)。"
+    },
+    "Capability": {
+      "type": "string",
+      "enum": ["observe", "tool_executor", "llm", "self_hosted_storage"],
+      "description": "扩展能力声明集合元素。observe=观测只读; tool_executor=工具执行者; llm=可调 invoke_llm; self_hosted_storage=自持存储。"
+    },
+    "Extension": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "扩展名, 与 types 域 extension_name 约束一致。"
+        },
+        "lang": { "type": "string" },
+        "transport": { "$ref": "#/definitions/TransportType" },
+        "protocol_version": { "$ref": "#/definitions/ProtocolVersion" },
+        "hooks_implemented": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "声明实现哪些钩子, core 只调用已声明的。"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Capability" },
+          "description": "能力声明集合(扩展→宿主)。缺省(空集)=策略/工具类, 可正常返回 action。"
+        }
+      },
+      "required": ["name", "lang", "transport", "protocol_version", "hooks_implemented", "capabilities"],
+      "additionalProperties": false
+    },
+    "HostCapabilities": {
+      "type": "object",
+      "description": "宿主能力声明(宿主→扩展, setup 第二参 host 的内容)。纯数据声明, 非对象引用。",
+      "properties": {
+        "protocol_domains": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "channel": { "const": "transport.storage_*" },
+            "kind_prefix": {
+              "type": "string",
+              "pattern": "^[a-z0-9_]+$",
+              "description": "该扩展的 kind 命名空间前缀 '{extension_name}.'。"
+            }
+          },
+          "required": ["channel", "kind_prefix"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["protocol_domains", "storage"],
+      "additionalProperties": false
+    }
+  }
+}

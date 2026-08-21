@@ -1,0 +1,47 @@
+{
+  "id": "host-port-inprocess-17",
+  "protocol_version": "v1.0.0",
+  "description": "同语言 host_port 进程内消息通道(§18.2/§transport.1): 同语言扩展经注入的 host_port(InProcessHostPort)走 storage_write/read/query/delete + invoke_llm + task_register/cancel 消息语义 —— 前缀隔离(§15-A3)、capability 授权(§15-A4)、防重入(§15-A5)、并发上限(§15-A6)全生效; 非对象引用注入(零拷贝引用仅限快照/值对象)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "audit",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after", "setup"],
+        "capabilities": ["llm"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-17",
+    "user_input": "host_port 消息通道测试",
+    "host_port_ops": [
+      { "op": "storage_write", "kind": "audit.events", "docs": [{ "event": "a" }, { "event": "b" }] },
+      { "op": "storage_query", "kind": "audit.events", "limit": 1 },
+      { "op": "storage_write_cross_prefix", "kind": "other.cross_prefix", "docs": [{ "forbidden": true }] },
+      { "op": "invoke_llm", "role": "main", "messages": [{ "role": "user", "content": "hi" }] },
+      { "op": "task_register", "task_id": "t-17", "description": "host_port 登记" },
+      { "op": "task_cancel", "task_id": "t-17" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:host_port_result",
+        "payload": {
+          "write_batch_ids": { "length": 2 },
+          "query_limit_docs": { "length": 1 },
+          "cross_prefix_rejected": { "type": "boolean" },
+          "invoke_llm_ok": { "type": "boolean" },
+          "task_register_ok": { "type": "boolean" },
+          "task_cancel_ok": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

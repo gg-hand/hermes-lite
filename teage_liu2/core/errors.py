@@ -1,0 +1,87 @@
+"""错误码体系(§8 定案,阶段 2 落地):v1.0 错误码全集 + 终止原因。
+
+- 7 终止原因枚举(done 事件 termination_reason)
+- v1.0 错误码全集(LLM_*/LOOP_*/HOOK_*/TOOL_*/STORAGE_*/CONFIG_*)
+- 错误码 ↔ 终止原因映射(§8 表)
+
+责任矩阵(捕获层/上报/兜底)见 PROTOCOL/errors/errors.spec.md,实现各层
+按表接线;此处提供常量与映射,不承载逻辑。
+"""
+
+from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# 终止原因(7 枚举;tool_rejected 为 v1.0 新增)
+# ---------------------------------------------------------------------------
+TERMINATION_NORMAL = "normal"
+TERMINATION_MAX_LOOPS = "max_loops"
+TERMINATION_USER_CANCEL = "user_cancel"
+TERMINATION_NO_TOOL_EXECUTOR = "no_tool_executor"
+TERMINATION_LLM_ERROR = "llm_error"
+TERMINATION_INTERCEPTED = "intercepted"
+TERMINATION_TOOL_REJECTED = "tool_rejected"
+
+TERMINATION_REASONS = (
+    TERMINATION_NORMAL,
+    TERMINATION_MAX_LOOPS,
+    TERMINATION_USER_CANCEL,
+    TERMINATION_NO_TOOL_EXECUTOR,
+    TERMINATION_LLM_ERROR,
+    TERMINATION_INTERCEPTED,
+    TERMINATION_TOOL_REJECTED,
+)
+
+# ---------------------------------------------------------------------------
+# v1.0 错误码全集
+# ---------------------------------------------------------------------------
+# LLM(主对话,捕获层 = step 层)
+LLM_TIMEOUT = "LLM_TIMEOUT"
+LLM_CANCELED = "LLM_CANCELED"
+LLM_STREAM_FAILED = "LLM_STREAM_FAILED"
+LLM_API_ERROR = "LLM_API_ERROR"
+# 循环
+LOOP_MAX_REACHED = "LOOP_MAX_REACHED"
+# 钩子
+HOOK_TIMEOUT = "HOOK_TIMEOUT"
+HOOK_EXCEPTION = "HOOK_EXCEPTION"
+HOOK_INVALID_ACTION = "HOOK_INVALID_ACTION"
+HOOK_TERMINAL_ACTION_IGNORED = "HOOK_TERMINAL_ACTION_IGNORED"
+# 工具
+TOOL_NO_EXECUTOR = "TOOL_NO_EXECUTOR"
+TOOL_EXEC_FAILED = "TOOL_EXEC_FAILED"
+TOOL_REJECTED_BY_POLICY = "TOOL_REJECTED_BY_POLICY"
+TOOL_MODIFY_INVALID = "TOOL_MODIFY_INVALID"
+# 存储
+STORAGE_WRITE_FAILED = "STORAGE_WRITE_FAILED"
+STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
+# 配置
+CONFIG_UNKNOWN_KEY = "CONFIG_UNKNOWN_KEY"
+CONFIG_INVALID_VALUE = "CONFIG_INVALID_VALUE"
+CONFIG_MISSING_KEY = "CONFIG_MISSING_KEY"
+
+#: v1.0 错误码全集(供 schema/审计对拍)
+ERROR_CODES = {
+    LLM_TIMEOUT, LLM_CANCELED, LLM_STREAM_FAILED, LLM_API_ERROR,
+    LOOP_MAX_REACHED,
+    HOOK_TIMEOUT, HOOK_EXCEPTION, HOOK_INVALID_ACTION,
+    HOOK_TERMINAL_ACTION_IGNORED,
+    TOOL_NO_EXECUTOR, TOOL_EXEC_FAILED, TOOL_REJECTED_BY_POLICY,
+    TOOL_MODIFY_INVALID,
+    STORAGE_WRITE_FAILED, STORAGE_READ_FAILED,
+    CONFIG_UNKNOWN_KEY, CONFIG_INVALID_VALUE, CONFIG_MISSING_KEY,
+}
+
+# ---------------------------------------------------------------------------
+# 错误码 ↔ 终止原因映射(§8,事件呈现锚点)
+# ---------------------------------------------------------------------------
+TERMINATION_TO_ERROR_CODES: dict[str, tuple[str, ...]] = {
+    TERMINATION_NORMAL: (),
+    TERMINATION_MAX_LOOPS: (LOOP_MAX_REACHED,),
+    TERMINATION_USER_CANCEL: (LLM_CANCELED,),
+    TERMINATION_NO_TOOL_EXECUTOR: (TOOL_NO_EXECUTOR,),
+    TERMINATION_LLM_ERROR: (
+        LLM_TIMEOUT, LLM_CANCELED, LLM_STREAM_FAILED, LLM_API_ERROR,
+    ),
+    TERMINATION_INTERCEPTED: (),
+    TERMINATION_TOOL_REJECTED: (TOOL_REJECTED_BY_POLICY, TOOL_MODIFY_INVALID),
+}

@@ -1,0 +1,103 @@
+{
+  "id": "hooks-before-01",
+  "protocol_version": "v1.0.0",
+  "description": "收口四连时序 + before 后快照可见前序 action + SetStop 短路。两个扩展按注册序 A、B: A 返回 AppendMessage(user)+SetSystem, B 应看到 A 的 action 应用后的快照; 第三扩展 C 返回 SetStop → 短路后续, 跳过组装收口与 LLM, 直接 done(intercepted)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_c",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-01",
+    "user_input": "你好",
+    "system": "基础 system",
+    "ext_a_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "来自A的追加" } },
+      { "op": "SetSystem", "text": "被A覆盖的system" }
+    ],
+    "ext_c_action": { "op": "SetStop", "reason": "拦截测试" }
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "build_injections",
+        "extension": "ext_a",
+        "order": 1
+      },
+      {
+        "hook": "build_injections",
+        "extension": "ext_b",
+        "order": 2
+      },
+      {
+        "hook": "build_injections",
+        "extension": "ext_c",
+        "order": 3
+      },
+      {
+        "hook": "before",
+        "extension": "ext_a",
+        "order": 1,
+        "snapshot_assert": {
+          "messages": { "length": 1 },
+          "system_text": { "regex": "^基础" }
+        }
+      },
+      {
+        "hook": "before",
+        "extension": "ext_b",
+        "order": 2,
+        "snapshot_assert": {
+          "system_text": { "regex": "^被A覆盖" },
+          "messages": {
+            "length": 2
+          }
+        }
+      },
+      {
+        "hook": "before",
+        "extension": "ext_c",
+        "order": 3,
+        "snapshot_assert": {
+          "system_text": { "regex": "^被A覆盖" }
+        }
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "done",
+        "payload": {
+          "is_complete": false,
+          "termination_reason": "intercepted"
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "intercepted",
+      "is_complete": false
+    }
+  }
+}

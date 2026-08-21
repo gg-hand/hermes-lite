@@ -9,15 +9,19 @@
 - step_start   : 一次 LLM 调用的开始(循环形态下每轮一个 step)
 - text_delta   : LLM 输出文本增量
 - reasoning_delta: LLM 推理增量(可选,透传给前端思考区)
-- step_end     : 一次 LLM 调用的结束(携带 content_blocks / stop_reason / usage)
+- step_end     : 一次 LLM 调用的结束(携带 content_blocks / stop_reason / usage;
+                  循环形态**逐轮透传**,主干据此消息级落盘 assistant)
 - tool_use     : LLM 请求调用工具(循环形态发出)
-- tool_result  : 工具执行结果回传
+- tool_result  : 工具执行结果回传(携带 tool_use_id,配对落盘依据)
 - done         : 整个对话结束(携带最终文本与终止原因)
 - error        : 对话失败(不产生 done)
 """
 
 from __future__ import annotations
 
+import json
+import re
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Literal, Optional, Union
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,60 @@ Block = Dict[str, Any]
 
 # 事件: {"type": EventType, "session_id": str, ...payload}
 Event = Dict[str, Any]
+
+
+class StepSummary:
+    """每轮 step 后的轮摘要(after_step 钩子携带,§4.2)。
+
+    结构:``{ round, text, content_blocks, tool_uses, usage, duration }``。
+    """
+
+    def __init__(
+        self,
+        round_: int,
+        text: str,
+        content_blocks: Optional[List[Block]] = None,
+        tool_uses: Optional[List[Dict[str, Any]]] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        duration: float = 0.0,
+    ) -> None:
+        self.round: int = round_
+        self.text: str = text
+        self.content_blocks: List[Block] = content_blocks or []
+        self.tool_uses: List[Dict[str, Any]] = tool_uses or []
+        self.usage: Optional[Dict[str, Any]] = usage
+        self.duration: float = duration
+
+    def __repr__(self) -> str:
+        return (
+            f"StepSummary(round={self.round}, text={self.text[:30]!r}, "
+            f"blocks={len(self.content_blocks)})"
+        )
+
+
+class AfterResponse:
+    """after 钩子收到的完成摘要(B3,计划 §3.2)。
+
+    观测枝干(记忆巩固 / 审计 / 指标)只读此对象,不干预对话。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        content_blocks: Optional[List[Block]] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        done_event: Optional[Event] = None,
+    ) -> None:
+        self.text: str = text
+        self.content_blocks: List[Block] = content_blocks or []
+        self.usage: Optional[Dict[str, Any]] = usage
+        self.done_event: Optional[Event] = done_event
+
+    def __repr__(self) -> str:
+        return (
+            f"AfterResponse(text={self.text[:30]!r}, "
+            f"blocks={len(self.content_blocks)}, usage={self.usage is not None})"
+        )
 
 
 def text_block(text: str) -> Block:
@@ -130,16 +188,218 @@ def split_content_blocks(content_blocks: List[Block]) -> tuple[List[str], List[B
     return text_parts, tool_use_blocks, thinking_blocks
 
 
+def validate_messages(messages: List[Message]) -> Optional[str]:
+    """校验消息序列结构合法性(C1:core 的保证,组装后双保险之一)。
+
+    M1 规则:角色白名单(user/assistant)+ 交替(首条非 tool);
+    M2 扩展:tool_result 配对 tool_use。
+    合法返回 None;不合法返回错误描述(主干发 error 事件,不发送给 LLM)。
+    """
+    last_role: Optional[str] = None
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            return f"消息 {i} 角色非法 {role!r}(M1 仅允许 user/assistant 交替)"
+        if role == last_role:
+            return f"消息 {i} 与上一条同角色 {role!r}(user/assistant 必须交替)"
+        last_role = role
+    return None
+
+
 def normalize_history(messages: List[Message]) -> List[Message]:
     """将历史消息规整为 {role, content} 形式(剔除附加字段,符合 LLM API 规范)。
 
-    丢弃 content 为空的系统消息等异常项。
+    消息级落盘后(D1):content_blocks(JSON 字符串)优先重建 Anthropic 风格
+    content(工具配对结构);旧行无 content_blocks → 回退纯文本 content。
+    丢弃 role/content 均为空的异常项。
     """
     clean: List[Message] = []
     for m in messages:
         role = m.get("role")
+        if role is None:
+            continue
+        raw_blocks = m.get("content_blocks")
+        if raw_blocks:
+            try:
+                blocks = json.loads(raw_blocks)
+            except (TypeError, json.JSONDecodeError):
+                blocks = None
+            if blocks:
+                clean.append({"role": role, "content": blocks})
+                continue
         content = m.get("content")
-        if role is None or content is None:
+        if content is None:
             continue
         clean.append({"role": role, "content": content})
     return clean
+
+
+# ---------------------------------------------------------------------------
+# 协议值对象层(阶段 1,对齐 PROTOCOL/types 域)
+# ---------------------------------------------------------------------------
+# 命名约束三模式(协议强制,与 types.schema.json 逐字一致,§15-A2 安全边界)
+_EXTENSION_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+_KIND_RE = re.compile(r"^[a-z0-9_.]+$")
+_SETEXTRA_KEY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_.]+$")
+
+
+def is_valid_extension_name(name: str) -> bool:
+    """extension_name 字符集校验(禁点,消除 '{name}.' 前缀解析歧义)。"""
+    return bool(name) and bool(_EXTENSION_NAME_RE.fullmatch(name))
+
+
+def is_valid_kind(kind: str) -> bool:
+    """kind 字符集校验(允许点)。"""
+    return bool(kind) and bool(_KIND_RE.fullmatch(kind))
+
+
+def is_valid_setextra_key(key: str) -> bool:
+    """SetExtra key 白名单校验(分支段 + 单个点 + 自由子键段)。"""
+    return bool(key) and bool(_SETEXTRA_KEY_RE.fullmatch(key))
+
+
+# 资源上限(§15-A6,与 types.schema.json ResourceLimits 逐字一致,防 DoS)
+RESOURCE_LIMITS: Dict[str, int] = {
+    "max_snapshot_bytes": 2 * 1024 * 1024,          # 2 MiB
+    "max_message_bytes": 512 * 1024,                # 512 KiB
+    "max_messages_per_conversation": 2000,          # 2000 条
+}
+
+# 消息角色白名单(协议 Message.role)
+_MESSAGE_ROLES = ("user", "assistant", "system", "tool")
+
+
+def make_message(role: str, content: Union[str, List[Block]]) -> Message:
+    """构造一条协议 Message(role 白名单校验,非法抛 ValueError)。"""
+    if role not in _MESSAGE_ROLES:
+        raise ValueError(
+            f"非法消息角色 {role!r}(可选: {', '.join(_MESSAGE_ROLES)})"
+        )
+    return {"role": role, "content": content}
+
+
+def validate_message_shape(m: Message) -> Optional[str]:
+    """单条消息结构校验(角色白名单 + content 形态,协议 schema 级)。
+
+    合法返回 None;非法返回错误描述。这是逐条入站校验,
+    与 :func:`validate_messages`(LLM 前交替校验)分层。
+    """
+    if not isinstance(m, dict):
+        return f"消息必须是对象,实际 {type(m).__name__}"
+    role = m.get("role")
+    if role not in _MESSAGE_ROLES:
+        return f"消息角色非法 {role!r}(可选: {', '.join(_MESSAGE_ROLES)})"
+    content = m.get("content")
+    if content is None:
+        return "消息缺少 content"
+    if isinstance(content, str):
+        return None
+    if isinstance(content, list):
+        for i, b in enumerate(content):
+            if not isinstance(b, dict):
+                return f"content block {i} 必须是对象,实际 {type(b).__name__}"
+            btype = b.get("type")
+            if btype not in ("text", "tool_use", "tool_result", "thinking"):
+                return f"content block {i} 类型非法 {btype!r}"
+        return None
+    return f"content 必须是字符串或 block 列表,实际 {type(content).__name__}"
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """ContextSnapshot 值对象:不可变、只读、可序列化(协议 §4,types 域 §4)。
+
+    字段与 PROTOCOL/types.schema.json 的 Snapshot 逐字一致。
+    ``revision`` 由 host 独占递增(§18.2),扩展只读;本阶段仅定义结构,
+    快照推进/递增逻辑随阶段 2 的 action 应用落地。
+    """
+
+    session_id: str
+    user_input: str
+    round: int = 0
+    started_at: str = ""
+    history: List[Message] = field(default_factory=list)
+    system_text: str = ""
+    messages: List[Message] = field(default_factory=list)
+    tools: List[Dict[str, Any]] = field(default_factory=list)
+    extra: Dict[str, Any] = field(default_factory=dict)
+    stop: bool = False
+    revision: int = 0
+    #: 实现层内部字段(不进协议序列化,11 键保持与 types.schema.json 一致):
+    #: SetStop action 的 reason,供 done(intercepted) 事件呈现
+    stop_reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化为协议快照 dict(与 types.schema.json 结构一致,不含 stop_reason)。"""
+        return {
+            "session_id": self.session_id,
+            "user_input": self.user_input,
+            "round": self.round,
+            "started_at": self.started_at,
+            "history": list(self.history),
+            "system_text": self.system_text,
+            "messages": list(self.messages),
+            "tools": list(self.tools),
+            "extra": dict(self.extra),
+            "stop": self.stop,
+            "revision": self.revision,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Snapshot":
+        """从协议快照 dict 构造(必填字段缺失抛 ValueError)。"""
+        required = (
+            "session_id", "user_input", "round", "started_at", "history",
+            "system_text", "messages", "tools", "extra", "stop", "revision",
+        )
+        missing = [k for k in required if k not in d]
+        if missing:
+            raise ValueError(f"快照缺少必填字段: {', '.join(missing)}")
+        return cls(
+            session_id=d["session_id"],
+            user_input=d["user_input"],
+            round=int(d["round"]),
+            started_at=str(d["started_at"]),
+            history=list(d["history"]),
+            system_text=str(d["system_text"]),
+            messages=list(d["messages"]),
+            tools=list(d["tools"]),
+            extra=dict(d["extra"]),
+            stop=bool(d["stop"]),
+            revision=int(d["revision"]),
+        )
+
+    def validate(self) -> Optional[str]:
+        """快照结构校验(命名约束 + 字段类型,协议 schema 级)。
+
+        合法返回 None;非法返回错误描述。revision 单调性由 host 侧
+        递增逻辑保证,此处只校验形状。
+        """
+        if not self.session_id or not isinstance(self.session_id, str):
+            return "snapshot.session_id 必须是非空字符串"
+        if not isinstance(self.revision, int) or self.revision < 0:
+            return "snapshot.revision 必须是非负整数"
+        for key in self.extra:
+            if not is_valid_setextra_key(str(key)):
+                return f"snapshot.extra 含非法 SetExtra key: {key!r}"
+        for i, m in enumerate(self.messages):
+            problem = validate_message_shape(m)
+            if problem:
+                return f"snapshot.messages[{i}]: {problem}"
+        return None
+
+    def with_messages(self, messages: List[Message]) -> "Snapshot":
+        """结构共享推进:仅替换 messages(新列表 + 共享元素引用,§18.2)。"""
+        return replace(self, messages=messages)
+
+    def with_tools(self, tools: List[Dict[str, Any]]) -> "Snapshot":
+        return replace(self, tools=list(tools))
+
+    def with_round(self, round_: int) -> "Snapshot":
+        return replace(self, round=round_)
+
+    def with_extra(self, extra: Dict[str, Any]) -> "Snapshot":
+        return replace(self, extra=dict(extra))
+
+    def with_stop(self, stop: bool = True, reason: Optional[str] = None) -> "Snapshot":
+        return replace(self, stop=stop, stop_reason=reason)

@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/storage/v1.0.0",
+  "title": "storage 域 — 存储 SPI 消息",
+  "description": "扩展经 transport storage_* 消息访问宿主通用存储。kind 前缀隔离(读写都隔离)在消息层强制。",
+  "definitions": {
+    "kind": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.]+$"
+    },
+    "StorageWrite": {
+      "type": "object",
+      "properties": {
+        "kind": { "$ref": "#/definitions/kind" },
+        "docs": {
+          "type": "array",
+          "items": { "type": "object" },
+          "minItems": 1,
+          "description": "支持批量写入(单次往返多条)。"
+        }
+      },
+      "required": ["kind", "docs"],
+      "additionalProperties": false
+    },
+    "StorageRead": {
+      "type": "object",
+      "properties": {
+        "kind": { "$ref": "#/definitions/kind" },
+        "doc_id": { "type": "string" }
+      },
+      "required": ["kind", "doc_id"],
+      "additionalProperties": false
+    },
+    "StorageQuery": {
+      "type": "object",
+      "properties": {
+        "kind": { "$ref": "#/definitions/kind" },
+        "filters": { "type": "object" },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "防全量加载。"
+        }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "StorageDelete": {
+      "type": "object",
+      "properties": {
+        "kind": { "$ref": "#/definitions/kind" },
+        "doc_id": { "type": "string" }
+      },
+      "required": ["kind", "doc_id"],
+      "additionalProperties": false
+    },
+    "StorageProviderResult": {
+      "type": "object",
+      "description": "storage 消息返回结果。",
+      "properties": {
+        "doc_ids": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "write 批量返回 doc_id 数组。"
+        },
+        "doc": {
+          "type": ["object", "null"],
+          "description": "read 返回单个 doc; 未命中返回 null。"
+        },
+        "docs": {
+          "type": ["array", "null"],
+          "items": { "type": "object" },
+          "description": "query 返回 doc 数组。"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

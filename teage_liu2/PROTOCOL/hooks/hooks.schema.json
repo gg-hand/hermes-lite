@@ -1,0 +1,140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/hooks/v1.0.0",
+  "title": "hooks 域 — 钩子交互模型",
+  "description": "核心交互模型: core 与扩展之间交换不可变快照与 Action 消息。扩展只能经快照+action 与宿主交互。",
+  "definitions": {
+    "HookName": {
+      "enum": [
+        "setup", "teardown", "build_injections", "inject_round", "before",
+        "pre_tool_call", "on_tool_call", "post_tool_call", "after_step",
+        "after", "on_error"
+      ]
+    },
+    "ActionOp": {
+      "enum": ["AppendMessage", "SetTools", "SetExtra", "SetStop", "SetSystem", "ModifyToolSchema"]
+    },
+    "AppendMessageAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "AppendMessage" },
+        "message": {
+          "type": "object",
+          "properties": {
+            "role": { "enum": ["user"] },
+            "content": { "type": ["string", "object", "array"] }
+          },
+          "required": ["role", "content"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["op", "message"],
+      "additionalProperties": false
+    },
+    "SetToolsAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "SetTools" },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "input_schema": { "type": "object" }
+            },
+            "required": ["name", "description", "input_schema"],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": ["op", "tools"],
+      "additionalProperties": false
+    },
+    "SetExtraAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "SetExtra" },
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+\\.[a-z0-9_.]+$"
+        },
+        "value": {}
+      },
+      "required": ["op", "key", "value"],
+      "additionalProperties": false
+    },
+    "SetStopAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "SetStop" },
+        "reason": { "type": "string" }
+      },
+      "required": ["op", "reason"],
+      "additionalProperties": false
+    },
+    "SetSystemAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "SetSystem" },
+        "text": { "type": "string" }
+      },
+      "required": ["op", "text"],
+      "additionalProperties": false
+    },
+    "ModifyToolSchemaAction": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "ModifyToolSchema" },
+        "name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "input_schema": { "type": ["object", "null"] }
+      },
+      "required": ["op", "name"],
+      "additionalProperties": false
+    },
+    "Action": {
+      "type": "object",
+      "oneOf": [
+        { "$ref": "#/definitions/AppendMessageAction" },
+        { "$ref": "#/definitions/SetToolsAction" },
+        { "$ref": "#/definitions/SetExtraAction" },
+        { "$ref": "#/definitions/SetStopAction" },
+        { "$ref": "#/definitions/SetSystemAction" },
+        { "$ref": "#/definitions/ModifyToolSchemaAction" }
+      ]
+    },
+    "ActionResult": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Action" }
+        }
+      },
+      "required": ["actions"],
+      "additionalProperties": false
+    },
+    "Invocation": {
+      "type": "object",
+      "properties": {
+        "hook": { "$ref": "#/definitions/HookName" },
+        "snapshot": { "type": "object" },
+        "args": { "type": "object" }
+      },
+      "required": ["hook", "snapshot", "args"],
+      "additionalProperties": false
+    },
+    "ToolDecision": {
+      "type": "object",
+      "properties": {
+        "decision": { "enum": ["allow", "reject", "modify"] },
+        "input": { "type": ["object", "null"] },
+        "reason": { "type": ["string", "null"] }
+      },
+      "required": ["decision"],
+      "additionalProperties": false
+    }
+  }
+}

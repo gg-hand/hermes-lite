@@ -1,0 +1,44 @@
+{
+  "id": "transport-frame-10",
+  "protocol_version": "v1.0.0",
+  "description": "transport 帧协议(§9/§18.3/§15-A7): 帧 {type,payload,encoding,protocol_version} 4 键齐整; 非法消息类型 / 非法 encoding / 非 JSON / 缺字段一律拒绝; 帧长上限 4MiB; JSON 嵌套深度上限 64; delta 帧为 {base_revision,ops} 形态(与 action 语义对齐), base_revision 不匹配 → 请求 full 重发(delta 仅优化传输, 不承载正确性)。",
+  "setup": {
+    "extensions": []
+  },
+  "inputs": {
+    "session_id": "s-10",
+    "user_input": "transport 帧协议测试",
+    "frames": {
+      "valid_full": { "type": "invoke_hook", "payload": { "hook": "before", "snapshot": {}, "args": {} }, "encoding": "full", "protocol_version": "v1.0.0" },
+      "invalid_type": { "type": "nope", "payload": {}, "encoding": "full", "protocol_version": "v1.0.0" },
+      "invalid_encoding": { "type": "invoke_hook", "payload": {}, "encoding": "msgpack", "protocol_version": "v1.0.0" },
+      "invalid_json": "not-json",
+      "missing_fields": { "type": "invoke_hook" },
+      "delta_valid": { "type": "invoke_hook", "payload": { "base_revision": 3, "ops": [] }, "encoding": "delta", "protocol_version": "v1.0.0" },
+      "delta_bad_revision": { "type": "invoke_hook", "payload": { "base_revision": "x", "ops": [] }, "encoding": "delta", "protocol_version": "v1.0.0" }
+    },
+    "limits": {
+      "frame_max_bytes": 4194304,
+      "json_max_depth": 64
+    }
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:frame_result",
+        "payload": {
+          "valid_full_decoded": { "type": "boolean" },
+          "invalid_type_rejected": { "type": "boolean" },
+          "invalid_encoding_rejected": { "type": "boolean" },
+          "invalid_json_rejected": { "type": "boolean" },
+          "missing_fields_rejected": { "type": "boolean" },
+          "delta_valid_decoded": { "type": "boolean" },
+          "delta_bad_revision_rejected": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

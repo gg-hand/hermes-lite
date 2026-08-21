@@ -6,6 +6,10 @@
 - 敏感字段分离(实际值写 .env,config.yaml 保留占位符)+ GET 脱敏 / PUT 还原
 - 关键 API Key 启动校验(llm.main_api_key 缺失阻止启动)
 - LLM 超时默认值(activity_timeout / stream_total_timeout)
+
+F1/F2(计划 §6.7):core 段严格校验 —— core_config_from(cfg) -> CoreConfig:
+类型 + 范围 + **未知键拒绝**(防 typo 静默失效,老系统踩过的坑);
+失败抛 ValueError = 启动失败。
 """
 
 from __future__ import annotations
@@ -13,11 +17,16 @@ from __future__ import annotations
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 from dotenv import load_dotenv
+
+from .modes import MODE_BARE, MODE_LOOP
+from .injection import _ALL_LAYERS
+from .types import RESOURCE_LIMITS
 
 # .env 兜底加载(override=True 保证 PUT /config 写入 .env 的新 Key 重启后生效)
 load_dotenv(override=True)
@@ -266,3 +275,128 @@ def load_config(config_path: str = "config.yaml") -> dict:
     _config_cache_mtime = current_mtime
     _config_cache_path = str(config_file)
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# F1/F2:core 段严格校验(计划 §6.7)
+# ---------------------------------------------------------------------------
+_CORE_ALLOWED_KEYS = {
+    "mode", "max_loops", "system_prompt", "hook_timeout",
+    "history_window_messages", "injection_budget_chars", "branches",
+    # §15-A6 资源上限独立配置项(防 DoS;与 history_window_messages/max_loops
+    # 语义不同,不得复用;默认 = 协议常量 RESOURCE_LIMITS)
+    "max_snapshot_bytes", "max_message_bytes", "max_messages_per_conversation",
+}
+_CORE_VALID_MODES = (MODE_BARE, MODE_LOOP)
+_INJECTION_LAYERS = set(_ALL_LAYERS)
+
+
+@dataclass
+class CoreConfig:
+    """core 段配置(严格校验后的强类型视图,默认值填充)。"""
+
+    mode: str = MODE_LOOP
+    max_loops: int = 50
+    system_prompt: Optional[str] = None
+    hook_timeout: float = 5.0
+    history_window_messages: int = 100
+    injection_budget_chars: Optional[Dict[str, int]] = None
+    branches: Dict[str, Any] = field(default_factory=dict)
+    # §15-A6 资源上限(默认 = 协议常量;不可无界)
+    max_snapshot_bytes: int = RESOURCE_LIMITS["max_snapshot_bytes"]
+    max_message_bytes: int = RESOURCE_LIMITS["max_message_bytes"]
+    max_messages_per_conversation: int = RESOURCE_LIMITS["max_messages_per_conversation"]
+
+
+def _require_int_range(value: Any, key: str, lo: int, hi: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"core.{key} 必须是整数,实际 {value!r}")
+    if not (lo <= value <= hi):
+        raise ValueError(f"core.{key} 超出范围 [{lo}, {hi}]: {value}")
+    return value
+
+
+def _require_float_range(value: Any, key: str, lo: float, hi: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"core.{key} 必须是数字,实际 {value!r}")
+    value = float(value)
+    if not (lo <= value <= hi):
+        raise ValueError(f"core.{key} 超出范围 [{lo}, {hi}]: {value}")
+    return value
+
+
+def core_config_from(cfg: dict) -> CoreConfig:
+    """core 段严格校验:未知键拒绝 + 类型 + 范围(防 typo 静默失效)。
+
+    失败抛 ValueError = 启动失败(可读错误);core 段缺失 → 全默认值。
+    """
+    if cfg is None:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"配置根必须是映射,实际 {type(cfg).__name__}")
+    raw = cfg.get("core") or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"core 段必须是映射,实际 {type(raw).__name__}")
+
+    unknown = sorted(set(raw) - _CORE_ALLOWED_KEYS)
+    if unknown:
+        raise ValueError(
+            f"core 段包含未知配置键: {', '.join(unknown)}"
+            f"(可用: {', '.join(sorted(_CORE_ALLOWED_KEYS))})"
+        )
+
+    mode = raw.get("mode", MODE_LOOP)
+    if mode not in _CORE_VALID_MODES:
+        raise ValueError(
+            f"core.mode 非法: {mode!r}(可选: {', '.join(_CORE_VALID_MODES)})"
+        )
+
+    system_prompt = raw.get("system_prompt")
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise ValueError(f"core.system_prompt 必须是字符串,实际 {system_prompt!r}")
+
+    budget = raw.get("injection_budget_chars")
+    if budget is not None:
+        if not isinstance(budget, dict):
+            raise ValueError(
+                f"core.injection_budget_chars 必须是映射(层名 → 字符数),"
+                f"实际 {type(budget).__name__}"
+            )
+        unknown_layers = sorted(set(budget) - _INJECTION_LAYERS)
+        if unknown_layers:
+            raise ValueError(
+                f"core.injection_budget_chars 包含未知注入层: {', '.join(unknown_layers)}"
+                f"(可用: {', '.join(sorted(_INJECTION_LAYERS))})"
+            )
+        for layer, chars in budget.items():
+            _require_int_range(chars, f"injection_budget_chars.{layer}", 100, 100000)
+
+    branches = raw.get("branches", {})
+    if not isinstance(branches, dict):
+        raise ValueError(f"core.branches 必须是映射,实际 {type(branches).__name__}")
+
+    return CoreConfig(
+        mode=mode,
+        max_loops=_require_int_range(raw.get("max_loops", 50), "max_loops", 1, 200),
+        system_prompt=system_prompt,
+        hook_timeout=_require_float_range(raw.get("hook_timeout", 5.0), "hook_timeout", 0.1, 60.0),
+        history_window_messages=_require_int_range(
+            raw.get("history_window_messages", 100), "history_window_messages", 1, 10000
+        ),
+        injection_budget_chars=budget,
+        branches=branches,
+        # §15-A6 资源上限(默认 = 协议常量;可配置但不可无界)
+        max_snapshot_bytes=_require_int_range(
+            raw.get("max_snapshot_bytes", RESOURCE_LIMITS["max_snapshot_bytes"]),
+            "max_snapshot_bytes", 1 * 1024 * 1024, 256 * 1024 * 1024,
+        ),
+        max_message_bytes=_require_int_range(
+            raw.get("max_message_bytes", RESOURCE_LIMITS["max_message_bytes"]),
+            "max_message_bytes", 1024, 16 * 1024 * 1024,
+        ),
+        max_messages_per_conversation=_require_int_range(
+            raw.get("max_messages_per_conversation",
+                    RESOURCE_LIMITS["max_messages_per_conversation"]),
+            "max_messages_per_conversation", 100, 100000,
+        ),
+    )

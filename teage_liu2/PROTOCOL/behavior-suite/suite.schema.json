@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/behavior-suite/suite/v1.0.0",
+  "title": "行为套件黄金用例",
+  "description": "协议级黄金用例集: 每个用例以 JSON 定义, 不依赖任何语言的测试框架。每个宿主实现运行同一套用例并报告通过率。用途 = v1.0 冻结前提 + 新宿主实现验收门槛 + 协议-实现漂移的持续审计工具(维护归 evolution 域)。",
+  "definitions": {
+    "ExtensionSetup": {
+      "type": "object",
+      "description": "用例的扩展配置。",
+      "properties": {
+        "name": { "type": "string" },
+        "lang": { "type": "string" },
+        "transport": { "enum": ["stdio", "in-process"] },
+        "protocol_version": { "type": "string" },
+        "hooks_implemented": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["name", "lang", "transport", "protocol_version", "hooks_implemented", "capabilities"],
+      "additionalProperties": false
+    },
+    "EventExpectation": {
+      "type": "object",
+      "description": "期望事件(有序逐项匹配; 'absent: true' 项为全程负断言, 不参与有序逐项匹配)。",
+      "properties": {
+        "type": { "type": "string" },
+        "absent": { "const": true },
+        "payload": { "$ref": "matcher.schema.json#/definitions/ObjectMatcher" }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    },
+    "InvocationExpectation": {
+      "type": "object",
+      "description": "钩子调用序断言(正序/逆序/跳过/短路)。",
+      "properties": {
+        "hook": { "type": "string" },
+        "extension": { "type": "string" },
+        "order": { "type": ["integer", "string"], "description": "调用序(整数 = 绝对位置; 'last' = 末位)。" },
+        "absent": { "const": true },
+        "snapshot_assert": { "$ref": "matcher.schema.json#/definitions/SnapshotAssert" },
+        "actions_assert": { "$ref": "matcher.schema.json#/definitions/ActionAssert" },
+        "isolation": {
+          "type": ["object", "null"],
+          "description": "隔离断言: timeout/error → skip(该扩展被跳过且不中断对话)。",
+          "properties": {
+            "timeout": { "type": "boolean" },
+            "error": { "type": "boolean" }
+          }
+        }
+      },
+      "required": ["hook", "extension"],
+      "additionalProperties": true
+    },
+    "FinalExpectation": {
+      "type": "object",
+      "description": "收尾断言(选配)。",
+      "properties": {
+        "termination_reason": { "type": "string" },
+        "is_complete": { "type": "boolean" },
+        "persisted": {
+          "type": ["object", "null"],
+          "description": "落盘断言(如消息已写入历史库)。"
+        }
+      },
+      "additionalProperties": true
+    },
+    "Expected": {
+      "type": "object",
+      "properties": {
+        "event_stream": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/EventExpectation" }
+        },
+        "invocations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/InvocationExpectation" }
+        },
+        "final": { "$ref": "#/definitions/FinalExpectation" }
+      },
+      "additionalProperties": false
+    },
+    "TestCase": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "protocol_version": { "type": "string" },
+        "description": { "type": "string" },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "extensions": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/ExtensionSetup" }
+            }
+          },
+          "required": ["extensions"],
+          "additionalProperties": false
+        },
+        "inputs": {
+          "type": "object",
+          "description": "用例输入(如 session_id / user_input / system / tools)。"
+        },
+        "expected": { "$ref": "#/definitions/Expected" }
+      },
+      "required": ["id", "protocol_version", "description", "setup", "inputs", "expected"],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "suite_version": { "type": "string" },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/TestCase" }
+    }
+  },
+  "required": ["suite_version", "cases"]
+}

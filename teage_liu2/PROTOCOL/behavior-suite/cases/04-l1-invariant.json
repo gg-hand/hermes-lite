@@ -1,0 +1,66 @@
+{
+  "id": "l1-invariant-04",
+  "protocol_version": "v1.0.0",
+  "description": "L1 不变量(负断言): text_delta / reasoning_delta 逐字增量绝不进 transport、绝不投 L3——任何扩展(含 observe 扩展)都不接收 L1。transport 的 event 消息只承载 L3 观测通知。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_observer",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": ["observe"]
+      },
+      {
+        "name": "ext_remote",
+        "lang": "rust",
+        "transport": "stdio",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-04",
+    "user_input": "流式输出测试",
+    "llm_text_deltas": ["你好", "世界"],
+    "llm_reasoning_deltas": ["推理1", "推理2"]
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "after_step",
+        "extension": "ext_observer",
+        "order": 1
+      },
+      {
+        "hook": "after_step",
+        "extension": "ext_remote",
+        "order": 2
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "text_delta",
+        "absent": true
+      },
+      {
+        "type": "reasoning_delta",
+        "absent": true
+      },
+      {
+        "type": "done",
+        "payload": {
+          "is_complete": true,
+          "termination_reason": "normal"
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/errors/v1.0.0",
+  "title": "errors 域 — 终止原因与错误码",
+  "description": "终止原因描述对话如何结束, 错误码描述具体失败点。错误责任矩阵协议化: 每个错误码有捕获层、上报方式、兜底行为。",
+  "definitions": {
+    "TerminationReason": {
+      "type": "string",
+      "enum": [
+        "normal", "max_loops", "user_cancel", "no_tool_executor",
+        "llm_error", "intercepted", "tool_rejected"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "LLM_TIMEOUT", "LLM_CANCELED", "LLM_STREAM_FAILED", "LLM_API_ERROR",
+        "LOOP_MAX_REACHED",
+        "HOOK_TIMEOUT", "HOOK_EXCEPTION", "HOOK_INVALID_ACTION", "HOOK_TERMINAL_ACTION_IGNORED",
+        "TOOL_NO_EXECUTOR", "TOOL_EXEC_FAILED", "TOOL_REJECTED_BY_POLICY", "TOOL_MODIFY_INVALID",
+        "STORAGE_WRITE_FAILED", "STORAGE_READ_FAILED",
+        "CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE", "CONFIG_MISSING_KEY"
+      ]
+    },
+    "ErrorInfo": {
+      "type": "object",
+      "properties": {
+        "code": { "$ref": "#/definitions/ErrorCode" },
+        "message": { "type": "string" }
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    },
+    "ErrorResponsibility": {
+      "type": "object",
+      "description": "错误责任矩阵条目(捕获层/上报方式/兜底行为)。",
+      "properties": {
+        "code": { "$ref": "#/definitions/ErrorCode" },
+        "capture_layer": { "type": "string" },
+        "report": { "type": "string" },
+        "fallback": { "type": "string" }
+      },
+      "required": ["code", "capture_layer", "report", "fallback"],
+      "additionalProperties": false
+    }
+  }
+}

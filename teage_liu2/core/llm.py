@@ -1031,12 +1031,54 @@ class LLMClient:
             api_key=self.main_api_key,
             base_url=self.main_base_url,
         )
+        # 多角色路由表(§5 invoke_llm / §17 老系统 consolidation 承接):
+        # role → backend;v1.0 仅 main 必配;consolidation 可选(记忆巩固类扩展,
+        # 配置缺失时降级 main 后端 —— 主对话不中断,§0 降级优先)
+        self._role_backends: Dict[str, AsyncBaseBackend] = {
+            "main": self._main_backend,
+        }
+        consolidation = self._build_consolidation_backend(llm_config)
+        if consolidation is not None:
+            self._role_backends["consolidation"] = consolidation
+            logger.info("LLMClient 多角色路由: consolidation=%s/%s", consolidation.provider_id, consolidation.model)
         logger.info(
-            "LLMClient 初始化完成: main=%s/%s, activity_timeout=%.1fs, "
+            "LLMClient 初始化完成: main=%s/%s, roles=%s, activity_timeout=%.1fs, "
             "stream_total_timeout=%.1fs",
-            self.main_provider, self.main_model,
+            self.main_provider, self.main_model, sorted(self._role_backends),
             self._activity_timeout, self._stream_total_timeout,
         )
+
+    def _build_consolidation_backend(
+        self, llm_config: Dict[str, Any]
+    ) -> Optional[AsyncBaseBackend]:
+        """构建 consolidation 角色后端(§17:承接老系统记忆巩固 LLM 调用)。
+
+        配置齐全(provider/model/api_key)才构建;缺失 → None(降级 main,不静默失败)。
+        """
+        provider = (llm_config.get("consolidation_provider") or "").strip()
+        model = (llm_config.get("consolidation_model") or "").strip()
+        api_key = llm_config.get("consolidation_api_key") or ""
+        if not provider or not model:
+            return None
+        if not api_key:
+            env_name = _PROVIDER_DEFAULT_ENV_KEY.get(provider.lower(), "API_KEY")
+            api_key = os.environ.get(env_name, "")
+        if not api_key:
+            logger.warning(
+                "llm.consolidation_* 已配置但 API Key 缺失(consolidation 后端不可用,"
+                "invoke_llm role=consolidation 将降级 main 后端)"
+            )
+            return None
+        try:
+            return _create_backend(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=llm_config.get("consolidation_base_url") or None,
+            )
+        except (ValueError, RuntimeError) as e:
+            logger.warning("consolidation 后端初始化失败,降级 main 后端: %s", e)
+            return None
 
     @staticmethod
     def _resolve_api_key(config_value: Optional[str], provider: str) -> str:
@@ -1053,6 +1095,27 @@ class LLMClient:
     @property
     def stream_total_timeout(self) -> float:
         return self._stream_total_timeout
+
+    async def chat_role(
+        self,
+        role: str,
+        messages: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        """invoke_llm 通道(§5/§17):按 role 多角色路由的非流式 LLM 调用。
+
+        路由规则:v1.0 已配置的 role(main / consolidation)→ 对应后端;
+        未知/未配置 role → 降级 main 后端(降级优先,主对话不中断)。
+        非流式(LLMAdapter 直调,协议级防重入 —— 不进 pipeline/钩子链)。
+        """
+        backend = self._role_backends.get(role) or self._main_backend
+        if role not in self._role_backends:
+            logger.debug("invoke_llm role=%r 后端未配置,降级 main 后端", role)
+        return await backend.chat(
+            messages=messages, tools=tools, system=system, max_tokens=max_tokens,
+        )
 
     async def chat_main(
         self,
@@ -1148,12 +1211,23 @@ class LLMClient:
         return total
 
     def close(self) -> None:
-        """关闭底层客户端(释放连接池)。"""
+        """关闭底层客户端(释放连接池)。
+
+        注意:anthropic/openai SDK 的 ``client.close()`` 返回 coroutine;
+        这里不做 await(接口保持同步),改为调度到事件循环,避免
+        "coroutine was never awaited" RuntimeWarning。
+        """
         for attr in ("_main_backend",):
             backend = getattr(self, attr, None)
             client = getattr(backend, "_client", None)
             if client is not None and hasattr(client, "close"):
                 try:
-                    client.close()
+                    result = client.close()
+                    if asyncio.iscoroutine(result):
+                        try:
+                            asyncio.get_running_loop().create_task(result)
+                        except RuntimeError:
+                            # 事件循环已关闭(进程退出中):连接由 GC 回收,忽略
+                            pass
                 except Exception as e:
                     logger.warning("关闭 LLM 客户端失败: %s", e)

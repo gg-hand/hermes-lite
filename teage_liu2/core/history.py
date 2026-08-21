@@ -20,12 +20,18 @@
 from __future__ import annotations
 
 import abc
+import json
+import logging
 import os
 import sqlite3
 import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from .storage import MessageStore
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryStore(abc.ABC):
@@ -74,8 +80,12 @@ class HistoryStore(abc.ABC):
         """关闭连接。"""
 
 
-class SQLiteHistoryStore(HistoryStore):
-    """SQLite 实现(表结构兼容老系统 sessions.db)。"""
+class SQLiteHistoryStore(HistoryStore, MessageStore):
+    """SQLite 实现(表结构兼容老系统 sessions.db)。
+
+    D1 消息级落盘:实现 MessageStore 契约 —— messages 表加 content_blocks 列
+    (JSON,LLM 重建/工具配对结构),content 纯文本保 FTS;旧行回退纯文本。
+    """
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -125,6 +135,8 @@ class SQLiteHistoryStore(HistoryStore):
             _migrate_column(self.conn, "messages", "attachments", "TEXT")
             _migrate_column(self.conn, "messages", "message_type", "TEXT")
             _migrate_column(self.conn, "messages", "reasoning", "TEXT")
+            # D1 消息级落盘:content_blocks JSON 列(旧行 NULL → 回退纯文本)
+            _migrate_column(self.conn, "messages", "content_blocks", "TEXT")
             self.conn.commit()
 
     def _ensure_fts_table(self) -> None:
@@ -197,20 +209,32 @@ class SQLiteHistoryStore(HistoryStore):
         token_count: int = 0,
         is_error: bool = False,
         reasoning: Optional[str] = None,
+        content_blocks: Optional[List[dict]] = None,
+        message_type: Optional[str] = None,
     ) -> None:
-        """记录一条消息,并同步 FTS 表与会话 updated_at。"""
+        """记录一条消息(消息级),并同步 FTS 表与会话 updated_at。
+
+        - content:纯文本(保 FTS 检索)
+        - content_blocks:JSON 序列化,供 LLM 重建(工具配对结构,D1)
+        - token_count / reasoning / message_type:D3 结构化字段接线
+        """
         now = self._now_iso()
+        blocks_json = None
+        if content_blocks:
+            blocks_json = json.dumps(content_blocks, ensure_ascii=False)
         with self._lock:
             cur = self.conn.execute(
                 """
                 INSERT INTO messages
                     (session_id, role, content, tool_name, tool_call_id,
-                     token_count, is_error, created_at, reasoning)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     token_count, is_error, created_at, reasoning,
+                     content_blocks, message_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id, role, content, tool_name, tool_call_id,
                     token_count, 1 if is_error else 0, now, reasoning,
+                    blocks_json, message_type,
                 ),
             )
             message_id = cur.lastrowid
@@ -228,12 +252,21 @@ class SQLiteHistoryStore(HistoryStore):
     def get_session_messages(
         self, session_id: str, limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """获取会话全部消息(按时间正序)。"""
-        sql = "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC"
-        params: list = [session_id]
+        """获取会话全部消息(按时间正序)。
+
+        limit = 历史读取窗口(D2):取**最近** N 条(子查询倒序取后正序返回)。
+        """
         if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
+            # 最近 N 条:先按 id 倒序 LIMIT,再正序返回
+            sql = (
+                "SELECT * FROM ("
+                "  SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+                ") ORDER BY id ASC"
+            )
+            params: list = [session_id, limit]
+        else:
+            sql = "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC"
+            params = [session_id]
         cur = self.conn.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
@@ -281,8 +314,8 @@ class SQLiteHistoryStore(HistoryStore):
     def close(self) -> None:
         try:
             self.conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("关闭历史存储连接失败: %s", e)
 
 
 def _migrate_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:

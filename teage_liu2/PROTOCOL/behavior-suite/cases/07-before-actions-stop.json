@@ -1,0 +1,81 @@
+{
+  "id": "before-actions-stop-07",
+  "protocol_version": "v1.0.0",
+  "description": "before 钩子 Action 立即应用 + SetStop 短路(§4.4): 扩展 A 返回 SetExtra, 扩展 B 应看到 A 的 action 已应用进快照(snapshot.extra.a.marker=1); 扩展 B 返回 SetStop → 短路后续扩展、跳过组装收口与 LLM, 直接 done(intercepted)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_c",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-07",
+    "user_input": "before action 测试",
+    "ext_a_actions": [
+      { "op": "SetExtra", "key": "a.marker", "value": 1 }
+    ],
+    "ext_b_actions": [
+      { "op": "SetStop", "reason": "blocked" }
+    ]
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "before",
+        "extension": "ext_a",
+        "order": 1,
+        "snapshot_assert": {
+          "extra": {}
+        }
+      },
+      {
+        "hook": "before",
+        "extension": "ext_b",
+        "order": 2,
+        "snapshot_assert": {
+          "extra": { "a.marker": 1 }
+        }
+      },
+      {
+        "hook": "before",
+        "extension": "ext_c",
+        "absent": true
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "done",
+        "payload": {
+          "termination_reason": "intercepted",
+          "is_complete": false
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "intercepted",
+      "is_complete": false
+    }
+  }
+}

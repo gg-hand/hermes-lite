@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/config/v1.0.0",
+  "title": "config 域 — 配置协议",
+  "description": "配置文件 YAML(语言无关)。${ENV_VAR} 占位注入, 敏感字段分离(.env 不入库)。配置 schema(JSON Schema): core 段 + 各扩展段; 严格校验——未知键拒绝、类型/范围校验, 失败 = 启动失败。",
+  "definitions": {
+    "CoreConfig": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["loop", "bare"] },
+        "max_loops": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "system_prompt": { "type": ["string", "null"] },
+        "hook_timeout": { "type": "number", "minimum": 0.1, "maximum": 60 },
+        "history_window_messages": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "injection_budget_chars": {
+          "type": ["object", "null"],
+          "propertyNames": {
+            "enum": ["STABLE_SYSTEM", "SYSTEM", "PREFIX", "MID", "BEFORE_INPUT"]
+          }
+        },
+        "branches": { "type": "object" },
+        "max_snapshot_bytes": { "type": "integer", "minimum": 1048576, "maximum": 268435456 },
+        "max_message_bytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 },
+        "max_messages_per_conversation": { "type": "integer", "minimum": 100, "maximum": 100000 }
+      },
+      "additionalProperties": false,
+      "description": "core 段严格校验: 未知键拒绝, 失败 = 启动失败。max_snapshot_bytes / max_message_bytes / max_messages_per_conversation 为 §15-A6 资源上限独立配置项(默认 = types 域 ResourceLimits 协议常量, 与 history_window_messages/max_loops 语义不同, 不得复用顶替)。"
+    },
+    "ConfigFile": {
+      "type": "object",
+      "properties": {
+        "core": { "$ref": "#/definitions/CoreConfig" },
+        "storage": { "type": "object" },
+        "server": { "type": "object" },
+        "llm": { "type": "object" }
+      },
+      "additionalProperties": true,
+      "description": "配置根。核心段(core)严格校验; 扩展段由扩展在 setup 自校验(收到自己的配置段)。"
+    }
+  }
+}

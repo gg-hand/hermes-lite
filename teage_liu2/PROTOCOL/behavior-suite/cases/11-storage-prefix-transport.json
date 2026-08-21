@@ -1,0 +1,44 @@
+{
+  "id": "storage-prefix-transport-11",
+  "protocol_version": "v1.0.0",
+  "description": "transport storage_* 消息通道(§storage S-2/S-3/§15-A3): 宿主存储唯一合法入口 = transport storage_write/read/query/delete 消息(同语言实现亦走消息冷路径); kind 必须带 '{extension_name}.' 前缀且 extension_name 匹配 ^[a-z0-9_]+$(读写都隔离), 跨前缀访问拒绝(schema 级校验); 非法 kind(Bad;DROP)拒绝; write 支持 docs[] 批量(§18.4); query 支持 limit 防全量加载。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "audit",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-11",
+    "user_input": "transport storage_* 前缀隔离测试",
+    "storage_ops": [
+      { "op": "write", "kind": "audit.events", "docs": [{ "event": "a" }, { "event": "b" }] },
+      { "op": "query", "kind": "audit.events", "limit": 1 },
+      { "op": "read", "kind": "audit.events", "doc_id": "__first__" },
+      { "op": "write", "kind": "other.cross_prefix", "docs": [{ "forbidden": true }] },
+      { "op": "write", "kind": "Bad;DROP", "docs": [{ "forbidden": true }] }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:storage_result",
+        "payload": {
+          "write_batch_ids": { "length": 2 },
+          "query_limit_docs": { "length": 1 },
+          "cross_prefix_rejected": { "type": "boolean" },
+          "illegal_kind_rejected": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

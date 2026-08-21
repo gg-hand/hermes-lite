@@ -1,0 +1,63 @@
+{
+  "id": "tool-path-modify-08",
+  "protocol_version": "v1.0.0",
+  "description": "工具路径四连 modify 语义(§8): pre_tool_call 返回 modify(new_input) → 修改后的 input 作为实际执行输入; tool_use 事件携带 original_input 与 effective_input; tool_result 事件带 modified: true 标记; LLM 第二轮正常收尾(done normal)。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "policy",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["pre_tool_call"],
+        "capabilities": []
+      },
+      {
+        "name": "executor",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["on_tool_call"],
+        "capabilities": ["tool_executor"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-08",
+    "user_input": "工具修改测试",
+    "tool_name": "echo",
+    "tool_input": { "text": "原参" },
+    "pre_modify_input": { "text": "修改后" }
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "tool_use",
+        "payload": {
+          "name": "echo",
+          "input": { "text": "原参" },
+          "original_input": { "text": "原参" },
+          "effective_input": { "text": "修改后" }
+        }
+      },
+      {
+        "type": "tool_result",
+        "payload": {
+          "name": "echo",
+          "modified": true
+        }
+      },
+      {
+        "type": "done",
+        "payload": {
+          "termination_reason": "normal",
+          "is_complete": true
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}

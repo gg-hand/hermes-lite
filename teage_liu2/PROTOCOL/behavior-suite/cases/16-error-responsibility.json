@@ -1,0 +1,53 @@
+{
+  "id": "error-responsibility-16",
+  "protocol_version": "v1.0.0",
+  "description": "错误责任矩阵全面验收(§errors/§8): 7 终止原因全部覆盖 —— normal(自然完成)/ max_loops(达循环上限)/ user_cancel(用户取消)/ no_tool_executor(无执行者)/ llm_error(LLM 失败, 发 error 事件不产生 done)/ intercepted(before SetStop 拦截)/ tool_rejected(pre_tool_call reject 回喂)。每个终止路径的 done/error 事件语义逐条锚定。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_policy",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["pre_tool_call"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_tools",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["on_tool_call"],
+        "capabilities": ["tool_executor"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-16",
+    "user_input": "错误责任矩阵测试",
+    "scenarios": [
+      { "label": "normal", "llm": "end_turn", "expect": { "type": "done", "termination_reason": "normal", "is_complete": true } },
+      { "label": "max_loops", "llm": "tool_use_forever", "max_loops": 3, "expect": { "type": "done", "termination_reason": "max_loops", "is_complete": false } },
+      { "label": "user_cancel", "llm": "end_turn", "cancel": true, "expect": { "type": "done", "termination_reason": "user_cancel", "is_complete": false } },
+      { "label": "no_tool_executor", "llm": "tool_use", "expect": { "type": "done", "termination_reason": "no_tool_executor", "is_complete": false } },
+      { "label": "llm_error", "llm": "raise_error", "expect": { "type": "error" } },
+      { "label": "intercepted", "ext_before": "set_stop", "expect": { "type": "done", "termination_reason": "intercepted", "is_complete": false } },
+      { "label": "tool_rejected", "llm": "tool_use", "ext_policy_decision": { "decision": "reject", "input": "denied" }, "expect": { "type": "tool_result", "is_error": true } }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:error_matrix_result",
+        "payload": {
+          "scenario_count": { "type": "integer" },
+          "all_termination_reasons_covered": { "type": "boolean" },
+          "llm_error_has_no_done": { "type": "boolean" }
+        }
+      }
+    ],
+    "final": {
+      "is_complete": true
+    }
+  }
+}

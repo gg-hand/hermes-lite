@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "teage-liu2/protocol/types/v1.0.0",
+  "title": "types 域值对象",
+  "description": "core 与扩展之间一切交互值对象的语言无关定义。所有值对象不可变、可序列化、schema 化。",
+  "definitions": {
+    "SessionId": {
+      "type": "string",
+      "description": "会话唯一标识。"
+    },
+    "extension_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "description": "扩展名唯一标识。禁点(消除 '{name}.' 前缀解析歧义)。"
+    },
+    "kind": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.]+$",
+      "description": "存储 kind 命名空间。允许点。前缀 '{extension_name}.' 隔离由 transport/storage 域强制。"
+    },
+    "SetExtraKey": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+\\.[a-z0-9_.]+$",
+      "description": "SetExtra 的 key。分支段(extension_name, 无点) + 单个点 + 自由子键段(允许点)。与设计文档 §4.1/§15-A2 逐字一致。"
+    },
+    "Message": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": ["user", "assistant", "system", "tool"]
+        },
+        "content": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "$ref": "#/definitions/ContentBlock" }
+            }
+          ]
+        }
+      },
+      "required": ["role", "content"],
+      "additionalProperties": true
+    },
+    "ContentBlock": {
+      "type": "object",
+      "oneOf": [
+        {
+          "properties": {
+            "type": { "const": "text" },
+            "text": { "type": "string" }
+          },
+          "required": ["type", "text"]
+        },
+        {
+          "properties": {
+            "type": { "const": "tool_use" },
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "input": { "type": "object" }
+          },
+          "required": ["type", "id", "name", "input"]
+        },
+        {
+          "properties": {
+            "type": { "const": "tool_result" },
+            "tool_use_id": { "type": "string" },
+            "content": {
+              "oneOf": [{ "type": "string" }, { "type": "array", "items": { "$ref": "#/definitions/ContentBlock" } }]
+            },
+            "is_error": { "type": "boolean", "default": false }
+          },
+          "required": ["type", "tool_use_id", "content"]
+        },
+        {
+          "properties": {
+            "type": { "const": "thinking" },
+            "thinking": { "type": "string" },
+            "signature": { "type": "string" }
+          },
+          "required": ["type", "thinking"]
+        }
+      ]
+    },
+    "ToolSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "input_schema": { "type": "object" }
+      },
+      "required": ["name", "description", "input_schema"],
+      "additionalProperties": true
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+        "cache_creation_input_tokens": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["input_tokens", "output_tokens"],
+      "additionalProperties": true
+    },
+    "InjectionLayer": {
+      "enum": ["STABLE_SYSTEM", "SYSTEM", "PREFIX", "MID", "BEFORE_INPUT"]
+    },
+    "Injection": {
+      "type": "object",
+      "properties": {
+        "layer": { "$ref": "#/definitions/InjectionLayer" },
+        "content": { "type": "string" },
+        "priority": { "type": "integer", "default": 0 },
+        "key": { "type": ["string", "null"] }
+      },
+      "required": ["layer", "content"],
+      "additionalProperties": false
+    },
+    "Snapshot": {
+      "type": "object",
+      "description": "ContextSnapshot: 不可变、只读、可序列化的对话完整状态视图。扩展不得修改快照本身,只能返回 Action。",
+      "properties": {
+        "session_id": { "$ref": "#/definitions/SessionId" },
+        "user_input": { "type": "string" },
+        "round": { "type": "integer", "minimum": 0 },
+        "started_at": { "type": "string" },
+        "history": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Message" }
+        },
+        "system_text": { "type": "string" },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Message" }
+        },
+        "tools": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ToolSchema" }
+        },
+        "extra": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/definitions/SetExtraKey" },
+          "description": "扩展间共享数据, key 必须是 SetExtraKey 白名单。"
+        },
+        "stop": { "type": "boolean" },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "快照版本号(host 独占递增, 每次 action 批次应用后 +1; 扩展只读)。"
+        }
+      },
+      "required": [
+        "session_id", "user_input", "round", "started_at", "history",
+        "system_text", "messages", "tools", "extra", "stop", "revision"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceLimits": {
+      "type": "object",
+      "description": "资源上限(防 DoS, §15-A6)。阈值具体数值为本协议常量, 宿主实现必须实施, 不可无界。",
+      "properties": {
+        "max_snapshot_bytes": { "type": "integer", "const": 2097152 },
+        "max_message_bytes": { "type": "integer", "const": 524288 },
+        "max_messages_per_conversation": { "type": "integer", "const": 2000 }
+      },
+      "required": ["max_snapshot_bytes", "max_message_bytes", "max_messages_per_conversation"],
+      "additionalProperties": false
+    }
+  }
+}

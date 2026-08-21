@@ -1,0 +1,60 @@
+{
+  "id": "round-incremental-09",
+  "protocol_version": "v1.0.0",
+  "description": "增量收口不变量(§4.4): 每轮 step 前 inject_round 全收集 → 增量收口(merge 相邻 user + 语义级校验) → 送 LLM; 轮中 after_step/post_tool_call 的 AppendMessage 应用后, 下一次送 LLM 前同样过增量收口。本用例锚定单轮自然结束路径: inject_round 注入合并进当前 user 消息, 事件流以 step_start/step_end/done(normal) 收尾。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "round_injector",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["inject_round"],
+        "capabilities": []
+      },
+      {
+        "name": "step_observer",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after_step"],
+        "capabilities": ["observe"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-09",
+    "user_input": "轮中注入测试",
+    "round_injection_layer": "BEFORE_INPUT",
+    "round_injection_content": "轮级注入"
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "step_start" },
+      { "type": "step_end" },
+      {
+        "type": "done",
+        "payload": {
+          "termination_reason": "normal",
+          "is_complete": true
+        }
+      }
+    ],
+    "invocations": [
+      {
+        "hook": "inject_round",
+        "extension": "round_injector",
+        "order": 1
+      },
+      {
+        "hook": "after_step",
+        "extension": "step_observer",
+        "order": 1
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}

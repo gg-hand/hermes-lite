@@ -1,0 +1,51 @@
+{
+  "id": "terminal-ignore-02",
+  "protocol_version": "v1.0.0",
+  "description": "终态钩子 action 一律忽略并记录(HOOK_TERMINAL_ACTION_IGNORED)。after/on_error 返回 AppendMessage/SetSystem 等 action, core 不得应用, 对话状态不受影响; 数据写入须经 storage 通道。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_terminal",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["after", "on_error"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-02",
+    "user_input": "完成对话",
+    "ext_terminal_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "终态追加应被忽略" } },
+      { "op": "SetSystem", "text": "终态改system应被忽略" }
+    ]
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "after",
+        "extension": "ext_terminal",
+        "order": 1,
+        "actions_assert": {
+          "length": 2
+        }
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "done",
+        "payload": {
+          "is_complete": true,
+          "termination_reason": "normal",
+          "messages": { "length": 2 }
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "id": "revision-increment-05",
+  "protocol_version": "v1.0.0",
+  "description": "revision 递增不变量: 快照 revision 由 host 独占递增, 每次 action 批次应用后 +1。扩展 A、B 依序收到快照, B 看到的 revision 应比 A 大; 扩展提交的 revision 非法值(伪造/超界)一律拒绝。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_a",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_b",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-05",
+    "user_input": "revision 测试",
+    "ext_a_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "批次1" } }
+    ],
+    "ext_b_actions": [
+      { "op": "AppendMessage", "message": { "role": "user", "content": "批次2" } }
+    ],
+    "forged_revision": 9999
+  },
+  "expected": {
+    "invocations": [
+      {
+        "hook": "before",
+        "extension": "ext_a",
+        "order": 1,
+        "snapshot_assert": {
+          "revision": { "range": [0, 0] }
+        }
+      },
+      {
+        "hook": "before",
+        "extension": "ext_b",
+        "order": 2,
+        "snapshot_assert": {
+          "revision": { "range": [1, 100] }
+        }
+      }
+    ],
+    "event_stream": [
+      {
+        "type": "done",
+        "payload": {
+          "termination_reason": "normal"
+        }
+      }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "is_complete": true
+    }
+  }
+}
