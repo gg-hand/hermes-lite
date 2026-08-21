@@ -24,6 +24,10 @@ data/*
 .idea/
 .vscode/
 .zcode/
+# CodeBuddy 本地适配（rules/skills/memory 等 IDE 私有数据，不入库）
+.codebuddy/
+# IDE/MCP 工具配置（与源代码无关）
+.mcp.json
 # ── 代码索引（codegraph MCP 本地索引，可重新生成） ──
 .codegraph/
 *.swp
