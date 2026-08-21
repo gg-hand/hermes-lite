@@ -67,6 +67,17 @@ def test_ensure_session_idempotent(tmp_path):
     store.close()
 
 
+def test_get_session_messages_limit_takes_latest(tmp_path):
+    """验收(D2):limit 取**最近** N 条(按时间正序返回)。"""
+    store = SQLiteHistoryStore(str(tmp_path / "h.db"))
+    store.ensure_session("s_limit")
+    for i in range(10):
+        store.log_message("s_limit", "user", f"u{i}")
+    msgs = store.get_session_messages("s_limit", limit=3)
+    assert [m["content"] for m in msgs] == ["u7", "u8", "u9"]  # 最近 3 条,正序
+    store.close()
+
+
 def test_create_session_auto_uuid(tmp_path):
     store = SQLiteHistoryStore(str(tmp_path / "h.db"))
     sid = store.create_session()

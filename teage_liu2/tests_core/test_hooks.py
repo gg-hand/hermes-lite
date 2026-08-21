@@ -1,4 +1,8 @@
-"""钩子链契约测试:顺序 / 隔离 / 超时 / 异常跳过 / 拦截 / 注入 / 工具派发。"""
+"""钩子链契约测试(阶段 2 协议化):顺序 / 隔离 / 超时 / 异常跳过 / 拦截 / 注入 / 工具派发。
+
+新协议签名:钩子收到不可变 Snapshot,通过返回 Action 变更对话状态;
+before_all 返回 (最新快照, stop_reason or None)。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,14 @@ import asyncio
 
 import pytest
 
-from teage_liu2.core.hooks import Branch, BranchContext, HookChain, no_executor
+from teage_liu2.core.actions import SetExtra, SetStop
+from teage_liu2.core.hooks import Branch, HookChain, no_executor
+from teage_liu2.core.injection import L_PREFIX, Injection
+from teage_liu2.core.types import Snapshot
+
+
+def _snapshot(user_input: str = "hi") -> Snapshot:
+    return Snapshot(session_id="s", user_input=user_input)
 
 
 # ---------------------------------------------------------------------------
@@ -27,19 +38,17 @@ class RecordBranch(Branch):
     async def teardown(self):
         self.log.append(f"{self.tag}.teardown")
 
-    async def build_system(self, ctx):
-        self.log.append(f"{self.tag}.build_system")
-        ctx.system_text += f"[{self.tag}]"
+    async def build_injections(self, snapshot):
+        self.log.append(f"{self.tag}.build_injections")
+        return [Injection(layer=L_PREFIX, content=f"注入-{self.tag}")]
 
-    async def build_injection(self, ctx):
-        self.log.append(f"{self.tag}.build_injection")
-        return f"注入-{self.tag}"
-
-    async def before(self, ctx):
+    async def before(self, snapshot):
         self.log.append(f"{self.tag}.before")
+        return []
 
-    async def after(self, ctx, response):
+    async def after(self, snapshot, response):
         self.log.append(f"{self.tag}.after")
+        return []
 
 
 def test_hooks_order_forward_before_reverse_after():
@@ -49,14 +58,14 @@ def test_hooks_order_forward_before_reverse_after():
     chain.register(RecordBranch(log, "a"))
     chain.register(RecordBranch(log, "b"))
 
-    ctx = BranchContext("s", "hi")
-    asyncio.run(chain.build_system_all(ctx))
-    asyncio.run(chain.before_all(ctx))
-    asyncio.run(chain.after_all(ctx, None))
+    snapshot = _snapshot()
+    asyncio.run(chain.build_injections_all(snapshot))
+    asyncio.run(chain.before_all(snapshot))
+    asyncio.run(chain.after_all(snapshot, None))
     asyncio.run(chain.teardown_all())
 
-    build_system_calls = [x for x in log if x.endswith("build_system")]
-    assert build_system_calls == ["a.build_system", "b.build_system"]
+    build_injections_calls = [x for x in log if x.endswith("build_injections")]
+    assert build_injections_calls == ["a.build_injections", "b.build_injections"]
     before_calls = [x for x in log if x.endswith("before")]
     assert before_calls == ["a.before", "b.before"]
     after_calls = [x for x in log if x.endswith("after")]
@@ -65,18 +74,17 @@ def test_hooks_order_forward_before_reverse_after():
     assert teardown_calls == ["b.teardown", "a.teardown"]
 
 
-def test_build_system_and_injection():
-    """验收:build_system 追加稳定前缀;build_injection 汇总注入文本。"""
+def test_build_injections_collect():
+    """验收:build_injections 汇总全部枝干的注入声明(注册序)。"""
     chain = HookChain()
     chain.register(RecordBranch([], "a"))
     chain.register(RecordBranch([], "b"))
 
-    ctx = BranchContext("s", "hi")
-    asyncio.run(chain.build_system_all(ctx))
-    injection = asyncio.run(chain.build_injection_all(ctx))
+    snapshot = _snapshot()
+    items = asyncio.run(chain.build_injections_all(snapshot))
 
-    assert ctx.system_text == "[a][b]"
-    assert injection == "注入-a\n\n注入-b"
+    assert [i.content for i in items] == ["注入-a", "注入-b"]
+    assert all(i.layer == L_PREFIX for i in items)
 
 
 # ---------------------------------------------------------------------------
@@ -90,11 +98,12 @@ class FailingBranch(Branch):
     def __init__(self, mode="raise"):
         self.mode = mode
 
-    async def before(self, ctx):
+    async def before(self, snapshot):
         if self.mode == "raise":
             raise RuntimeError("枝干故障")
         if self.mode == "timeout":
             await asyncio.sleep(10)
+        return []
 
 
 def test_hook_exception_skips_branch_only():
@@ -105,9 +114,8 @@ def test_hook_exception_skips_branch_only():
     chain.register(FailingBranch(mode="raise"))
     chain.register(RecordBranch(log, "c"))
 
-    ctx = BranchContext("s", "hi")
-    asyncio.run(chain.before_all(ctx))
-    assert not ctx.stop  # 对话未被破坏
+    snapshot, _ = asyncio.run(chain.before_all(_snapshot()))
+    assert not snapshot.stop  # 对话未被破坏
     assert log.count("a.before") == 1
     assert log.count("c.before") == 1
 
@@ -120,38 +128,54 @@ def test_hook_timeout_skips_branch():
     chain.register(FailingBranch(mode="timeout"))
     chain.register(RecordBranch(log, "c"))
 
-    ctx = BranchContext("s", "hi")
-    asyncio.run(chain.before_all(ctx))
-    assert not ctx.stop
+    snapshot, _ = asyncio.run(chain.before_all(_snapshot()))
+    assert not snapshot.stop
     assert log.count("c.before") == 1  # 超时枝干被跳过,c 正常执行
 
 
 # ---------------------------------------------------------------------------
-# 拦截与工具派发
+# 拦截(SetStop 短路)与 Action 应用
 # ---------------------------------------------------------------------------
 class StopBranch(Branch):
-    """before 置 stop 拦截对话。"""
+    """before 返回 SetStop 拦截对话。"""
 
     name = "stopper"
 
-    async def before(self, ctx):
-        ctx.stop = True
+    async def before(self, snapshot):
+        return [SetStop(reason="test")]
 
 
 def test_before_stop_intercepts():
-    """验收:枝干置 ctx.stop → before 链提前终止。"""
+    """验收:枝干返回 SetStop → before 链提前终止,后续枝干不被调用。"""
     log = []
     chain = HookChain()
     chain.register(RecordBranch(log, "a"))
     chain.register(StopBranch())
     chain.register(RecordBranch(log, "c"))
 
-    ctx = BranchContext("s", "hi")
-    asyncio.run(chain.before_all(ctx))
-    assert ctx.stop is True
-    assert log.count("c.before") == 0  # stop 后不再调用后续枝干
+    snapshot, stop_reason = asyncio.run(chain.before_all(_snapshot()))
+    assert snapshot.stop is True
+    assert stop_reason == "test"
+    assert log.count("c.before") == 0  # SetStop 后不再调用后续枝干
 
 
+def test_before_extra_applied_to_snapshot():
+    """验收:before 返回 SetExtra → action 立即应用进快照(后扩展可见)。"""
+    class ExtraBranch(Branch):
+        name = "extra"
+
+        async def before(self, snapshot):
+            return [SetExtra(key="a.b", value=1)]
+
+    chain = HookChain()
+    chain.register(ExtraBranch())
+    snapshot, _ = asyncio.run(chain.before_all(_snapshot()))
+    assert snapshot.extra == {"a.b": 1}
+
+
+# ---------------------------------------------------------------------------
+# 工具派发
+# ---------------------------------------------------------------------------
 class ToolBranch(Branch):
     """实现 on_tool_call 的枝干。"""
 
@@ -161,7 +185,7 @@ class ToolBranch(Branch):
         self.results = results or {}
         self.calls = []
 
-    async def on_tool_call(self, ctx, tool_name, tool_input):
+    async def on_tool_call(self, snapshot, tool_name, tool_input):
         self.calls.append((tool_name, tool_input))
         if tool_name in self.results:
             return self.results[tool_name]
@@ -174,13 +198,13 @@ def test_dispatch_tool_call_first_executor_wins():
     chain.register(ToolBranch(results={}))
     chain.register(ToolBranch(results={"web_search": "结果B"}))
 
-    ctx = BranchContext("s", "hi")
+    snapshot = _snapshot()
     # 第一个枝干未实现 web_search → 交给第二个
-    result = asyncio.run(chain.dispatch_tool_call(ctx, "web_search", {"q": "x"}))
+    result = asyncio.run(chain.dispatch_tool_call(snapshot, "web_search", {"q": "x"}))
     assert result == "结果B"
 
     # 全部未实现 → no_executor 哨兵
-    result2 = asyncio.run(chain.dispatch_tool_call(ctx, "unknown_tool", {}))
+    result2 = asyncio.run(chain.dispatch_tool_call(snapshot, "unknown_tool", {}))
     assert no_executor(result2)
 
 

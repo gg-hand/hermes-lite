@@ -6,14 +6,14 @@ import asyncio
 import pytest
 
 from teage_liu2.core.history import SQLiteHistoryStore
-from teage_liu2.core.hooks import Branch, BranchContext, HookChain
+from teage_liu2.core.hooks import Branch, HookChain
 from teage_liu2.core.loop import ReactLoop
 from teage_liu2.core.pipeline import ChatPipeline
 from teage_liu2.core.types import (
     EV_DONE,
-    EV_TEXT_DELTA,
     EV_TOOL_RESULT,
     EV_TOOL_USE,
+    Snapshot,
 )
 from .fake_llm import FakeLLMClient
 
@@ -30,7 +30,7 @@ class EchoToolBranch(Branch):
     def __init__(self):
         self.calls = []
 
-    async def on_tool_call(self, ctx, tool_name, tool_input):
+    async def on_tool_call(self, snapshot, tool_name, tool_input):
         if tool_name != "echo":
             return NotImplemented
         self.calls.append((tool_name, dict(tool_input)))
@@ -103,17 +103,62 @@ def test_loop_max_loops_exhausted(tmp_path):
     assert isinstance(done["response"], str)
 
 
-def test_loop_direct_with_ctx():
-    """验收:ReactLoop 可直接用 BranchContext 驱动(不经 pipeline)。"""
+class ExplodingToolBranch(Branch):
+    """on_tool_call 必抛异常的枝干(模拟工具实现 bug)。"""
+
+    name = "exploding_tools"
+
+    async def on_tool_call(self, snapshot, tool_name, tool_input):
+        raise RuntimeError("工具内部爆炸")
+
+
+def test_tool_exception_fed_back_as_is_error(tmp_path):
+    """验收:工具枝干异常 → 不穿透事件流;tool_result is_error 回喂,对话正常收尾。
+
+    回归锚定(N1):异常须由 dispatch 层捕获转为 tool_result is_error 回喂 LLM
+    (计划 §4.4 责任矩阵),而不是穿透 chat_stream 让 SSE 客户端收到 500。
+    """
+    llm = FakeLLMClient([
+        {
+            "content": [{"type": "tool_use", "id": "t1", "name": "boom", "input": {}}],
+            "stop_reason": "tool_use",
+        },
+        {
+            "content": [{"type": "text", "text": "工具出错了,但我还在"}],
+            "stop_reason": "end_turn",
+        },
+    ])
+    hooks = HookChain()
+    hooks.register(ExplodingToolBranch())
+    store = SQLiteHistoryStore(str(tmp_path / "boom.db"))
+    pipeline = ChatPipeline(llm_client=llm, history_store=store, hooks=hooks)
+
+    # 事件流不抛异常,正常以 done 收尾
+    events = asyncio.run(_collect_list(pipeline.chat_stream("s_boom", "调用工具")))
+    assert events[-1]["type"] == EV_DONE
+    # tool_result 带 is_error 标记,错误信息可见
+    tool_results = [ev for ev in events if ev.get("type") == EV_TOOL_RESULT]
+    assert len(tool_results) == 1
+    assert tool_results[0]["is_error"] is True
+    assert "工具执行出错" in tool_results[0]["result"]
+    # 第二轮 LLM 收到 is_error 回喂(tool_result 内容含错误)
+    fed_back = llm.last_messages[-1]["content"]
+    assert fed_back[0]["type"] == "tool_result"
+    assert fed_back[0]["is_error"] is True
+    assert "工具内部爆炸" in fed_back[0]["content"]
+
+
+def test_loop_direct_with_snapshot():
+    """验收:ReactLoop 可直接用 Snapshot 驱动(不经 pipeline)。"""
     llm = FakeLLMClient([
         {"content": [{"type": "text", "text": "直接驱动"}], "stop_reason": "end_turn"},
     ])
     hooks = HookChain()
     loop = ReactLoop(llm, hooks, max_loops=5)
-    ctx = BranchContext("s_direct", "hi")
+    snapshot = Snapshot(session_id="s_direct", user_input="hi")
 
     events = asyncio.run(
-        _collect_list(loop.run_stream(ctx, [{"role": "user", "content": "hi"}], system=None))
+        _collect_list(loop.run_stream(snapshot, [{"role": "user", "content": "hi"}], system=None))
     )
 
     assert events[-1]["type"] == EV_DONE
