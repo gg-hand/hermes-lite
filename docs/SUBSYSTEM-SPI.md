@@ -1,10 +1,10 @@
 # 子系统接入规范(Subsystem SPI)
 
-> **文档性质**:本文档描述**目标形态**的子系统接入契约——任一子系统(记忆 / 工具 / 护栏 / 调度 / 协作……)按本规范定义的接口实现后,即可接入主干并正常工作,主干代码零改动。
+> **稳定面冻结声明(2026-08-21)**:协议版本 `v1.0.0`,`teage_liu2/PROTOCOL/` 为**唯一契约源**,本文档为实现视图,与 `teage_liu2/core/` 代码同步(发现不一致时**以代码为准**)。
+
+> **文档性质**:本文档描述 teage_liu2 主干-枝干架构的**现行接入契约**——任一子系统(记忆 / 工具 / 护栏 / 调度 / 协作……)按本规范定义实现后,即可经配置接入主干,主干代码零改动。
 >
-> ⚠️ **当前状态**:现有代码**尚未实现**本契约,采用的是"判空 + 异常降级"的退化接入(每个组件独立 try/except 降级为 None,管线中 `if orch.xxx is not None` 跳过)。从现状迁移到本契约的路径见 [§8 迁移路径](#8-迁移路径),与本仓库 `docs/ISSUES-2026-08-11-架构问题清单.md` 的 ISSUE-01/ISSUE-04 联动。
->
-> **配套阅读**:[ARCHITECTURE.md](ARCHITECTURE.md)(现状总览)、[ISSUES-2026-08-11-架构问题清单.md](ISSUES-2026-08-11-架构问题清单.md)(问题依据)。
+> **配套阅读**:[ARCHITECTURE.md](ARCHITECTURE.md)(老系统现状总览)、[teage_liu2/docs/CORE.md](../teage_liu2/docs/CORE.md)(主干接口契约)。老系统(teage_liu/)已冻结,本文档 §14 为历史迁移记录。
 
 ---
 
@@ -15,159 +15,83 @@
 主干 = **不可再减的对话动作** + **扩展机制**:
 
 ```
-输入 → [钩子链 before] → LLM 调用 → [钩子链 after] → 输出
+输入 → [① build_injections 注入声明收集]
+     → [② before(注册序,action 立即应用;SetStop 短路)]
+     → [③ 组装收口(注入分层叠加 → merge 相邻 user → 语义级校验)]
+     → [④ 送 LLM(loop/bare 形态)]
+     → 事件流(step_start/text_delta/reasoning_delta/step_end/tool_use/tool_result/done/error)
+     → [after(逆序) / on_error] → 输出
 ```
 
-- **不可减部分**:一次 LLM 调用(`llm.chat(messages)`)+ 钩子链(扩展的本质)+ 会话历史落盘(对话的身份);
-- **全可裁部分**:工具、记忆、护栏、意图分类、审计、指标、调度、协作——每一个都是挂在钩子链上的**枝干**。
+- **不可减部分**:一次 LLM 调用(事件流基建)+ 11 钩子链(扩展的本质)+ 会话历史消息级落盘(对话的身份)+ 多层级注入组装 + 协议桥(transport 消息);
+- **全可裁部分**:工具、记忆、护栏、意图分类、审计、指标、调度、协作——每一个都是挂在钩子链上的**枝干/扩展**;
+- **形态可插拔**:loop(React 循环,默认)/ bare(单轮)经**形态实例字典**选择,新形态 = 新类(实现 `run_stream`)+ 一行注册(`core/modes.py`)。
 
-### 1.2 枝干(Branch)
+### 1.2 枝干(Branch / 扩展)
 
-枝干 = 实现 `Branch` 接口的一个类 = 一个可插拔的子系统。枝干之间**互不可见**,只能通过 `BranchContext.extra` 交换数据,通过 `BranchContext` 与主干交互。
+枝干 = 实现 `Branch` 接口的一个类(或经协议接入的异语言进程)。枝干之间**互不可见**,只能通过 `snapshot.extra`(命名空间 `{branch}.{key}`)交换数据,通过 **Snapshot(不可变)+ Action(变更请求)** 与主干交互。
 
-### 1.3 钩子点
-
-主干在固定时机调用枝干的钩子方法(只调用枝干实现了的部分):
+### 1.3 钩子点(11 钩子)
 
 | 时机 | 钩子 | 典型用途 |
 |------|------|----------|
-| 启动 | `setup` | 加载依赖、预热资源(向量库 / MCP / 模型) |
-| LLM 前 | `build_system` | 注入稳定前缀(用户画像) |
-| LLM 前 | `build_injection` | 注入 messages[0] 动态区(检索记忆 / 环境 / 任务) |
-| LLM 前 | `before` | 输入扫描 / 意图路由 / 工具 schema 填充 / 拦截 |
-| 循环中 | `on_tool_call` | 执行工具(仅工具枝干实现) |
-| LLM 后 | `after` | 输出过滤 / 审计 / 记忆巩固 / 指标 |
-| 关闭 | `teardown` | 释放资源 |
+| 启动(一次) | `setup(config, host)` | 加载依赖、预热资源(向量库 / MCP / 模型) |
+| 关闭(一次) | `teardown()` | 释放资源、冲刷自己的状态 |
+| 每次对话组装前 | `build_injections(snapshot)` | 声明多层级注入项(L0 稳定区 ~ L4 输入前) |
+| loop 每轮 step 前 | `inject_round(snapshot)` | 轮次间注入(全收集合并,层强制 BEFORE_INPUT) |
+| LLM 前 | `before(snapshot)` | 输入扫描 / 意图路由 / 工具 schema 填充 / 拦截(SetStop) |
+| 工具执行前 | `pre_tool_call(snapshot, name, input)` | 策略决策(reject 短路 / modify 叠加) |
+| 工具执行 | `on_tool_call(snapshot, name, input)` | 执行工具(仅工具类枝干实现) |
+| 工具执行后 | `post_tool_call(snapshot, ...)` | 结果审计 / 状态更新(action) |
+| 每轮 step 后 | `after_step(snapshot, summary)` | 轮摘要(action) |
+| 正常完成 | `after(snapshot, response)` | 输出过滤 / 审计 / 记忆巩固 / 指标(逆序) |
+| 失败/断连/拦截 | `on_error(snapshot, error)` | 失败通知(逆序) |
 
 ---
 
-## 2. 接口定义(正式版)
+## 2. 接口定义(正式版,`core/hooks.py`)
 
 ```python
-# teage_liu/core/branch.py —— 目标文件(当前不存在)
-"""枝干契约:子系统接入主干的唯一入口。"""
-from __future__ import annotations
-
-from abc import ABC
-from typing import Any, Optional
-
-
-class BranchContext:
-    """主干与枝干间交换的数据包:一次对话的完整状态。
-
-    - 主干**负责初始化**:session_id / user_input / history / system_text;
-    - 枝干**只能写入**:messages 追加、tools 填充、extra、stop;
-    - 枝干间共享数据一律走 extra,禁止直接引用其他枝干实例。
-    """
-
-    def __init__(self, session_id: str, user_input: str):
-        self.session_id = session_id
-        self.user_input = user_input
-        self.history: list[dict] = []        # 主干就绪的会话历史(只读建议)
-        self.system_text: str = ""           # 主干基础 system(build_system 可追加)
-        self.messages: list[dict] = []       # 送往 LLM 的消息
-        self.tools: list[dict] = []          # 工具 schema 列表(工具枝干填充)
-        self.extra: dict[str, Any] = {}      # 枝干间共享的自定义数据
-        self.stop: bool = False              # 枝干置 True → 主干跳过 LLM 直接返回
-
-
 class Branch(ABC):
-    """枝干基类:实现需要的钩子,其余继承默认空实现。"""
+    name: str = "branch"                 # extension_name,^[a-z0-9_]+$
+    capabilities: list[str] = []         # observe / tool_executor / llm / self_hosted_storage
+    host_port: Any = None                # 进程内能力端口(装配注入)
 
-    #: 唯一标识,用于配置 / 日志 / 审计
-    name: str = "branch"
+    # 生命周期(setup 失败 = 启动失败,禁止 try/except 吞错)
+    async def setup(self, config: dict, host: Any) -> None: ...
+    async def teardown(self) -> None: ...
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
-    async def setup(self, config: dict, core: Any) -> None:
-        """启动时初始化:加载依赖、预热资源。
+    # 多层级注入(I1):声明注入项(位置 + 内容 + 优先级,自主控制)
+    async def build_injections(self, snapshot) -> list[Injection]: return []
+    async def inject_round(self, snapshot) -> Injection | None: return None
 
-        契约:配置开启但初始化失败 → **抛出异常使启动失败**(不再静默吞错);
-        配置关闭 → 该枝干根本不注册,不调用本方法。
-        """
-        ...
-
-    async def teardown(self) -> None:
-        """关闭时释放资源(连接 / 锁 / 后台任务)。"""
-        ...
-
-    # ------------------------------------------------------------------
-    # LLM 前的注入(可选)
-    # ------------------------------------------------------------------
-    async def build_system(self, ctx: BranchContext) -> None:
-        """向 ctx.system_text 追加稳定前缀内容(如用户画像主体)。
-
-        只放**稳定不变**的内容——该区域参与 LLM 前缀缓存,
-        动态内容一律走 build_injection。
-        """
-        ...
-
-    async def build_injection(self, ctx: BranchContext) -> str:
-        """返回注入 messages[0] 的文本(检索记忆 / 环境 / 任务进度)。
-
-        返回空串 = 不注入。主干负责汇总并按预算裁剪(复用现有
-        ContextManager 的 8000 字符预算,见 memory/context_manager.py)。
-        """
-        return ""
-
-    # ------------------------------------------------------------------
-    # LLM 前后的钩子(可选)
-    # ------------------------------------------------------------------
-    async def before(self, ctx: BranchContext) -> None:
-        """LLM 调用前:输入扫描 / 意图路由 / 工具 schema 填充。
-
-        置 ctx.stop=True 可拦截本次对话(如护栏 deny)。
-        """
-        ...
-
-    async def on_tool_call(self, ctx: BranchContext, tool_name: str,
-                           tool_input: dict) -> Any:
-        """执行工具(仅工具类枝干实现)。
-
-        返回结果(字符串 / 结构)由主干包装为 tool_result 回喂 LLM。
-        未实现的工具返回 NotImplemented 由主干跳过。
-        """
-        return NotImplemented
-
-    async def after(self, ctx: BranchContext, response: Any) -> None:
-        """LLM 返回后:输出过滤 / 审计 / 记忆巩固 / 指标。"""
-        ...
-
-
-# ----------------------------------------------------------------------
-# 主干(目标形态,示意)
-# ----------------------------------------------------------------------
-class Core:
-    """主干:固定管线 + 钩子链。枝干注册后,此处代码不再改动。"""
-
-    def __init__(self):
-        self.branches: list[Branch] = []
-
-    def register(self, branch: Branch) -> None:
-        """接入一个枝干(注册顺序 = before 调用顺序)。"""
-        self.branches.append(branch)
-
-    async def chat(self, session_id: str, user_input: str) -> str:
-        ctx = BranchContext(session_id, user_input)
-        # 主干装配基础上下文(历史 / 基础 system)
-        ...
-        # 1. LLM 前注入
-        for b in self.branches:
-            await b.build_system(ctx)
-        injections = [t for t in [await b.build_injection(ctx) for b in self.branches] if t]
-        # 2. before 钩子
-        for b in self.branches:
-            await b.before(ctx)
-        if ctx.stop:
-            return "对话已被枝干拦截"
-        # 3. LLM 调用(有工具 schema 则进 React 循环,否则单轮)
-        response = await self._llm_call(ctx)   # 内部:无 tools → 单轮
-        # 4. after 钩子
-        for b in reversed(self.branches):
-            await b.after(ctx, response)
-        return response.text
+    # LLM 前后钩子(不可变 Snapshot 只读,经 Action 变更)
+    async def before(self, snapshot) -> list[Action]: return []
+    async def pre_tool_call(self, snapshot, name, input) -> ToolDecision:
+        return ToolDecision(decision="allow")
+    async def on_tool_call(self, snapshot, tool_name, tool_input) -> Any:
+        return NotImplemented                        # 未实现返回 NotImplemented
+    async def post_tool_call(self, snapshot, name, input, result, duration) -> list[Action]: return []
+    async def after_step(self, snapshot, summary) -> list[Action]: return []
+    async def after(self, snapshot, response) -> list[Action]: return []   # response 为 AfterResponse
+    async def on_error(self, snapshot, error) -> list[Action]: return []
 ```
+
+**Snapshot(不可变,`core/types.py`)**:`session_id / user_input / round / started_at / history / system_text / messages / tools / extra / stop / revision`;`revision` 由 host 独占递增(每次 action 批次 +1),扩展只读。
+
+**Action 6 种(`core/actions.py`)**:`AppendMessage`(仅 role=user)/ `SetTools` / `SetExtra`(key 白名单 `^[a-z0-9_]+\.[a-z0-9_.]+$`)/ `SetStop`(短路)/ `SetSystem` / `ModifyToolSchema`。
+
+**Injection(`core/injection.py`)**:`{layer, content, priority, key}` —— 五层:
+
+```
+L0 STABLE_SYSTEM   system 稳定区(前缀缓存命中)     ← 画像主体/全局规则/工具说明
+L1 SYSTEM          system 末位(缓存失效仍有效)     ← 会话级指令/临时全局上下文
+L2 PREFIX          messages[0] 前置(缓存失效点)    ← 检索记忆/环境信息/任务状态
+L3 MID             历史中间(按位插入)              ← 对话背景/长期上下文说明
+L4 BEFORE_INPUT    当前输入前(最动态)              ← 意图引导/瞬时指令
+```
+
+分层预算(默认可配置):stable_system 4000 / system 2000 / prefix 8000 / mid 2000 / before_input 2000;层内 `priority` 降序 + 注册序稳定,**整段丢弃不截半**;同 `key` 后声明覆盖先声明。**注入内容永不落盘**(瞬时上下文,只进 effective_messages)。
 
 ---
 
@@ -175,169 +99,252 @@ class Core:
 
 | 规则 | 内容 |
 |------|------|
-| **注册顺序 = 调用顺序** | `before` / `build_*` 按注册序正序;`after` / `teardown` **逆序**(洋葱模型,后注册的先收尾) |
-| **枝干间隔离** | 禁止互相引用实例,只通过 `ctx.extra` 通信;违反者在 code review 拦截 |
-| **只读 vs 写入** | `history` / `system_text` 由主干初始化,枝干只读;`messages` / `tools` / `extra` 枝干可写 |
-| **钩子超时** | 主干以 `asyncio.wait_for` 包裹每个钩子(默认 5s,可配置),超时跳过该枝干并记日志——**枝干不得卡死主干** |
-| **异常语义** | `setup` 失败 → 启动失败(配置开了却坏了,必须暴露);`before/after/build_*` 运行时异常 → 跳过该枝干 + `logger.error`(单枝干故障不影响对话) |
-| **优雅关闭** | 主干停止时按逆序调 `teardown`,每个枝干独立 try/except |
+| **注册顺序 = 调用顺序** | `build_injections` / `before` / `pre_tool_call` 按注册序正序;`after` / `on_error` / `teardown` **逆序**(洋葱模型) |
+| **枝干间隔离** | 禁止互相引用实例,只通过 `snapshot.extra` 通信;违反者在 code review 拦截 |
+| **立即应用 + 原子批次** | 每个扩展的 action 批次在调用下一个扩展前**原子推进快照**(revision+1,COW 浅拷贝);SetStop 短路后续同名钩子 |
+| **只读 vs 变更** | Snapshot 全部字段只读;变更一律经 Action(AppendMessage 仅 user;SetExtra 白名单 key) |
+| **before 职责边界(E5)** | 只允许追加消息 / SetStop / 改 tools;**禁止删改历史与已组装注入**(防 400);违反由 C1 校验拦截 |
+| **钩子超时** | 主干以 `asyncio.wait_for` 包裹每个钩子(默认 5s,可配置 `core.hook_timeout`),超时跳过该枝干并记日志;`on_tool_call` 不加超时(工具执行由工具自身负责超时) |
+| **异常语义** | `setup` 失败 → 启动失败(配置开了却坏了,必须暴露);其余运行时异常 → 跳过该枝干 + `logger.error`(单枝干故障不影响对话) |
+| **setup 原子性(E1)** | `setup_all` 任一失败 → **逆序 teardown 已成功枝干** → 再抛错(启动失败) |
+| **终态钩子** | `after` / `on_error` 返回 action 一律忽略 + 记录(HOOK_TERMINAL_ACTION_IGNORED) |
+| **observe 只读** | 声明 `observe` 的扩展,钩子返回 action 一律忽略 + 记录(§15-A4③) |
+| **并发契约(E8)** | 枝干实例全局共享,必须**无状态或只读共享**;可变状态只能放 `snapshot.extra`(对话态)/ `SessionStore`(会话态);同 session 并发对话由**外壳** session 级 `asyncio.Lock` 串行化(§18.7) |
+| **优雅关闭(L1)** | `registry.shutdown`:① TaskRegistry.cancel_all → ② teardown 逆序 → ③ message_store.close → ④ storage_provider.close;随后 supervisor.shutdown(扩展进程)+ storage_writer.close;幂等可多次调用 |
+
+**新增契约(X1)**:
+1. **钩子内调 LLM 防递归**:枝干(after 记忆巩固等)必须经 `invoke_llm` 消息(直调 `core.llm_client`,不进 pipeline/钩子链 → 递归,§15-A5);
+2. **setup/teardown 可重建契约**:枝干必须幂等可重入(L2 热重载反复调用);
+3. **宿主访问走消息通道**:扩展访问宿主能力(storage_*/invoke_llm/task_*)一律经 transport 消息(同语言 host_port / 异语言 stdio),不得以对象引用访问(§storage S-2)。
 
 ---
 
-## 4. 与现状代码的映射(迁移目标)
+## 4. 错误责任矩阵(§8,错误码全集见 `core/errors.py`)
 
-每个现有子系统迁到钩子后的形态:
+| 错误码 | 捕获层 | 上报 | 兜底 |
+|--------|--------|------|------|
+| LLM_TIMEOUT / LLM_CANCELED / LLM_STREAM_FAILED / LLM_API_ERROR(主对话) | step 层 | error 事件 | pipeline finally 落盘 |
+| LLM_TIMEOUT / LLM_API_ERROR(invoke_llm) | **扩展自身** | `{error}` 响应 | 扩展自降级(记忆巩固失败仅告警) |
+| LOOP_MAX_REACHED | loop 层 | logger.warning | done(max_loops) |
+| HOOK_TIMEOUT / HOOK_EXCEPTION | HookChain | logger.error | 跳过该扩展 |
+| HOOK_INVALID_ACTION | HookChain 应用层 | logger.error + 跳过该条 | 对话继续 |
+| HOOK_TERMINAL_ACTION_IGNORED | HookChain 终态 | logger.error | 忽略 |
+| TOOL_NO_EXECUTOR | dispatch 层 | logger.warning | done(no_tool_executor) |
+| TOOL_EXEC_FAILED | dispatch 层 | tool_result is_error 回喂 | loop 回喂继续 |
+| TOOL_REJECTED_BY_POLICY / TOOL_MODIFY_INVALID | pre_tool_call | tool_result is_error 回喂 | loop 回喂继续 |
+| STORAGE_WRITE_FAILED / STORAGE_READ_FAILED | persist/storage 层 | logger.error | 对话继续(旁路)/ 降级 |
+| CONFIG_UNKNOWN_KEY / CONFIG_INVALID_VALUE / CONFIG_MISSING_KEY | 配置加载 | 抛错(启动失败) | 可读错误 |
 
-| 现有子系统 | 现状(判空退化) | 迁移后(Branch) |
-|-----------|----------------|----------------|
-| Guardrails | `if orch.guardrail_engine is not None`(`orchestrator/chat_handler.py:164`);None→noop(`agent/react_loop.py:154-162`) | `before`(输入扫描)+ `after`(输出过滤);noop 形态消失,由"不注册"替代 |
-| 记忆检索 | `if orch.memory_retriever is not None`(`orchestrator/enhanced_context.py:66`) | `build_injection` 返回检索文本 |
-| 用户画像 | `context_manager.get_cache_stable_prefix()`(`enhanced_context.py:58`) | `build_system` 追加稳定前缀 |
-| 记忆巩固 | `if orch.consolidation_engine is not None`(`chat_handler.py:358/1001`) | `after` 达阈值触发巩固 |
-| 工具系统 | `tool_registry=None → 纯对话`(`agent/react_loop.py:92`) | `before` 填 `ctx.tools` + `on_tool_call` 执行;ReactLoop 收敛为"主干内置的循环策略",无工具时自动单轮 |
-| 意图分类 | `if classify_intent is not None and orch.llm_client is not None`(`chat_handler.py:200`) | `before` 路由,结果写 `ctx.extra["intent"]` |
-| 审计 | 分散调用 | `after` 统一记录 |
-| 指标 | 分散调用 | `after` 统一上报 |
-| Cron / Skill / MCP / Files | 条件注册 + 启动预热(`lifespan.py` 各 `_register_*`) | 各自 `Branch.setup` 承载预热,`build_*`/`before` 承载注入 |
-| Multiagent / A2A | 条件注册(角色、开关) | 各自 `Branch`,`setup` 承载 adapter 启动,`after` 承载协作消息处理 |
+**7 终止原因**:normal / max_loops / user_cancel / no_tool_executor / llm_error / intercepted / tool_rejected(行为套件用例 16 全覆盖锚定)。
 
-**迁移的判别标准**:现状"组件可 None"由**初始化失败**决定(故障驱动,不可预测);目标"枝干不存在"由**配置关闭**决定(声明驱动,可测试)。`ISSUES-2026-08-11` ISSUE-01 收敛裸 `except` 是迁移的前置条件。
-
----
-
-## 5. 接入三步法(给新子系统作者)
-
-1. **实现**:继承 `Branch`,只实现需要的钩子(其余继承空实现),`name` 取唯一标识;
-2. **注册**:一行 `core.register(MyBranch())`(配置系统按 `enabled` 过滤,关闭 = 不注册);
-3. **验证**:跑 `pytest tests/core/` 的"枝干契约测试"——框架保证"枝干顺序正确、隔离有效、超时生效"。
-
-新枝干**不得**改动 `Core.chat` / 钩子链 / 其他枝干——这是接入是否"合格"的唯一硬标准。
+**禁止裸 `except Exception` 静默吞错**——所有捕获点必须带日志;`setup` 失败 = 启动失败(配置开了却坏了必须暴露)。
 
 ---
 
-## 6. 最小完整示例:时间与环境信息枝干
+## 5. 状态三态模型(S1)
 
-展示三个钩子的完整用法(注入 + before + after),从零接入:
+| 态 | 容器 | 生命周期 | 重启后 |
+|----|------|----------|--------|
+| 对话态 | `snapshot.extra`(`{extension_name}.{key}`) | 一次对话 | 消失(契约) |
+| 会话态 | `snapshot.extra` 会话内延续(构建时从 SessionStore 恢复、结束写回,§5 L-10) | 一个会话 | **消失**(契约) |
+| 持久态 | `StorageProvider`(自选 kind)或自持 | 枝干自管 | 保留(setup 时自恢复) |
 
-```python
-# branches/environment_branch.py
-from teage_liu.core.branch import Branch, BranchContext
+- core **不为枝干状态提供持久化魔法**:SessionStore 是内存态,跨重启状态必须经 StorageProvider/自持并在 setup 恢复;
+- **会话态协议化通道(§5 L-10)**:扩展访问会话态的**唯一通道 = 快照 extra 会话内延续**(构建时从 SessionStore 恢复 extra 基座、结束写回最终 extra,pipeline 自动接线);**不经 SessionStore 直访**,扩展经 SetExtra 读写;
+- SessionStore 清理由调用方负责:`session_store.drop(session_id)`,core 不自动清理。
 
+---
 
-class EnvironmentBranch(Branch):
-    """注入当前时间/日期到 system,并在对话结束后记录一条审计。"""
+## 6. 消息合法性(C1)—— core 的保证
 
-    name = "environment"
+- **文档契约**:扩展只经 Action 变更快照(AppendMessage 仅 user);禁止删改历史与已组装注入;
+- **运行时双保险校验**(core 行为):组装收口后 + 每轮增量收口(`incremental_finalize`),`validate_messages()`(`core/types.py`)校验消息序列——角色白名单(user/assistant)+ **交替**;M2 扩展 tool_result 配对 tool_use;
+- 不合法 → `logger.error` + 拒绝消息序列(发 `error` 事件,**不发送给 LLM**);
+- 注入平台配套保证交替:组装末尾合并相邻 user 消息(`merge_consecutive_user_messages`)。
 
-    async def setup(self, config: dict, core) -> None:
-        self.show_time = config.get("show_time", True)
-        self.log_file = config.get("log_file")          # None 则不落盘
-        # setup 只做资源准备,不做 try/except——配置开了就失败让启动暴露
+---
 
-    async def build_system(self, ctx: BranchContext) -> None:
-        if self.show_time:
-            import datetime
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            ctx.system_text += f"\n\n当前时间:{now}"   # 稳定前缀,参与缓存
+## 7. 存储平台(D1,`core/storage.py`)
 
-    async def before(self, ctx: BranchContext) -> None:
-        # 示例:凌晨时段提示,不拦截,仅记录到 extra 供其他枝干读取
-        ctx.extra["environment.hour"] = datetime.datetime.now().hour
-
-    async def after(self, ctx: BranchContext, response) -> None:
-        if self.log_file:
-            line = f"{ctx.session_id} | {ctx.user_input[:50]} | {response.text[:50]}\n"
-            # 落盘(此处用同步写,生产应 aiofiles 或委托后台)
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(line)
-
-
-# ---- 接入(应用装配处,唯一改动点)----
-core.register(EnvironmentBranch())
+```
+StorageProvider(ABC)          # 通用持久化通道 —— 扩展接口
+│     write(kind, doc | docs[]) -> doc_id | doc_id[]   # 支持批量(§18.4)
+│     read(kind, doc_id)            # kind 命名空间:"messages"/"audit"/
+│     query(kind, limit=None, **filters)  # limit 防全量加载
+│     delete(kind, doc_id)
+│     close()
+├── SQLiteStorageProvider     # 唯一实现:单库多 kind,每 kind 一张 doc 表
+└── MessageStore(ABC)         # 消息级落盘契约(实现:SQLiteHistoryStore)
+                              #   messages 专表:content 纯文本保 FTS +
+                              #   content_blocks JSON(LLM 重建/工具配对)
+                              #   + token_count/reasoning/message_type(D3)
 ```
 
-**要点**:
-- `setup` 无 try/except —— 配置开但坏 → 启动失败,符合契约;
-- `build_system` 只放稳定内容 —— 不污染前缀缓存;
-- 枝干只依赖 `ctx` 与自己的配置 —— 与主干、其他枝干零耦合。
+- **扩展访问宿主存储的唯一通道 = transport `storage_*` 消息**(§storage S-2 / §15-A3):kind 必须带 `{extension_name}.` 前缀(读写都隔离,跨前缀拒绝);同语言实现经 `host_port` 亦走消息冷路径;
+- kind 白名单 `^[a-z0-9_.]+$`(防表注入,非法名抛 ValueError);
+- **全部 SQLite 写经 StorageWriter 异步单写者**(§18.1):user 前置 flush / 其余 background,事件循环零同步写;
+- **落盘时机(事件驱动)**:user 前置 → step_end 落盘 assistant(content_blocks)→ tool_result 缓冲聚合落盘 user(配对 tool_use_id)→ finally 兜底(断连不丢);**注入永不落盘**;
+- 历史读取窗口:最近 `history_window_messages`(默认 100)条;M2 condenser 做 token 预算 + 配对安全截断。
 
 ---
 
-## 7. 工具枝干的接入(特殊形态)
+## 8. 观测(事件流三层 + L3 旁路)—— core 只供原材料
+
+core **不内置指标/审计/事件总线**,只提供观测原材料:
+
+| 原材料 | 形态 |
+|--------|------|
+| L1 热路径 | text_delta/reasoning_delta(宿主内直传,不进 transport) |
+| L2 结构化摘要 | StepSummary / AfterResponse(经钩子快照+action) |
+| L3 观测通知 | tool_use/tool_result/step_end 原始事件(异步批处理 50ms/64 条,经 event 消息投递 observe 扩展) |
+| 外壳直通 | step_start/done/error(宿主内直传,不投 L3) |
+| `snapshot.started_at` | 对话开始时间 |
+| `snapshot.round` | 轮次号 |
+| AfterResponse | 完成摘要(text/content_blocks/usage/done_event) |
+| on_error | 失败通知 |
+
+观测枝干 = **声明 `observe` 能力**的只读枝干(注册 after/on_tool_call,不干预对话;L3 订阅自动生效,每观测扩展有界队列 1024 满丢最旧+计数)。M2 先做轻量观测枝干验证原材料够用;不够则"补原材料",而非 core 内置指标。
+
+---
+
+## 9. 配置契约(F1/F2,`core/config.py`)
+
+```yaml
+core:
+  mode: loop                    # bare / loop(未知值启动失败)
+  max_loops: 50                 # 1-200
+  system_prompt: ...            # 字符串(默认内置)
+  hook_timeout: 5.0             # 0.1-60 秒
+  history_window_messages: 100  # 1-10000
+  injection_budget_chars:       # 分层预算(层名白名单)
+    PREFIX: 8000
+  max_snapshot_bytes: 2097152            # §15-A6 资源上限(独立配置项,防 DoS)
+  max_message_bytes: 524288
+  max_messages_per_conversation: 2000
+  branches:                     # 枝干声明,顺序 = 注册顺序
+    guardrails: { enabled: true }
+    audit:                      # 异语言扩展(transport: stdio)
+      transport: stdio
+      command: ["python", "path/to/ext.py"]
+      protocol_version: v1.0.0
+      hooks_implemented: [setup, before, after]
+      capabilities: [observe, llm]
+    # 未声明或 enabled:false → 不注册,主干零感知
+```
+
+- **core 段严格校验**(`core_config_from(cfg) -> CoreConfig`):类型 + 范围 + **未知键拒绝**(core 段未定义键 → 启动失败,可读错误列未知键)——防 typo 静默失效;
+- **枝干配置枝干自校验**(setup 里,失败 = 启动失败;setup 收到**该枝干自己的配置段** + host 纯数据声明);
+- 未知名枝干名(工厂未注册)→ 启动失败;声明 transport 但无扩展启动器 → 启动失败。
+
+---
+
+## 10. 工具枝干的接入(特殊形态)
 
 工具系统是唯一需要"循环"的枝干,契约设计使其与其他枝干同构:
 
 ```python
 class ToolBranch(Branch):
     name = "tools"
+    capabilities = ["tool_executor"]      # 声明工具执行能力(§12)
 
-    async def setup(self, config, core) -> None:
-        # 加载工具注册表(现有 tool_registry 原样复用)
-        self.registry = build_registry(config)
+    async def setup(self, config, host) -> None:
+        self.registry = build_registry(config)  # 加载工具注册表
 
-    async def before(self, ctx: BranchContext) -> None:
-        # 1. 填充 schema:Core Tier 全量注入,Deferred Tier 只放 stub
-        ctx.tools = self.registry.build_schemas()
+    async def build_injections(self, snapshot):
+        return [Injection(layer="STABLE_SYSTEM", content=工具说明, priority=10)]
 
-    async def on_tool_call(self, ctx, tool_name: str, tool_input: dict) -> Any:
-        # 2. 执行:复用现有 PolicyEngine / ToolExecutor / GuardrailEngine
+    async def before(self, snapshot) -> list[Action]:
+        return [SetTools(tools=self.registry.build_schemas())]  # 填充 schema
+
+    async def on_tool_call(self, snapshot, tool_name: str, tool_input: dict) -> Any:
         return await self.registry.execute(tool_name, tool_input)
-
-    async def after(self, ctx, response) -> None:
-        # 3. 收尾:审计 / 卡死检测状态清理
-        ...
+        # 未实现返回 NotImplemented;抛异常由 dispatch 层捕获
+        # 转 tool_result is_error 回喂 LLM
 ```
 
-主干 `_llm_call` 的循环策略:
-- `ctx.tools` 为空 → **单轮纯对话**(现状 `react_loop.py:92` 的退化路径,行为不变);
-- `ctx.tools` 非空 → 进入 React 循环:LLM 返回 `tool_use` → 遍历枝干调用 `on_tool_call`(首个非 NotImplemented 者负责)→ 回喂 `tool_result` → 再调 LLM,直到 `end_turn` / `max_loops` / `ctx.stop`。
+循环策略:`snapshot.tools` 为空 → 单轮纯对话;非空 → loop 形态:LLM 返回 `tool_use` → 工具路径四连(`pre_tool_call` 链 → `tool_use` 事件 → 执行 → `tool_result` 回喂)→ 再调 LLM,直到 `end_turn` / `max_loops` / 无执行者友好终止。**工具只是多实现一个钩子点的枝干,ReactLoop 收敛为主干内置形态,不再是独立组件**。
 
-这样"工具"只是多实现一个钩子点的枝干,ReactLoop 收敛为主干内部的循环策略,**不再是独立组件**。
+> 异语言工具扩展:声明 `tool_executor` 且经 RemoteBranchAdapter 接入时,core 派发走 `invoke_tool` 轻量消息(仅 name+input,免快照序列化,§transport T-5)。
 
 ---
 
-## 8. 迁移路径(分阶段,与 ISSUE 清单联动)
+## 11. 协议桥与生命周期(transport / 异语言扩展)
 
-> 原则:每一步都可独立合入、测试、回滚;兼容期保留现有 `chat()` 入口,新管线并行跑影子验证。
+**transport 消息全集**(`core/transport.py`,与 PROTOCOL/transport.schema.json 一致):
 
-| 阶段 | 内容 | 前置 |
-|------|------|------|
-| **P0** | 收敛裸 `except`(ISSUE-01):工厂改为"配置关闭→不构造 / 配置开但坏→抛错+日志";HealthChecker 聚合组件缺失报告 | 无 |
-| **P1** | 抽出 `Core` + 钩子链(`BranchContext` / `Branch` / 超时包裹 / 逆序 after),以**新文件新入口**实现,不拆现状 | P0 |
-| **P2** | 逐枝干迁移,顺序按风险从低到高:guardrail(有 noop 先例,最简)→ environment/意图 → 记忆(检索/画像/巩固)→ 工具(重头,含 React 循环内化)→ 审计/指标 → cron/skill/mcp → multiagent/a2a | P1 |
-| **P3** | 每迁完一个枝干:删除对应旧判空路径 + 补"该枝干关闭时对话照常"的测试(契约测试);全部迁完删除旧 `chat()` 入口 | P2 |
-| **P4** | 配置格式定稿(见附录)+ 文档同步(ARCHITECTURE.md 增加"枝干注册表"章节) | P3 |
+`invoke_hook / invoke_tool / invoke_llm / storage_write / storage_read / storage_query / storage_delete / task_register / task_cancel / event / heartbeat / shutdown`
 
-**验证基线**:现有 266 个测试文件全部保留,迁移不改变任何已固化的行为(纯对话、cron、协作、流式);新增"枝干契约测试"覆盖:顺序 / 隔离 / 超时 / 单枝干故障不影响对话 / 零枝干时主干可用。
+- **帧格式**:`{type, payload, encoding: full|delta, protocol_version}`,JSON 行编码;序列化边界(帧长 4MiB / JSON 深度 64 / 非法帧拒绝,§15-A7);
+- **异语言扩展接入**:配置 `transport: stdio + command`,Supervisor spawn 进程 → 握手互报 `protocol_version`(版本协商 §evolution V-2:major 拒绝启动 / minor 降级)→ RemoteBranchAdapter 对 core 是普通扩展,11 钩子经 invoke_hook 转发;
+- **热重载(L2/L-3)**:`registry.rebuild`(build 新链 → setup 成功 → teardown 旧链 → 替换;失败回滚保旧链)+ `supervisor.reload`(新进程 spawn → rebuild → 替换/回滚);外壳 `POST /reload` 端点;
+- **L3 观测**:BatchBuffer 50ms/64 条先到触发,每观测扩展有界队列(1024),丢弃计数随心跳上报(§15-A6);
+- **invoke_llm 并发上限**:信号量硬边界(INVOKE_LLM_MAX_CONCURRENCY=4,§15-A6)。
 
 ---
 
-## 9. 附录:配置格式草案
+## 12. 接入三步法(给新子系统作者)
 
-```yaml
-core:
-  branches:                 # 显式声明枝干,顺序即注册顺序
-    environment:
-      enabled: true
-      show_time: true
-    guardrails:
-      enabled: true
-      input_scan: block
-    memory:
-      enabled: true
-      retrieval_top_k: 5
-    tools:
-      enabled: true
-      max_react_loops: 50
-    # 未声明或 enabled:false → 不注册,主干零感知
+1. **实现**:继承 `Branch`,只实现需要的钩子(其余继承空实现),`name` 取唯一标识(extension_name `^[a-z0-9_]+$`);
+   - 同语言需访问宿主能力(存储/LLM/任务):经装配注入的 `host_port`(`storage_write/query/invoke_llm` 等消息方法);
+   - 异语言:按协议实现 stdio JSON 行进程,配置声明 `transport/command/protocol_version/hooks_implemented/capabilities`;
+2. **注册**:装配层 `registry.register_factory(name, factory)` 一行注册,配置声明 `enabled: true`(关闭 = 不注册;异语言扩展由 supervisor.launcher 装配);
+3. **验证**:跑 `pytest tests_core/` 的契约测试——"枝干顺序正确、隔离有效、超时生效、setup 失败回滚、注入不落盘"。
+
+新枝干**不得**改动 `pipeline` / 钩子链 / 其他枝干——这是接入是否"合格"的唯一硬标准。
+
+---
+
+## 13. 最小完整示例:时间与环境信息枝干
+
+```python
+from teage_liu2.core.actions import SetExtra
+from teage_liu2.core.hooks import Branch
+from teage_liu2.core.injection import Injection, L_STABLE_SYSTEM
+
+
+class EnvironmentBranch(Branch):
+    """注入当前时间到 system 稳定区,并在对话结束后记录一条审计。"""
+
+    name = "environment"
+
+    async def setup(self, config, host) -> None:
+        self.show_time = config.get("show_time", True)
+        self.log_file = config.get("log_file")
+
+    async def build_injections(self, snapshot):
+        if not self.show_time:
+            return []
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        return [Injection(L_STABLE_SYSTEM, f"当前时间:{now}")]
+
+    async def before(self, snapshot) -> list:
+        import datetime
+        return [SetExtra(key="environment.hour", value=datetime.datetime.now().hour)]
+
+    async def after(self, snapshot, response) -> list:
+        # 持久化经宿主消息通道(storage_*):同语言用 host_port,异语言经 stdio
+        if self.log_file and self.host_port is not None:
+            await self.host_port.storage_write("environment.audit", [{
+                "session_id": snapshot.session_id,
+                "round": snapshot.round,
+                "text": response.text[:50],
+            }])
+        return []
 ```
 
-未声明的枝干 = 不存在(非"存在但坏")。`enabled: true` 但初始化失败 = 启动失败并给出可读错误——这彻底取代 ISSUE-01 的静默降级。
+**要点**:`setup` 无 try/except(配置开但坏 → 启动失败);`build_injections` 按稳定度选层;枝干只依赖 `snapshot` / `host` / `host_port` 与自己的配置——与主干、其他枝干零耦合。
 
 ---
 
-## 10. 文档维护
+## 14. 迁移历史(老系统 → teage_liu2)
 
-- 本规范是**契约**,接口变更需走"先改文档 → 评审 → 再改代码"的顺序;
-- 新增枝干接入案例可追加到 §6(保持示例可运行);
-- 迁移进度在 §8 表格逐阶段勾选,并在 ISSUE 清单对应条目注明。
+- teage_liu2 为同仓库提取式重写(M1 纯对话内核已交付),老系统 `teage_liu/` **冻结**(只修致命 bug);
+- 老系统的"判空 + 异常降级"退化接入(组件可 None 由**初始化失败**决定)已被"配置开关 + 钩子注册"显式形态取代(枝干不存在由**配置关闭**决定,声明驱动、可测试);
+- 里程碑:M1(纯对话内核)→ 基础夯实(落盘注入接入)→ 阶段 0(协议族立根)→ 阶段 1(宿主数据层)→ 阶段 2(交互模型迁移,Snapshot+Action)→ 阶段 3(协议桥与生命周期,transport/stdio/supervisor/L3)→ **阶段 4(稳定面冻结 v1.0)**;切换完成后删除老系统(一次性仪式)。
+
+## 15. 文档维护
+
+- 本规范是**契约**,接口变更需走"先改计划文档 → 评审 → 再改代码"的顺序;
+- **唯一契约源 = `teage_liu2/PROTOCOL/`**(9 域 spec + schema + 行为套件);本文档与 CORE.md 为实现视图,变更时以 PROTOCOL/ 与代码为准回写;
+- 新增枝干接入案例可追加到 §13(保持示例可运行)。

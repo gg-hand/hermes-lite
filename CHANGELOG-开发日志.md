@@ -5,6 +5,116 @@
 
 ---
 
+## 2026-08-21 终极解耦架构三端审查问题收口（v1.15）
+
+> 用户要求"按完美主义路线把三端审查发现的问题全部解决到位"。主 agent 亲自核代码 + plan-auditor（协议一致性）+ plan-verifier（落地可行性）三端交叉，发现 2 P1 + 3 P2 + 5 P3 全部落盘修复。设计文档升版 **v1.15（三端审查收口版）**。
+
+**P1-1 会话态 extra 会话内延续接线落地（§5 L-10，原协议空头）**
+- `core/pipeline.py`：ChatPipeline 增 `session_store` 参数；构建快照从 SessionStore 恢复 extra 基座（`extra_base`）、对话结束(done/error)写回最终快照 extra（`_persist_session_extra`：clear+update）
+- `core/loop.py` / `core/modes.py`：ReactLoop/BareMode 增 `final_snapshot` 跟踪（各快照推进点更新），供 pipeline 结束时取终态 extra 写回
+- `server/app.py`：session_store 注入 ChatPipeline
+- `CORE.md` / `SUBSYSTEM-SPI.md`：会话态通道描述更新为"快照 extra 会话内延续"（消除旧的 `core.session_store.get` 直访描述）
+
+**P1-2 PROTOCOL 版本号统一 v1.0.0**
+- `VERSION`(v1.0.0) 与 README/spec/schema/cases(残 v0.1.0) 矛盾全量同步：README、9 域 spec.md 标题、9 域 schema.json `$id`、behavior-suite suite/matcher schema + 17 cases 的 `protocol_version` 统一为 v1.0.0
+- `core/transport.py` `DEFAULT_PROTOCOL_VERSION` → v1.0.0；`core/supervisor.py` 默认版本引用该常量；`core/stdio.py` 注释同步
+
+**P2-1 §18.1 扩展 storage_write 迁入 StorageWriter 队列**
+- `core/transport.py`：TransportBus 增 `storage_writer`；`_handle_storage` write 分支走 `enqueue_flush`（与主对话消息落盘共享 FIFO 单写者），未配置时降级 `asyncio.to_thread`
+- `server/app.py`：storage_writer 注入 TransportBus
+
+**P2-2 §15-A7 帧长/深度阈值进协议 schema**
+- `PROTOCOL/transport/transport.schema.json`：新增 `FrameLimits`（frame_max_bytes=4MiB / json_max_depth=64 const），与 transport.py 常量一致
+
+**P3 修正**
+- `events.schema.json`：DoneEvent.termination_reason 枚举 7 值（与 errors 域同步）
+- `storage.schema.json`：StorageProviderResult 补 `doc` 单值字段（read 返回），doc_ids 明确为批量数组
+- `server/routes.py`：补 `GET /health` 路由（与 index() endpoints 声明一致）
+- 设计文档：§8 错误码前缀补 `LOOP_*`；§18.2 loop.py 行号漂移修正(→160-161/276-278)；§15-A2/A3/A6、§5 会话互斥与 invoke_llm 多角色路由的"现状"标注更新为已落地（低估现状的过时标注纠正）
+
+---
+
+## 2026-08-21 teage_liu2 阶段 4: 遗留项清零（完美主义收口）
+
+> 用户要求"不要有任何遗留项,追求完美主义"。阶段 4 全部遗留项收口,验收报告更新至"遗留项清零"状态。
+
+**进程僵死自动重建（§5 B1）**
+- `StdioChannel.set_on_dead`（心跳连续失败 3 次判定僵死）+ `Supervisor._auto_rebuild`（spawn 新进程 → HookChain.replace 原位替换保注册序 → 新 adapter setup → 关旧通道;失败重试 + 指数退避防风暴,降级标记可观测;`process_restarts`/`degraded` 可观测）
+- **修复 `StdioChannel.close` 自我取消缺陷**:close 内 `task.cancel()` 取消 heartbeat_task(其正在 await on_dead→_auto_rebuild→close),重建被 CancelledError 中断 → 跳过当前任务(`asyncio.current_task()`)
+- **修复 close shutdown 5s 拖慢**:shutdown_timeout 参数化(默认 1s,重建场景 0.3s)
+- 验证:僵尸进程触发重建 restarts=1,链替换完成
+
+**同语言 host_port 行为套件用例**
+- 新增 `17-host-port-inprocess.json`:同语言扩展经 host_port(InProcessHostPort)走 storage_*/invoke_llm/task_* 消息语义(前缀隔离/授权/防重入全生效)
+
+**SessionLocks 严格 LRU**
+- 超限时从最旧扫描淘汰**首个空闲锁**(不只看最旧一个);仅全部锁持有/等待中才临时超限(互斥必要边界)
+
+**A8 配置端审计**
+- 补配置读取端:mask_api_key 不泄漏明文 / is_masked_value / ${VAR} 占位符 / mask_sensitive_config 脱敏验证
+
+**行为套件统一 runner CLI**
+- 新增 `teage_liu2/PROTOCOL/behavior-suite/runner.py`:`python runner.py [--case N] [--verbose]`
+- pipeline 类 + 协议层类用例统一执行,匹配器(§14.3:regex/length/range/type/子集/有序)内建,输出逐用例 PASS/FAIL + 通过率
+- **行为套件 17/17 通过(100%)**;修正用例 01(messages length)/03(order 语义)与宿主对齐
+
+**回归**:tests_core 85 passed;行为套件 runner 17/17;进程重建 + A8 配置端 8/8
+
+## 2026-08-21 teage_liu2 阶段 4: 行为套件与冻结（稳定面 v1.0 冻结）
+
+> 计划: `docs/plans/2026-08-21-宿主实现与稳定面冻结-阶段1-4-执行计划.md` 阶段 4 | 验收: `docs/plans/2026-08-21-稳定面冻结-阶段4-验收报告.md`（PASSED=46 + tests_core 85）
+
+**evolution 版本协商（§evolution V-2）**
+- `core/transport.py`: `parse_protocol_version`（semver）+ `negotiate_protocol_version`（major 拒绝 / minor 降级 / proceed / 缺失保守降级，对齐 evolution.schema.json）
+- `core/stdio.py`: 握手接入协商 —— major 不匹配抛 StdioError（启动失败，可读错误）/ minor 降级记录；`channel.negotiation` 属性
+- 验证: 语义对拍 11/11 + 握手集成 4/4（v2.0.0 拒绝启动 / v1.2.0 降级 / v1.0.0 proceed）
+
+**行为套件增补至 16 用例**
+- `15-evolution-negotiation.json`（版本协商黄金用例）+ `16-error-responsibility.json`（错误责任矩阵 7 终止原因全覆盖）
+- Python 宿主实际路径跑 7 终止原因（normal/max_loops/user_cancel/no_tool_executor/llm_error/intercepted/tool_rejected）10/10
+
+**性能预算复验（§18.6）**
+- 首 token 前开销 N=50: **P50=0.029ms, P95=0.053ms, max=0.115ms**（预算 <10ms P95 大幅达标）
+
+**会话并发互斥（B3 根治）+ A8 审计**
+- 新增 `server/session_locks.py`: session 级 asyncio.Lock LRU 有界缓存，持有中的锁不可淘汰（保互斥）
+- `server/routes.py`: /chat 与 /chat/stream 接线 session 锁（覆盖整个对话流/SSE 流）
+- A8 无泄漏审计: 真实格式 API Key/内部路径样本扫描 /chat 响应、SSE 事件、错误响应、/reload、根端点、全部日志 → 无泄漏
+
+**稳定面冻结 v1.0 + 文档回写（强制出口条件）**
+- `PROTOCOL/VERSION` v0.1.0 → **v1.0.0**
+- `teage_liu2/docs/CORE.md` + `docs/SUBSYSTEM-SPI.md` 回写至 11 钩子 + Snapshot+Action + 协议桥（transport/stdio/supervisor/热重载/版本协商/会话互斥/资源上限）时代
+
+**回归**: tests_core 85 passed；阶段 4 综合验证 PASSED=46（错误矩阵 10 + 会话互斥/A8 6 + 版本协商 11 + 握手集成 4 + 最终回归 15）
+
+**阶段 1-4 全链路完成**: 协议族 9 域 + 行为套件 16 用例 + 宿主实现全部落地，teage_liu2 core 从根基重构完成，稳定面 v1.0 冻结。
+
+## 2026-08-21 teage_liu2 阶段 3: 协议桥与生命周期
+
+> 计划: `docs/plans/2026-08-21-宿主实现与稳定面冻结-阶段1-4-执行计划.md` 阶段 3 | 验收: `docs/plans/2026-08-21-宿主实现-阶段3-验收报告.md`（PASSED=47）
+
+**协议桥（transport/lifecycle 落地，§9/§18.3）**
+- 新增 `core/transport.py`: TransportFrame（JSON 行协议，4 键齐整）+ 序列化边界校验（帧长 4MiB / JSON 深度 64 / 非法帧拒绝，§15-A7）+ delta 帧格式（base_revision/ops）+ TransportBus 宿主消息枢纽（扩展身份模型 + 统一 handle）
+- 新增 `core/stdio.py`: stdio 跨进程通道（spawn/握手互报 protocol_version/请求响应/心跳/优雅关闭）
+- 新增 `core/remote_adapter.py`: RemoteBranchAdapter（对 core 是普通扩展，11 钩子经 invoke_hook 转发 + invoke_tool 免快照轻量通道）
+- 新增 `core/supervisor.py`: 扩展进程监管 + 热重载原子替换（spawn 新进程 → rebuild → 替换/回滚保旧链）
+
+**storage_*/invoke_llm/task_* 消息**
+- storage_* 消息通道 + kind 前缀隔离（§15-A3: 扩展只能读写 `{extension_name}.` 前缀；跨前缀/非法 kind 拒绝）；storage_provider 注入改走消息通道（storage S-2，同语言经 host_port 亦走消息）
+- `LLMClient.chat_role` 多角色路由（main/consolidation，未配置降级 main）；invoke_llm 协议级防重入（直调不进钩子链，§15-A5）+ 并发信号量硬边界（§15-A6）
+- TaskRegistry.register_task/cancel_task（宿主登记扩展侧任务，T-4）
+
+**L3 观测通道 + 生命周期**
+- L3BatchSink 批处理旁路（50ms/64 条先到触发 + 每观测扩展有界队列 1024 + 丢弃计数随心跳上报）；pipeline 事件流转处 route_l3 接线
+- registry.setup_all 支持 host_builder（host 纯数据声明，kind 前缀按扩展名）；registry.rebuild 热重载（失败回滚保旧链）；POST /reload 端点
+- 行为套件增补 5 个黄金用例（10-transport-frame / 11-storage-prefix-transport / 12-invoke-llm / 13-l3-observe / 14-lifecycle-reload），schema 校验通过
+
+**回归**: tests_core 85 passed；综合验证 PASSED=47 FAILURES=0（含异语言 stdio 扩展全钩子/前缀隔离/防重入/并发上限/L3 投递/热重载回滚）
+
+---
+
+开发日志 —— 本次变更摘要（历史）
+
 新功能
 
 - 通用 Workflow 引擎：调度从单模板升级为通用多步引擎，支持 retry/fallback/skip/abort 四种错误策略、拓扑排序、条件跳过。6 个新模块：engine/spec/adapter/retry/step_executor/step_trace/validator
