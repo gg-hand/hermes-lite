@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>teage_liu2</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #1a2027; --border: #2a323c;
+    --text: #e6ebf0; --muted: #8b98a5; --accent: #4f8cff;
+    --user-bg: #2b4a7a; --err: #e5534b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header .title { font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; margin-left: 12px; }
+  header button {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  header button:hover { color: var(--text); border-color: var(--accent); }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user-bg); }
+  .msg.bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); }
+  .msg.err { align-self: flex-start; background: var(--panel); border: 1px solid var(--err); color: var(--err); }
+  .status { align-self: flex-start; color: var(--muted); font-size: 12px; padding: 0 4px; }
+  footer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  #input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: none; font-family: inherit;
+  }
+  #input:focus { outline: none; border-color: var(--accent); }
+  #send {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 0 20px; cursor: pointer; font-size: 14px;
+  }
+  #send:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <div><span class="title">teage_liu2</span><span class="meta" id="meta"></span></div>
+  <button id="newSession">新会话</button>
+</header>
+<div id="log"></div>
+<footer>
+  <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+  <button id="send">发送</button>
+</footer>
+<script>
+const $log = document.getElementById('log');
+const $input = document.getElementById('input');
+const $send = document.getElementById('send');
+const $meta = document.getElementById('meta');
+
+let sessionId = localStorage.getItem('liu2_session');
+if (!sessionId) {
+  sessionId = 'user_' + Math.random().toString(16).slice(2, 14);
+  localStorage.setItem('liu2_session', sessionId);
+}
+$meta.textContent = 'session: ' + sessionId;
+
+function addMsg(cls, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  $log.appendChild(div);
+  $log.scrollTop = $log.scrollHeight;
+  return div;
+}
+function addStatus(text) {
+  const div = document.createElement('div');
+  div.className = 'status';
+  div.textContent = text;
+  $log.appendChild(div);
+  $log.scrollTop = $log.scrollHeight;
+  return div;
+}
+
+let busy = false;
+async function send() {
+  const text = $input.value.trim();
+  if (!text || busy) return;
+  busy = true; $send.disabled = true;
+  $input.value = '';
+  addMsg('user', text);
+  const bot = addMsg('bot', '');
+  let status = null;
+
+  try {
+    const resp = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, user_input: text }),
+    });
+    if (!resp.ok || !resp.body) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error('HTTP ' + resp.status + ' ' + detail);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const frames = buf.split('\n\n');
+      buf = frames.pop();
+      for (const frame of frames) {
+        const line = frame.trim();
+        if (!line.startsWith('data:')) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        switch (ev.type) {
+          case 'text_delta':
+            bot.textContent += ev.text || '';
+            break;
+          case 'step_start':
+            status = addStatus('… 处理中');
+            break;
+          case 'step_end':
+          case 'tool_use':
+          case 'tool_result':
+            if (status) { status.remove(); status = null; }
+            break;
+          case 'done':
+            if (!bot.textContent) bot.remove();
+            break;
+          case 'error':
+            bot.className = 'msg err';
+            bot.textContent = ev.message || '服务端错误';
+            break;
+        }
+        $log.scrollTop = $log.scrollHeight;
+      }
+    }
+    if (status) status.remove();
+    if (!bot.textContent && bot.className === 'msg bot') bot.remove();
+  } catch (e) {
+    bot.className = 'msg err';
+    bot.textContent = '请求失败: ' + e.message;
+  } finally {
+    busy = false; $send.disabled = false; $input.focus();
+  }
+}
+
+$send.addEventListener('click', send);
+$input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$input.focus();
+
+document.getElementById('newSession').addEventListener('click', () => {
+  sessionId = 'user_' + Math.random().toString(16).slice(2, 14);
+  localStorage.setItem('liu2_session', sessionId);
+  $meta.textContent = 'session: ' + sessionId;
+  $log.innerHTML = '';
+});
+</script>
+</body>
+</html>

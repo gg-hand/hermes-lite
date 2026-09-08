@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..core.transport import DEFAULT_PROTOCOL_VERSION
+
 router = APIRouter()
 
 
@@ -115,6 +117,14 @@ async def reload(request: Request):
         clear_config_cache()
         new_cfg = load_config(config_path)
         new_core_config = core_config_from(new_cfg)  # 配置非法 → 拒绝重载(保旧链)
+        # 统一扩展目录树(2026-09-08):重扫 extensions_root(新增/移除/manifest
+        # 变更在此生效)+ 校验声明 + 合并 stdio 字段;失败 → 400 拒绝重载(保旧链)
+        from ..core.extension_loader import make_directory_loader, wire_extensions
+
+        new_cfg, new_specs, _disabled = wire_extensions(new_cfg)
+        # loader 必须在 supervisor.reload(内部 registry.rebuild 消费 loader)之前就位;
+        # 若后续 reload 失败回滚,旧链实例不受影响(loader 只在 build 时消费)
+        registry.set_directory_loader(make_directory_loader(new_specs))
     except Exception as e:
         return JSONResponse(
             status_code=400,
@@ -131,6 +141,19 @@ async def reload(request: Request):
         )
     new_chain.hook_timeout = new_core_config.hook_timeout  # 保留配置的超时值
     pipeline.rebind_hooks(new_chain)
+    # 同语言扩展身份重新注册(rebuild 产生新实例;新出现的扩展名在此入库,
+    # 已移除的扩展身份残留在 bus 侧无副作用 —— kind 前缀按名隔离)
+    from .app import register_inprocess_extension_identities
+
+    register_inprocess_extension_identities(request.app.state.transport_bus, registry)
+    # 同语言 observe 扩展的 L3 订阅重新接线(rebuild 产生新实例,覆盖同 name
+    # 订阅;prev_names 使已移出链的扩展被退订,不误伤 supervisor 的 stdio 订阅)
+    subscribe_l3 = request.app.state.subscribe_inprocess_l3
+    if subscribe_l3 is not None:
+        prev_names = getattr(request.app.state, "inprocess_l3_names", None)
+        request.app.state.inprocess_l3_names = subscribe_l3(
+            request.app.state.l3_sink, new_chain, prev_names=prev_names
+        )
     return {
         "reloaded": True,
         "branches": [name for name, _ in registry.entries],
@@ -139,8 +162,12 @@ async def reload(request: Request):
 
 @router.get("/health")
 async def health():
-    """健康检查(与项目健康检查约定对齐:curl -s http://127.0.0.1:8000/health)。"""
-    return JSONResponse(content={"status": "ok"})
+    """健康检查(与项目健康检查约定对齐:curl -s http://127.0.0.1:8000/health)。
+
+    protocol_version 显式区分协议契约版本(PROTOCOL/ v1.0.0)与应用自身版本,
+    避免与 app.version 混淆。
+    """
+    return JSONResponse(content={"status": "ok", "protocol_version": DEFAULT_PROTOCOL_VERSION})
 
 
 @router.get("/")
@@ -149,6 +176,7 @@ async def index():
         content={
             "name": "teage_liu2",
             "version": "0.1.0",
+            "protocol_version": DEFAULT_PROTOCOL_VERSION,
             "endpoints": [
                 "POST /chat", "POST /chat/stream",
                 "POST /reload", "GET /health",

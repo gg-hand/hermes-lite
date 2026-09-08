@@ -143,6 +143,16 @@ class Branch(ABC):
         """失败/断连/拦截通知(on_error,逆序):返回 Action[](一律忽略 + 记录)。"""
         return []
 
+    async def on_l3_events(self, events: List[Dict[str, Any]]) -> None:
+        """L3 观测通知入口(§3.2/§11,同语言扩展订阅后由宿主进程内投递)。
+
+        声明 ``observe`` 的同语言扩展:装配时宿主对其调用 ``l3_sink.subscribe``,
+        L3 旁路(tool_use/tool_result/step_end 原始事件,异步批处理 50ms/64 条)
+        到达时经本方法进程内投递。默认空实现(不订阅即不接收)。
+        实现须非阻塞(观测旁路不阻断主对话流);异常由宿主隔离(仅 error 日志)。
+        """
+        return None
+
 
 class HookChain:
     """钩子链引擎:注册枝干并按协议调用(§4.2/§4.3/§4.4)。

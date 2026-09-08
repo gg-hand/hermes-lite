@@ -769,6 +769,8 @@ async def _run_lifecycle_reload(case: Dict[str, Any]) -> List[str]:
         async def setup(self, config, host):
             raise ValueError("setup fail")
 
+    # register_factory = 测试注入通道(设计 §2.1 定位):行为套件经此注入内存
+    # ScriptedBranch 做协议对拍;生产扩展一律走 extensions_root 目录发现。
     registry.register_factory("a", lambda cfg: _GoodBranch())
     registry.register_factory("boom", lambda cfg: _BadBranch())
     cfg1 = {"core": {"branches": {"a": True}}}

@@ -1,21 +1,26 @@
 """外壳:FastAPI 应用装配。
 
-依赖铁律:运行时逻辑(路由/传输)只依赖 core,不感知 branches;
-装配点例外:composition root 需注册枝干工厂(见下方 import 注释)。
+依赖铁律:外壳只依赖 core —— 2026-09-08 统一扩展目录树后装配点例外也已消失
+(生产扩展全部来自 extensions_root 目录发现,外壳不感知任何枝干名)。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from ..core.config import core_config_from, load_config
 from ..core.event_stream import EventStream, L3BatchSink
 from ..core.history import SQLiteHistoryStore
+from ..core.hooks import CAP_OBSERVE, Branch, HookChain
 from ..core.llm import LLMClient
 from ..core.pipeline import ChatPipeline
 from ..core.registry import BranchRegistry
@@ -28,12 +33,86 @@ from ..core.transport import TransportBus
 from .routes import router
 from .session_locks import SessionLocks
 
-# 装配点例外(composition root):注册枝干工厂必须感知枝干类;
-# 运行时逻辑(路由/传输)不感知枝干 —— 依赖铁律对 core 与运行时保持。
-from ..branches.audit import AuditBranch  # noqa: E402
-from ..branches.guardrails import GuardrailsBranch  # noqa: E402
+# 2026-09-08 统一扩展目录树:装配点例外已消失 —— 外壳不 import 任何枝干,
+# 生产扩展全部来自 extensions_root 目录发现(wire_extensions);依赖铁律纯净化。
+from ..core.extension_loader import (
+    make_directory_loader,
+    wire_extensions,
+)
 
 logger = logging.getLogger(__name__)
+
+
+#: 进程内 L3 观测投递单批超时(秒):旁路"非阻塞"义务的宿主侧兜底(§3.2)。
+#: 挂起的观察者不得阻塞 L3 冲刷循环;TimeoutError 向上抛给 L3ObserverQueue.deliver
+#: 统一计入 dropped(§15-A6 背压计数),不在此吞掉。
+L3_DELIVER_TIMEOUT_SECONDS: float = 5.0
+
+
+def subscribe_inprocess_l3(
+    l3_sink: Any, hooks: HookChain, prev_names: Optional[set] = None
+) -> set:
+    """同语言 observe 扩展的 L3 观测订阅(§3.2/§11)。
+
+    缺口修复(2026-08-21):此前 L3 订阅仅 supervisor 对 stdio 异语言扩展接线,
+    同语言 observe 扩展收不到 L3 原始事件(tool_use/tool_result/step_end)。
+    本函数为链上声明 observe 的**普通 Branch 实例**(非 RemoteBranchAdapter,
+    后者由 supervisor 走 stdio 投递)注册进程内投递目标:
+    L3 旁路到达时异步调用 ``branch.on_l3_events(events)``。
+
+    退订闭环(2026-09-08):重载后链上已移除的 observe 扩展须退订,否则旧实例
+    仍留在 observers 表持续收投递。``prev_names`` 传入上次调用返回的订阅名集合
+    (仅含本函数历史订阅的同语言 name,不会误伤 supervisor 的 stdio 订阅),
+    本次不在链上的将 unsubscribe。
+
+    装配后与热重载(registry.rebuild 换新链)后均应调用;重复订阅覆盖同 name。
+    返回本次订阅的同语言 observe 扩展名集合(下次调用作 prev_names)。
+    """
+    from ..core.remote_adapter import RemoteBranchAdapter
+
+    if l3_sink is None:
+        return set()
+    subscribed: set = set()
+    for branch in hooks.branches:
+        if CAP_OBSERVE not in (branch.capabilities or []):
+            continue
+        if isinstance(branch, RemoteBranchAdapter):
+            continue  # 异语言扩展由 supervisor 走 stdio 投递
+
+        async def deliver(events, _branch=branch) -> None:
+            # 超时兜底:挂起的观察者不阻塞 L3 冲刷循环(§3.2 旁路非阻塞义务);
+            # TimeoutError 交 L3ObserverQueue.deliver 计入 dropped(§15-A6)
+            await asyncio.wait_for(
+                _branch.on_l3_events(events), timeout=L3_DELIVER_TIMEOUT_SECONDS
+            )
+
+        l3_sink.subscribe(branch.name, deliver)
+        subscribed.add(branch.name)
+        logger.info("同语言 observe 扩展 %s 已订阅 L3 观测", branch.name)
+    if prev_names:
+        for stale in prev_names - subscribed:
+            l3_sink.unsubscribe(stale)
+            logger.info("同语言 observe 扩展 %s 已移出链,退订 L3 观测", stale)
+    return subscribed
+
+
+def register_inprocess_extension_identities(transport_bus: Any, registry: BranchRegistry) -> None:
+    """同语言扩展身份注册(2026-09-08 端到端发现的生产缺口修复)。
+
+    此前仅 supervisor 为 stdio 异语言扩展注册 TransportBus 身份;同语言扩展
+    经 host_port 发起 storage_write/invoke_llm 时被"扩展未注册,拒绝入站请求"
+    静默拒绝(audit._write 吞异常仅 warning,落盘全部丢失)。
+    本函数为链上全部普通 Branch 实例注册身份(kind 前缀隔离/capability 授权
+    的依据);stdio 扩展(RemoteBranchAdapter)仍由 supervisor._register_extension
+    负责,此处跳过。create_app 装配后与 /reload rebuild 后均须调用。
+    """
+    from ..core.remote_adapter import RemoteBranchAdapter
+
+    for branch, _cfg in registry.entries:
+        if isinstance(branch, RemoteBranchAdapter):
+            continue  # stdio 扩展身份由 supervisor 注册
+        transport_bus.register_extension(branch.name, branch.capabilities or [])
+        logger.info("同语言扩展 %s 身份已注册(kind 前缀=%s.*)", branch.name, branch.name)
 
 
 def create_app(
@@ -67,6 +146,11 @@ def create_app(
     #    工厂由装配层注册(registry 不 import 任何枝干实现)
     # F1/F2:core 段严格校验(未知键/类型/范围,失败 = 启动失败)
     core_config = core_config_from(cfg)
+
+    # 3.2 统一扩展目录树(2026-09-08):扫描 → 校验声明 → 合并 stdio 字段
+    cfg, extension_specs, disabled_installed = wire_extensions(cfg)
+    if disabled_installed:
+        logger.info("已安装未启用扩展(安装 ≠ 激活): %s", ", ".join(disabled_installed))
 
     # 3.5 编排容器(E4/E7):TaskRegistry 后台任务 + SessionStore 会话态
     task_registry = TaskRegistry()
@@ -110,9 +194,9 @@ def create_app(
     )
 
     registry = BranchRegistry()
-    registry.register_factory("guardrails", lambda cfg: GuardrailsBranch(cfg))
-    # 首个实验性扩展(2026-08-21):audit 观测枝干(observe 只读,经 host_port 落盘)
-    registry.register_factory("audit", lambda cfg: AuditBranch(cfg))
+    # 生产扩展唯一装载通道 = extensions_root 目录发现(2026-09-08)。
+    # register_factory 保留为测试/行为套件/编程式嵌入注入通道,生产路径零调用(设计 §2.1)
+    registry.set_directory_loader(make_directory_loader(extension_specs))
     # 协议桥装配:transport 条目经 supervisor.launcher 创建(进程已 spawn);
     # 同语言扩展注入 host_port(进程内通道,§18.2 消息语义零成本)
     registry.set_extension_launcher(supervisor.launcher)
@@ -120,6 +204,12 @@ def create_app(
     supervisor.attach_registry(registry)  # 进程重建时链内原位替换(HookChain.replace)
     hooks = registry.build(cfg)  # 未知名枝干名 → ValueError 启动失败
     hooks.hook_timeout = core_config.hook_timeout  # 钩子超时接线(F)
+    # 同语言扩展身份注册(TransportBus kind 前缀隔离/capability 授权依据,见上)
+    register_inprocess_extension_identities(transport_bus, registry)
+    # 同语言 observe 扩展的 L3 观测订阅(缺口修复 2026-08-21):stdio 异语言扩展
+    # 由 supervisor 订阅;此处为普通 Branch 实例接线进程内投递(on_l3_events)。
+    # 记录订阅名集合(热重载 /reload 时据此退订已移出的扩展)
+    inprocess_l3_names = subscribe_inprocess_l3(l3_sink, hooks)
 
     # 4. 主干
     pipeline = ChatPipeline(
@@ -192,6 +282,10 @@ def create_app(
 
     # 6. 挂载路由 + 状态
     app.include_router(router)
+    # 极简前端(纯 HTML/CSS/JS,无框架):/ui 提供 teage_liu2/web/ 静态页面
+    _web_dir = Path(__file__).resolve().parent.parent / "web"
+    if _web_dir.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(_web_dir), html=True), name="ui")
     # 会话并发互斥(§18.7/B3 根治):同 session 对话经 session 级 asyncio.Lock 串行化
     session_locks = SessionLocks()
     app.state.pipeline = pipeline
@@ -209,5 +303,8 @@ def create_app(
     app.state.config_path = config_path
     app.state.build_host_declaration = build_host_declaration
     app.state.session_locks = session_locks
+    # 同语言 L3 订阅函数(热重载 /reload 后重新接线用)+ 当前订阅名集合(退订依据)
+    app.state.subscribe_inprocess_l3 = subscribe_inprocess_l3
+    app.state.inprocess_l3_names = inprocess_l3_names
 
     return app

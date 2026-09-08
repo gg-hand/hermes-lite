@@ -10,13 +10,24 @@ core 零改动铁律由接入记录(git 基线对比)另行验证,见计划文�
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
-from teage_liu2.branches.guardrails import GuardrailsBranch
+import pytest
+
+from teage_liu2.core.extension_loader import load_python_extension, parse_manifest
 from teage_liu2.core.history import SQLiteHistoryStore
 from teage_liu2.core.pipeline import ChatPipeline
 from teage_liu2.core.registry import BranchRegistry
 from ..tests_core.fake_llm import FakeLLMClient
+
+# guardrails 已外迁至扩展目录树(2026-09-08,data2/extensions 不入库):
+# 本文件经 extension_loader 从真实安装位装载;扩展未安装时跳过(换机场景)。
+_EXT_DIR = Path(__file__).resolve().parents[2] / "data2" / "extensions" / "guardrails"
+pytestmark = pytest.mark.skipif(
+    not (_EXT_DIR / "manifest.yaml").is_file(),
+    reason="guardrails 扩展未安装(data2/extensions/guardrails)",
+)
 
 
 def _cfg(denylist=None, action="block", enabled=True):
@@ -30,8 +41,13 @@ def _cfg(denylist=None, action="block", enabled=True):
 
 def _make_registry():
     reg = BranchRegistry()
-    reg.register_factory("guardrails", lambda cfg: GuardrailsBranch(cfg))
+    # register_factory = 测试注入通道(设计 §2.1),被注入的是真实扩展目录装载产物
+    reg.register_factory("guardrails", lambda cfg: _load_branch(cfg))
     return reg
+
+
+def _load_branch(cfg):
+    return load_python_extension(parse_manifest(_EXT_DIR), cfg)
 
 
 async def _collect(agen):
@@ -99,29 +115,19 @@ def test_disabled_not_registered_chat_works(tmp_path):
 
 
 def test_setup_receives_branch_config_and_validates(tmp_path):
-    """验收:setup 收到枝干自己配置段;非法配置 → 启动失败(F2)。"""
-    seen = {}
-
-    class Probe(GuardrailsBranch):
-        async def setup(self, config, core):
-            seen["config"] = dict(config)
-            await super().setup(config, core)
-
-    reg = BranchRegistry()
-    reg.register_factory("guardrails", lambda cfg: Probe(cfg))
+    """验收:setup 收到枝干自己配置段(F2);非法配置 → 启动失败。"""
     cfg = _cfg(denylist=["词A", "词B"], action="warn")
+    reg = _make_registry()
     hooks = reg.build(cfg)
     asyncio.run(reg.setup_all(cfg, SimpleNamespace()))
-    assert seen["config"] == {
-        "enabled": True, "denylist": ["词A", "词B"], "action": "warn",
-    }
-    assert [b.name for b in hooks.branches] == ["guardrails"]
+    branch = hooks.branches[0]
+    assert branch.name == "guardrails"
+    assert branch.denylist == ["词A", "词B"]  # 配置段已生效
+    assert branch.action == "warn"
 
-    # 非法 action → setup 抛错 = 启动失败
+    # 非法 action → setup 抛错 = 启动失败(F2)
     bad_reg = _make_registry()
     bad_cfg = _cfg(action="nuke")
     bad_reg.build(bad_cfg)
-    import pytest
-
     with pytest.raises(ValueError, match="action"):
         asyncio.run(bad_reg.setup_all(bad_cfg, SimpleNamespace()))

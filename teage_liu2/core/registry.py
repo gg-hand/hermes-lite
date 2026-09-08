@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 BranchFactory = Callable[[dict], Branch]
 # 扩展启动器(阶段 3):声明 transport 的条目经此创建 Branch(同步;spawn 由调用方完成)
 ExtensionLauncher = Callable[[str, dict], Branch]
+# 目录发现装载器(2026-09-08 统一扩展目录树):生产扩展唯一装载通道。
+# register_factory = 测试/行为套件/编程式嵌入的内存注入通道(设计 §2.1),非生产装载方式。
+DirectoryLoader = Callable[[str, dict], Optional[Branch]]
 # host 声明构建器:接收 extension_name,返回宿主能力声明(纯数据 dict,§5 L-8)
 HostBuilder = Callable[[str], dict]
 # host_port 工厂:接收 extension_name,返回进程内能力端口(消息语义零成本,§18.2)
@@ -38,6 +41,7 @@ class BranchRegistry:
     def __init__(self) -> None:
         self._factories: Dict[str, BranchFactory] = {}
         self._extension_launcher: Optional[ExtensionLauncher] = None
+        self._directory_loader: Optional[DirectoryLoader] = None
         self._host_port_factory: Optional[HostPortFactory] = None
         self._chain = HookChain()
         self._entries: List[Tuple[Branch, dict]] = []
@@ -47,7 +51,16 @@ class BranchRegistry:
     # 工厂注册(装配层调用;registry 不 import 枝干实现)
     # ------------------------------------------------------------------
     def register_factory(self, name: str, factory: BranchFactory) -> None:
-        """注册枝干工厂(同名覆盖)。"""
+        """注册枝干工厂(同名覆盖)。
+
+        ⚠ 定位(设计 §2.1 定案,2026-09-08):本通道 = 测试/行为套件/编程式嵌入
+        的内存注入通道,**非生产装载方式**。生产扩展一律走 extensions_root
+        目录发现(set_directory_loader)。当前唯二合法使用方:
+        PROTOCOL/behavior-suite/runner.py(注入 ScriptedBranch)与
+        tests_core / tests_branches(注入测试枝干)。
+        "外壳不知道任何枝干名"由代码事实保证:server/ 无 import branches、
+        生产路径零本通道调用。
+        """
         self._factories[name] = factory
 
     def set_extension_launcher(self, launcher: ExtensionLauncher) -> None:
@@ -64,6 +77,14 @@ class BranchRegistry:
         非对象引用注入(§transport.1)。
         """
         self._host_port_factory = factory
+
+    def set_directory_loader(self, loader: DirectoryLoader) -> None:
+        """注册目录发现装载器(生产扩展唯一装载通道,2026-09-08)。
+
+        loader(name, branch_cfg) -> Branch | None:None = 该名不在扩展目录。
+        解析优先级:register_factory(测试/嵌入注入,§2.1)> 本通道 > ValueError。
+        """
+        self._directory_loader = loader
 
     # ------------------------------------------------------------------
     # 装配
@@ -117,12 +138,20 @@ class BranchRegistry:
             branch = self._extension_launcher(name, branch_cfg)
         else:
             factory = self._factories.get(name)
-            if factory is None:
+            if factory is not None:
+                branch = factory(branch_cfg)
+            elif self._directory_loader is not None:
+                branch = self._directory_loader(name, branch_cfg)
+                if branch is None:
+                    raise ValueError(
+                        f"未知枝干: {name!r}(extensions_root 目录未发现该扩展,且无内置工厂)。"
+                        "请检查扩展目录/manifest 或 core.branches 拼写。"
+                    )
+            else:
                 raise ValueError(
-                    f"未知枝干: {name!r}(未注册工厂)。"
-                    "请在装配层调用 registry.register_factory(name, factory) 注册。"
+                    f"未知枝干: {name!r}(未注册工厂且未配置目录装载器)。"
+                    "请在装配层调用 register_factory(测试/嵌入)或 set_directory_loader(生产)。"
                 )
-            branch = factory(branch_cfg)
         if not isinstance(branch, Branch):
             raise ValueError(
                 f"枝干 {name!r} 工厂返回类型错误: {type(branch).__name__}(应为 Branch)"

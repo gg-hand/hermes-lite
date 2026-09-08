@@ -205,6 +205,8 @@ core **不内置指标/审计/事件总线**,只提供观测原材料:
 
 观测枝干 = **声明 `observe` 能力**的只读枝干(注册 after/on_tool_call,不干预对话;L3 订阅自动生效,每观测扩展有界队列 1024 满丢最旧+计数)。M2 先做轻量观测枝干验证原材料够用;不够则"补原材料",而非 core 内置指标。
 
+**L3 投递形态(2026-08-21 缺口修复)**:observe 扩展的 L3 订阅在装配时接线——异语言(stdio)扩展经 `event` 消息投递;同语言扩展由外壳 `subscribe_inprocess_l3` 订阅,经 `Branch.on_l3_events(events)` 进程内异步投递(旁路,异常隔离,不阻断主对话流);热重载后自动重新订阅。同语言观测枝干实现 `on_l3_events` 即接收 L3 原始事件。
+
 ---
 
 ## 9. 配置契约(F1/F2,`core/config.py`)
@@ -284,11 +286,13 @@ class ToolBranch(Branch):
 
 ## 12. 接入三步法(给新子系统作者)
 
-1. **实现**:继承 `Branch`,只实现需要的钩子(其余继承空实现),`name` 取唯一标识(extension_name `^[a-z0-9_]+$`);
+1. **实现**:在 `extensions_root` 下建 `<name>/manifest.yaml + main.py`(统一扩展目录树,§13.2),`main.py` 导出 `create_branch(config) -> Branch`;继承 `Branch`,只实现需要的钩子(其余继承空实现),`name` 取唯一标识(extension_name `^[a-z0-9_]+$`,须与目录名一致);
    - 同语言需访问宿主能力(存储/LLM/任务):经装配注入的 `host_port`(`storage_write/query/invoke_llm` 等消息方法);
-   - 异语言:按协议实现 stdio JSON 行进程,配置声明 `transport/command/protocol_version/hooks_implemented/capabilities`;
-2. **注册**:装配层 `registry.register_factory(name, factory)` 一行注册,配置声明 `enabled: true`(关闭 = 不注册;异语言扩展由 supervisor.launcher 装配);
+   - 异语言:manifest 声明 `language: other + transport: stdio + command`(相对路径相对 manifest 目录解析),按协议实现 stdio JSON 行进程;
+2. **启用**:config.yaml 的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活;关闭 = 不注册;异语言扩展由 supervisor.launcher 装配);
 3. **验证**:跑 `pytest tests_core/` 的契约测试——"枝干顺序正确、隔离有效、超时生效、setup 失败回滚、注入不落盘"。
+
+**register_factory 定位(§2.1 定案,2026-09-08)**:测试/行为套件/编程式嵌入的内存注入通道,**非生产装载方式**。生产扩展一律走 extensions_root 目录发现(manifest.yaml 为安装态唯一事实源)。当前唯二合法使用方 = `PROTOCOL/behavior-suite/runner.py`(注入 ScriptedBranch)与 `tests_core` / `tests_branches`(注入测试枝干)。"外壳不知道任何枝干名"由代码事实保证:`server/` 无 import branches、生产路径零 register_factory 调用。
 
 新枝干**不得**改动 `pipeline` / 钩子链 / 其他枝干——这是接入是否"合格"的唯一硬标准。
 
@@ -362,6 +366,34 @@ class AuditBranch(Branch):
 - 同语言 observe 扩展目前仅收 L2 摘要(钩子),L3 原始事件投递仅对 stdio 异语言扩展接线(见 CORE-缺口记录.md)。
 
 ---
+
+### 13.2 统一扩展目录树(2026-09-08 已落地)
+
+**形态**(VSCode 式):目录 = 安装单位,`manifest.yaml` = 安装态唯一事实源;运行态(enabled 开关 + 配置覆盖)在 config.yaml 的 `core.branches.<name>`。根目录由 `core.extensions_root` 指定(默认 `data2/extensions/`,仓库外不入库;相对路径相对 cwd,同 storage 语义)。
+
+```yaml
+# <extensions_root>/<name>/manifest.yaml(启动/热重载时严格校验,坏 manifest = 该扩展装配失败)
+name: audit                # 必填,^[a-z0-9_]+$,必须与目录名一致
+version: 0.1.0             # 必填,扩展自身版本(与宿主/协议版本无关)
+language: python           # 必填,python(进程内) | other(必须配 transport)
+entry: main.py             # language=python 必填,相对 manifest 目录
+# language=other 时必填:transport: stdio / command: [...](相对路径相对 manifest 目录解析)
+#                        protocol_version 可选;entry 不支持
+capabilities: [observe]    # 必填(可空列表),值域 = observe | tool_executor | llm | self_hosted_storage
+description: ...           # 可选
+# requirements: [...]     # 可选,同语言第三方依赖声明(仅文档,宿主不自动安装)
+```
+
+**main.py 约定**(language=python):导出 `def create_branch(config: dict) -> Branch`;扩展只允许 import `teage_liu2.core` 的接口(hooks/actions/types 等纯数据契约),禁止 import core 实现内部模块与 `teage_liu2.server`;子模块/资源经 `__file__` 相对定位,装载器不污染 `sys.path`。
+
+**装载语义**(`core/extension_loader.py`):
+- python → `importlib` 进程内动态装载,模块名 `teage_liu2_ext_<name>_<manifest_hash>`:manifest 变更 → 全新模块对象(热重载隔离),未变 → 命中 `sys.modules` 缓存。**注意:只改 main.py 不触碰 manifest.yaml → hash 不变 → /reload 仍用旧缓存模块;改代码须同步 bump manifest version 才能热重载生效**
+- **授权一致性**:代码类声明的 `capabilities` 必须 ⊆ manifest 授权面,超出 = 启动失败(manifest 为授权声明面唯一事实源,防声明面被代码架空)
+- other → manifest 的 transport/command/protocol_version 由 `wire_extensions` 合并进 effective config,走 supervisor launcher(stdio,现状不变)
+- config 声明且启用的扩展缺失/manifest 非法 → **启动失败**;已安装未声明 = 不启用(安装 ≠ 激活,启动日志提示)
+- 解析优先级:`register_factory`(测试/嵌入注入,见 §12 定位)> 目录装载器 > ValueError
+
+**信任边界**:进程内 = 信任执行(扩展与宿主同进程);兜底 = `hook_timeout` + 钩子异常隔离 + L3 旁路投递超时(5s)。需要强隔离的扩展用 `language: other`(stdio 进程)。guardrails 外迁后,安全策略的完整性 = 扩展目录完整性(个人自托管单用户场景接受,见设计文档 §8)。
 
 ## 14. 迁移历史(老系统 → teage_liu2)
 

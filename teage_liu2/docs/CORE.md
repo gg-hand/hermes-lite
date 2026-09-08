@@ -80,6 +80,8 @@ class Branch(ABC):
     async def after_step(self, snapshot, summary: StepSummary) -> list[Action]: return []
     async def after(self, snapshot: Snapshot, response: Any) -> list[Action]: return []
     async def on_error(self, snapshot: Snapshot, error: Any) -> list[Action]: return []
+    # ---- L3 观测通知(observe 同语言扩展;非钩子,不经 HookChain,旁路异步投递)----
+    async def on_l3_events(self, events: list) -> None: return None
 ```
 
 **交互模型(§4.2/§4.4)**:core ── Invocation{hook, snapshot, args} ──▶ 扩展;扩展 ── Action[] ──▶ core 立即应用。
@@ -271,10 +273,11 @@ core:
 
 ## 8. 接入三步法(新枝干)
 
-1. **实现**:继承 `Branch`,只实现需要的钩子,`name` 取唯一标识(extension_name `^[a-z0-9_]+$`;示例见 [INTERFACES.md](./INTERFACES.md));
-2. **注册**:装配层(`server/app.py`)`registry.register_factory(name, factory)` 一行注册;配置声明 `enabled: true`;
-   - 异语言扩展:配置 `transport: stdio + command`,由 `supervisor.launcher` 装配;
+1. **实现**:在 `extensions_root` 下建 `<name>/manifest.yaml + main.py`(统一扩展目录树,2026-09-08;manifest 规范见 SPI §13.2),`main.py` 导出 `create_branch(config) -> Branch`;继承 `Branch`,只实现需要的钩子,`name` 取唯一标识(extension_name `^[a-z0-9_]+$`,须与目录名一致;示例见 [INTERFACES.md](./INTERFACES.md));
+2. **启用**:config.yaml 的 `core.branches.<name>` 声明 `enabled: true` + 运行配置(安装 ≠ 激活);
+   - 异语言扩展:manifest 声明 `language: other + transport: stdio + command`,由 `supervisor.launcher` 装配;
    - 需访问宿主能力(存储/LLM/任务):同语言经注入的 `host_port`,异语言经 stdio 消息;
+   - `register_factory` = 测试/行为套件/嵌入注入通道(设计 §2.1),非生产装载方式;生产装载 = `registry.set_directory_loader`(extensions_root 目录发现);
 3. **验证**:跑 `pytest tests_core/ tests_branches/` 契约测试(顺序/隔离/超时/回滚/注入不落盘)。
 
 **硬标准**:新枝干**不得**改动 `core/` 任何文件(接入 = 零改动铁律)。
@@ -333,6 +336,8 @@ core **不内置指标/审计**,只供原材料:
 | `on_error` | 失败通知 |
 
 观测枝干 = **声明 `observe` 能力**的只读枝干:钩子返回 action 一律忽略 + 记录;L3 订阅自动生效(observe capability 即订阅)。
+
+**L3 投递形态(2026-08-21 缺口修复)**:observe 扩展的 L3 订阅在装配时接线——异语言(stdio)扩展由 `supervisor` 订阅,经 `event` 消息投递;同语言扩展由外壳(`server/app.py` `subscribe_inprocess_l3`)订阅,经 `Branch.on_l3_events(events)` 进程内投递(L3 旁路异步调用,异常隔离,不阻断主对话流)。热重载(reload)后自动重新订阅。
 
 ---
 

@@ -286,6 +286,8 @@ _CORE_ALLOWED_KEYS = {
     # §15-A6 资源上限独立配置项(防 DoS;与 history_window_messages/max_loops
     # 语义不同,不得复用;默认 = 协议常量 RESOURCE_LIMITS)
     "max_snapshot_bytes", "max_message_bytes", "max_messages_per_conversation",
+    # 2026-09-08 统一扩展目录树:扩展安装根(相对路径相对 cwd,同 storage 语义)
+    "extensions_root",
 }
 _CORE_VALID_MODES = (MODE_BARE, MODE_LOOP)
 _INJECTION_LAYERS = set(_ALL_LAYERS)
@@ -302,6 +304,8 @@ class CoreConfig:
     history_window_messages: int = 100
     injection_budget_chars: Optional[Dict[str, int]] = None
     branches: Dict[str, Any] = field(default_factory=dict)
+    # 2026-09-08 统一扩展目录树:扩展安装根(仓库外,默认 data2/extensions)
+    extensions_root: str = "data2/extensions"
     # §15-A6 资源上限(默认 = 协议常量;不可无界)
     max_snapshot_bytes: int = RESOURCE_LIMITS["max_snapshot_bytes"]
     max_message_bytes: int = RESOURCE_LIMITS["max_message_bytes"]
@@ -375,6 +379,10 @@ def core_config_from(cfg: dict) -> CoreConfig:
     if not isinstance(branches, dict):
         raise ValueError(f"core.branches 必须是映射,实际 {type(branches).__name__}")
 
+    extensions_root = raw.get("extensions_root", "data2/extensions")
+    if not isinstance(extensions_root, str) or not extensions_root.strip():
+        raise ValueError(f"core.extensions_root 必须是非空字符串,实际 {extensions_root!r}")
+
     return CoreConfig(
         mode=mode,
         max_loops=_require_int_range(raw.get("max_loops", 50), "max_loops", 1, 200),
@@ -385,6 +393,7 @@ def core_config_from(cfg: dict) -> CoreConfig:
         ),
         injection_budget_chars=budget,
         branches=branches,
+        extensions_root=extensions_root,
         # §15-A6 资源上限(默认 = 协议常量;可配置但不可无界)
         max_snapshot_bytes=_require_int_range(
             raw.get("max_snapshot_bytes", RESOURCE_LIMITS["max_snapshot_bytes"]),

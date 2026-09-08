@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-09-08 liu2 统一扩展目录树：扩展装载运行期化（跨系统架构变更）
+
+> 设计/实现计划见 `docs/plans/2026-09-08-统一扩展目录树-设计.md` 与同名实现计划（用户逐条定案）。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **架构**：扩展从"编译期硬编码工厂"（teage_liu2/branches/ + server/app.py import+register_factory）改造为"仓库外统一目录树 + manifest 发现 + 动态装载"——`teage_liu2/branches/` 包消亡，装配点例外消失，外壳纯 core 依赖。
+- **新机制**：`core/extension_loader.py`（manifest 解析/目录扫描/importlib 动态装载/wire_extensions）；registry `set_directory_loader` 目录通道；config `core.extensions_root`（默认 data2/extensions，不入库）；/reload 重扫目录。
+- **迁移**：audit / guardrails 外迁为 `data2/extensions/<name>/{manifest.yaml, main.py}`；register_factory 保留 = 测试/嵌入注入通道（设计 §2.1，8 处标注点全链路落实）。
+- **验证**：tests 103 passed + 行为套件 runner 17/17 + 端到端（发现→装载→落盘→热重载→安全默认）。
+
+---
+
 ## 2026-08-21 终极解耦架构三端审查问题收口（v1.15）
 
 > 用户要求"按完美主义路线把三端审查发现的问题全部解决到位"。主 agent 亲自核代码 + plan-auditor（协议一致性）+ plan-verifier（落地可行性）三端交叉，发现 2 P1 + 3 P2 + 5 P3 全部落盘修复。设计文档升版 **v1.15（三端审查收口版）**。

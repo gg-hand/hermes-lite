@@ -93,3 +93,14 @@ def test_branches_must_be_dict():
     """验收:branches 段类型校验。"""
     with pytest.raises(ValueError, match="branches"):
         core_config_from({"core": {"branches": ["guardrails"]}})
+
+def test_extensions_root_default_and_validation():
+    """验收(2026-09-08 扩展目录树):extensions_root 默认值 + 类型校验。"""
+    assert core_config_from({}).extensions_root == "data2/extensions"
+    assert core_config_from(
+        {"core": {"extensions_root": "d:/my_extensions"}}
+    ).extensions_root == "d:/my_extensions"
+    with pytest.raises(ValueError, match="extensions_root"):
+        core_config_from({"core": {"extensions_root": ""}})
+    with pytest.raises(ValueError, match="extensions_root"):
+        core_config_from({"core": {"extensions_root": 123}})

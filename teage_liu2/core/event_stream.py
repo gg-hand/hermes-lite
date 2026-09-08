@@ -168,10 +168,14 @@ class L3BatchSink:
         self.batch_window = batch_window
         self.batch_max = batch_max
         self.queue_max = queue_max
+        #: 冲刷前全局缓冲上限(§15-A6 有界原则:观测旁路任何环节不无界)
+        self.buffer_max: int = queue_max
         self._buffer: List[Dict[str, Any]] = []
         self._observers: Dict[str, L3ObserverQueue] = {}
         self._flush_task: Optional[asyncio.Task] = None
         self._closed = False
+        #: 全局缓冲满丢弃最旧计数(观测者挂起等异常场景的背压信号)
+        self._buffer_dropped: int = 0
 
     # ------------------------------------------------------------------
     # 订阅管理
@@ -195,6 +199,10 @@ class L3BatchSink:
         """接收 L3 事件(异步旁路):追加缓冲,满 64 立即 flush / 否则定时 50ms 冲刷。"""
         if self._closed or not self._observers:
             return
+        if len(self._buffer) >= self.buffer_max:
+            # 满则丢弃最旧 + 计数(§15-A6):观测者投递受阻时缓冲不无界堆积
+            self._buffer.pop(0)
+            self._buffer_dropped += 1
         self._buffer.append(event)
         if len(self._buffer) >= self.batch_max:
             self._schedule_flush(immediate=True)
@@ -235,12 +243,25 @@ class L3BatchSink:
         return queue.dropped if queue is not None else 0
 
     def total_dropped(self) -> int:
-        return sum(q.dropped for q in self._observers.values())
+        return sum(q.dropped for q in self._observers.values()) + self._buffer_dropped
 
     async def close(self) -> None:
-        """关闭(幂等):取消定时冲刷,冲掉未投递缓冲。"""
+        """关闭(幂等):取消定时冲刷,尽力送达缓冲与各观测队列的未投递事件。
+
+        先置 closed 拒绝新事件,再把缓冲分发入队并逐队列 deliver(投递失败
+        仅计数,不抛出 —— 关闭路径绝不阻断 shutdown;旁路 best-effort)。
+        """
+        if self._closed:
+            return
         self._closed = True
         if self._flush_task is not None and not self._flush_task.done():
             self._flush_task.cancel()
         self._flush_task = None
-        self._buffer = []
+        buffered, self._buffer = self._buffer, []
+        try:
+            for queue in list(self._observers.values()):
+                for ev in buffered:
+                    queue.put(ev)
+                await queue.deliver()
+        except Exception as e:
+            logger.warning("L3 旁路关闭冲刷失败(best-effort,不阻断 shutdown): %s", e)

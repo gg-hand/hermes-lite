@@ -11,15 +11,18 @@
 - **修复**:pipeline.py 统一改为 `getattr(self._mode_instance, "final_snapshot", None) or snapshot` 传终态快照(after 与 on_error 均同源)。
 - **验证**:行为套件 runner 17/17 + tests_core 85/85 回归(见开发日志)。
 
-## 缺口清单
-
-### [P2] 同语言 observe 扩展的 L3 观测投递未接线（2026-08-21 首个扩展接入实验发现）
+### [已修复] 同语言 observe 扩展的 L3 观测投递未接线（2026-08-21 修复）
 
 - **现象**:同语言扩展声明 `observe` 能力后,只能收到 L2 摘要(钩子),**收不到 L3 观测事件**(tool_use/tool_result/step_end 原始事件)。
-- **根因**:`core/supervisor.py:122-138` `_register_extension` 中 `l3_sink.subscribe(...)` 仅对 **transport: stdio 异语言扩展**调用;同语言扩展(普通工厂注册 + `host_port` 注入)从未注册 L3 投递目标。`core/event_stream.py` L3BatchSink 的 `subscribe()` 接口已存在,只是缺装配接线。
-- **影响**:按设计文档 §11「observe capability 即订阅」,同语言观测枝干(审计/指标)收不到 L3 原始事件——依赖 L3 的枝干被迫走 L2 或 stdio 变通。
-- **当前规避**:首个扩展 audit 刻意走 L2 通道(after_step/after 摘要),不依赖 L3。
-- **候选修复方向**:app.py 装配时对声明 observe 的同语言扩展调用 `l3_sink.subscribe(name, deliver_fn)`,deliver_fn 经 `host_port` 投递(参考 supervisor 的 `_make_l3_deliver`);或 registry 注入时统一处理。修复后须补行为套件断言。
+- **根因**:`core/supervisor.py` `_register_extension` 中 `l3_sink.subscribe(...)` 仅对 **transport: stdio 异语言扩展**调用;同语言扩展从未注册 L3 投递目标。
+- **修复**:
+  - `core/hooks.py` Branch 新增 `async def on_l3_events(events)` 默认空实现(同语言扩展 L3 观测通知入口,非钩子不经 HookChain);
+  - `server/app.py` 新增 `subscribe_inprocess_l3(l3_sink, hooks)`:装配时对链上声明 observe 的**普通 Branch 实例**(非 RemoteBranchAdapter)调用 `l3_sink.subscribe(name, deliver_fn)`,deliver_fn 进程内异步调 `branch.on_l3_events(events)`(异常隔离,旁路不阻断主对话流);`create_app` 装配后调用,并挂 app.state 供热重载复用;
+  - `server/routes.py` `/reload` 热重载成功后重新订阅(rebuild 产生新实例,覆盖同 name 订阅);
+  - `branches/audit.py` 增加 `on_l3_events` 演示(批量落盘 `audit.l3_events`),`_write` 支持批量 docs。
+- **验证**:行为套件 runner 17/17 + tests_core/tests_branches 89 passed + 端到端 d:/tmp 脚本(step_end/tool_use/tool_result 全部经 on_l3_events 到达落盘,4 条)+ create_app 冒烟(l3 observers 含 audit)。
+
+## 缺口清单
 
 ### [P3] routes.py /chat 非流式不拼接 done.response（2026-08-21 阶段 3 遗留,已知既有行为）
 

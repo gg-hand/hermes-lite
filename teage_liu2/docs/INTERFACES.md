@@ -29,6 +29,7 @@ class Branch(ABC):
     async def after_step(self, snapshot, summary: StepSummary) -> List[Action]
     async def after(self, snapshot: Snapshot, response: AfterResponse) -> List[Action]
     async def on_error(self, snapshot: Snapshot, error: Any) -> List[Action]
+    async def on_l3_events(self, events: List[dict]) -> None    # L3 观测通知(observe 同语言扩展)
 ```
 
 **交互模型**:Snapshot **不可变只读**;变更一律经返回 Action[](core 立即应用 + 原子批次)。终态钩子(`after`/`on_error`)返回的 action 一律忽略 + 记录(HOOK_TERMINAL_ACTION_IGNORED),数据写入走 `host_port.storage_write`。
@@ -65,7 +66,7 @@ self.host_port.cancel_task(task_id)
 ## 1. 完整枝干示例:天气查询枝干(覆盖 5 个钩子)
 
 ```python
-# branches/weather.py
+# data2/extensions/weather/main.py(统一扩展目录树,安装规范见 §2/SPI §13.2)
 from __future__ import annotations
 
 import logging
@@ -139,17 +140,19 @@ class WeatherBranch(Branch):
 
 ---
 
-## 2. 注册与配置(装配点)
+## 2. 安装与配置(统一扩展目录树,2026-09-08)
 
-```python
-# server/app.py 内(唯一改动点,composition root)
-from teage_liu2.branches.weather import WeatherBranch
+**安装** = 在 `extensions_root`(默认 `data2/extensions/`)下建目录(规范全文见 SPI §13.2):
 
-registry.register_factory("weather", lambda cfg: WeatherBranch(cfg))
+```text
+data2/extensions/weather/
+├── manifest.yaml      # name: weather / version / language: python / entry: main.py / capabilities: [tool_executor]
+└── main.py            # 代码(§1 示例)+ 文末导出 create_branch(config) -> Branch
 ```
 
+**启用与运行配置**(config.yaml;安装 ≠ 激活):
+
 ```yaml
-# config.yaml
 core:
   branches:
     weather:
@@ -157,7 +160,7 @@ core:
       api_key: ${WEATHER_API_KEY}   # 敏感值走 .env 占位符
 ```
 
-**铁律**:添加/移除枝干只需改装配点 + 配置,**core/ 零改动**(guardrails 已实测)。注册后 `host_port` 由 registry 自动注入(`registry.set_host_port_factory` 已在 app.py 装配)。
+**铁律**:添加/移除枝干只需建/删扩展目录 + 改 config,**core/ 与 server/ 零改动**。装载由 `registry.set_directory_loader`(extensions_root 目录发现)完成;`register_factory` = 测试/行为套件/嵌入注入通道(设计 §2.1),非生产装载方式。注册后 `host_port` 由 registry 自动注入(`registry.set_host_port_factory` 已在 app.py 装配)。
 
 ---
 
@@ -345,7 +348,8 @@ cfg = load_config("config.yaml")
 core_config = core_config_from(cfg)            # 严格校验,失败 = 启动失败
 
 registry = BranchRegistry()
-# registry.register_factory("weather", lambda c: WeatherBranch(c))  # 注册枝干
+# registry.set_directory_loader(make_directory_loader(specs))  # 生产装载 = 目录发现
+# registry.register_factory(...)  # 仅测试/嵌入注入通道(设计 §2.1)
 hooks = registry.build(cfg)                    # 配置驱动装配
 
 llm = LLMClient(config=cfg)
