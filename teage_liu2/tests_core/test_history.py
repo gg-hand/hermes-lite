@@ -83,3 +83,19 @@ def test_create_session_auto_uuid(tmp_path):
     sid = store.create_session()
     assert sid and len(sid) > 10
     store.close()
+
+
+def test_connection_pragmas_are_explicit(tmp_path):
+    """验收:落盘连接档位显式化 + 固化 D-1 裁决。
+
+    2026-09-10 用户裁决 **保持 FULL**(不启用 WAL 下的 synchronous=NORMAL):
+    每次 commit 仍逐次 fsync(进程崩溃与断电均不丢已提交事务,代价是单条写
+    ~1.2 ms 的 fsync 税)。本用例把该裁决固化进断言,防止后续被"顺手优化"改掉;
+    同时固化 busy_timeout 显式化(与 storage-rust 的 5000 对齐)。
+    评估数据见 docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md §D-1。
+    """
+    store = SQLiteHistoryStore(str(tmp_path / "h.db"))
+    assert store.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert store.conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # 2 = FULL(用户裁决)
+    assert store.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    store.close()

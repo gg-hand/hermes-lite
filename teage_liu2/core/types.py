@@ -141,6 +141,47 @@ def tool_result_block(tool_use_id: str, content: str, is_error: bool = False) ->
     return block
 
 
+def _json_len(obj: Any) -> int:
+    """JSON 序列化长度(ensure_ascii=False);不可序列化 → 0(与历史 _estimate_bytes 一致)。"""
+    try:
+        return len(json.dumps(obj, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return 0
+
+
+@dataclass(frozen=True)
+class _SizeCache:
+    """快照体积记账缓存(实现层内部,不进协议序列化)。
+
+    字段:
+    - ``messages_ref``:记账时 ``messages`` 的**列表对象** —— 靠同一性判定缓存是否仍
+      对应当前消息列表(外部用 ``dataclasses.replace(..., messages=...)`` 绕过
+      ``with_messages`` 时会自动失效,不用长度启发式);
+    - ``msg_bytes``:``len(json.dumps(messages, ensure_ascii=False))``;
+    - ``base_bytes``:``messages`` 置空后**整个快照**的 JSON 长度;``-1`` = 未知。
+
+    有效性前提:快照仅经 ``with_*`` / ``apply_action_batch`` 演进(生产路径如此)。
+    外部若绕过它们直接改动,必须同时传 ``_size_cache=None`` 显式失效
+    (2026-09-10 执行后审计 D-4 补全):
+    - ``dataclasses.replace(snapshot, messages=...)`` —— 列表同一性变化可自动覆盖;
+    - **任何计入 base 分量的协议字段**(尤其 ``history``,以及 ``tools`` / ``extra`` /
+      ``system_text``)被 ``dataclasses.replace`` 改写 —— 同一性检查只看 ``messages``,
+      不覆盖这些字段(旧的全量重算实现对此天然免疫,新实现不再免疫);
+    - **原地改写** ``messages`` 内的已有元素(如 ``snapshot.messages[0]["content"] = ...``)
+      —— 列表对象同一性不变,增量记账不会察觉。
+    构造入口 ``from_dict`` / ``dataclasses.replace(..., _size_cache=None)`` 产出的实例
+    天然失效(``None``)。
+    """
+    messages_ref: List[Message]
+    msg_bytes: int
+    base_bytes: int
+
+
+def _base_unknown(cache: Optional[_SizeCache]) -> Optional[_SizeCache]:
+    """保留消息分量、把 base 分量置为未知(-1)。"""
+    return None if cache is None else _SizeCache(cache.messages_ref, cache.msg_bytes, -1)
+
+
 def extract_text(content: Union[str, list, None]) -> str:
     """从消息 content(str 或 block 列表)提取纯文本。
 
@@ -328,6 +369,10 @@ class Snapshot:
     #: 实现层内部字段(不进协议序列化,11 键保持与 types.schema.json 一致):
     #: SetStop action 的 reason,供 done(intercepted) 事件呈现
     stop_reason: Optional[str] = None
+    #: 实现层内部字段(不进协议序列化,11 键保持与 types.schema.json 一致):
+    #: 体积记账缓存(见 _SizeCache);None = 失效/未建立。
+    #: §15-A6 预算检查据此在稳态下只做常数级算术(不再全量 json.dumps)。
+    _size_cache: Optional[_SizeCache] = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为协议快照 dict(与 types.schema.json 结构一致,不含 stop_reason)。"""
@@ -389,17 +434,46 @@ class Snapshot:
         return None
 
     def with_messages(self, messages: List[Message]) -> "Snapshot":
-        """结构共享推进:仅替换 messages(新列表 + 共享元素引用,§18.2)。"""
-        return replace(self, messages=messages)
+        """结构共享推进:仅替换 messages(新列表 + 共享元素引用,§18.2)。
+
+        体积记账:新列表是旧列表的"纯追加"(逐元素**同一性**)时增量维护 messages
+        JSON 长度(base 分量不含 messages,保持有效);截尾 / 换元素一律置为失效,
+        由下一次预算检查精确重算。
+        """
+        return replace(self, messages=messages, _size_cache=self._cache_for(messages))
+
+    def _cache_for(self, messages: List[Message]) -> Optional[_SizeCache]:
+        cache = self._size_cache
+        if cache is None or cache.msg_bytes < 0 or cache.messages_ref is not self.messages:
+            return None
+        old = self.messages
+        if len(messages) < len(old):
+            return None  # 截尾(loop 终止清理):不做减法记账,直接重算
+        if any(a is not b for a, b in zip(old, messages[: len(old)])):
+            return None
+        msg_bytes = cache.msg_bytes
+        for index in range(len(old), len(messages)):
+            msg_bytes += _json_len(messages[index]) + (0 if index == 0 else 2)
+        return _SizeCache(messages, msg_bytes, cache.base_bytes)
 
     def with_tools(self, tools: List[Dict[str, Any]]) -> "Snapshot":
-        return replace(self, tools=list(tools))
+        return replace(self, tools=list(tools), _size_cache=_base_unknown(self._size_cache))
 
     def with_round(self, round_: int) -> "Snapshot":
-        return replace(self, round=round_)
+        """轮次推进:``round`` 在快照 JSON 中为整数,长度可精确差分,base 不失效。"""
+        cache = self._size_cache
+        if cache is not None and cache.base_bytes >= 0:
+            cache = _SizeCache(
+                cache.messages_ref,
+                cache.msg_bytes,
+                cache.base_bytes + len(str(round_)) - len(str(self.round)),
+            )
+        return replace(self, round=round_, _size_cache=cache)
 
     def with_extra(self, extra: Dict[str, Any]) -> "Snapshot":
-        return replace(self, extra=dict(extra))
+        return replace(self, extra=dict(extra), _size_cache=_base_unknown(self._size_cache))
 
     def with_stop(self, stop: bool = True, reason: Optional[str] = None) -> "Snapshot":
-        return replace(self, stop=stop, stop_reason=reason)
+        # stop_reason 不进 to_dict(仅 stop 进),故只失效 base 分量
+        return replace(self, stop=stop, stop_reason=reason,
+                       _size_cache=_base_unknown(self._size_cache))

@@ -90,6 +90,11 @@ class SQLiteStorageProvider(StorageProvider):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        # 与 SQLiteHistoryStore 同档位(同一文件双连接,语义必须一致):
+        # busy_timeout 显式化;synchronous 保持默认 FULL(每次 commit 逐次 fsync,
+        # 2026-09-10 用户裁决保持,见
+        # docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md §D-1)。
+        self.conn.execute("PRAGMA busy_timeout=5000;")
         self._lock = threading.Lock()
 
     @staticmethod

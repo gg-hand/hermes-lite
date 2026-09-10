@@ -8,10 +8,16 @@
 - 持久性分级:
   * ``enqueue_flush(fn) -> Future``:调用方 await 该写操作在队列中执行完毕
     (事件循环仅挂起协程,fsync 在写线程内执行)——仅 user 前置落盘用
-    (保"断连不丢输入"契约;flush 语义 = await commit,NORMAL 下 WAL 已写,
-    进程崩溃不丢,非逐次 FULL fsync)
+    (保"断连不丢输入"契约;flush 语义 = await commit)
   * ``enqueue_background(fn)``:fire-and-forget,入队即返,失败重试 + error 日志
     ——assistant / tool_result / 审计 / 扩展低频写全部走此级
+
+当前连接档位(2026-09-10 定案):WAL + SQLite 默认 ``synchronous=FULL`` —— 每次
+commit 逐次 fsync(进程崩溃与断电均不丢已提交事务),代价是单条写 ~1.2 ms 的
+fsync 税。是否降为 WAL 下的 ``synchronous=NORMAL``(仅 checkpoint 同步,单条写
+~0.10 ms,代价:断电可能丢最近若干已提交事务)属持久性取舍 —— 2026-09-10 用户
+裁决**保持 FULL**;实测与评估见
+``docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md`` §D-1。
 - 有界写队列(§15-A6 → 阶段 1):容量上限,满则丢弃最旧 + 丢弃计数
   (防无界堆积防 DoS;被丢弃的 flush future 以异常 resolve,调用方可见)
 - 队列深度/延迟可观测(计数器)

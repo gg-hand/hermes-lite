@@ -223,3 +223,42 @@ def test_setup_all_propagates_failure():
     chain.register(BadSetupBranch())
     with pytest.raises(RuntimeError, match="初始化失败"):
         asyncio.run(chain.setup_all({}, None))
+
+
+# ---------------------------------------------------------------------------
+# 超时隔离(原语由 asyncio.wait_for 换为 asyncio.timeout 后语义必须不变)
+# ---------------------------------------------------------------------------
+def test_hook_timeout_isolates_and_chain_continues(caplog):
+    """验收:钩子超时只跳过该枝干,后续枝干照常执行(H-6)。
+
+    并断言日志码为 HOOK_TIMEOUT(而非被泛化为 HOOK_EXCEPTION)—— 这是"超时原语
+    换 asyncio.timeout 后超时分类未丢"的判别力锚。
+    """
+    import logging
+
+    calls: list = []
+
+    class _SlowTimeoutBranch(Branch):
+        name = "slow_timeout"
+
+        async def before(self, snapshot):
+            await asyncio.sleep(5)
+            calls.append("slow")
+            return []
+
+    class _FastAfterTimeoutBranch(Branch):
+        name = "fast_after_timeout"
+
+        async def before(self, snapshot):
+            calls.append("fast")
+            return []
+
+    chain = HookChain(hook_timeout=0.05)
+    chain.register(_SlowTimeoutBranch())
+    chain.register(_FastAfterTimeoutBranch())
+
+    with caplog.at_level(logging.ERROR, logger="teage_liu2.core.hooks"):
+        asyncio.run(chain.before_all(_snapshot()))
+
+    assert calls == ["fast"], "超时枝干被跳过,后续枝干必须照常执行"
+    assert "HOOK_TIMEOUT" in caplog.text, "超时必须记为 HOOK_TIMEOUT(不得退化为 HOOK_EXCEPTION)"

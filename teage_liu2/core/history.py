@@ -99,6 +99,13 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        # 显式化 busy 等待(与 storage-rust/src/main.rs 的 busy_timeout=5000 对齐;
+        # 此前仅依赖 sqlite3.connect 的 timeout=5.0 默认值)。
+        # synchronous 保持 SQLite 默认 FULL(每次 commit 逐次 fsync):2026-09-10
+        # 用户裁决保持该档位,不启用 WAL 下的 NORMAL(实测 NORMAL 可把单条写从
+        # 1.23 ms 降到 0.10 ms,代价是断电可能丢最近若干已提交事务)。评估见
+        # docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md §D-1。
+        self.conn.execute("PRAGMA busy_timeout=5000;")
         self._lock = threading.Lock()
         self._init_tables()
         self._ensure_fts_table()

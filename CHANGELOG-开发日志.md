@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-09-10 core 性能与健壮性完善（7 任务落地，零契约变更）
+
+> 来源：`docs/plans/2026-09-10-liu2-core性能审查报告.md`（本机实测口径）；执行计划：`docs/plans/2026-09-10-core性能与健壮性完善-执行计划.md`。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。**PROTOCOL/ v1.0.0 冻结面一字未动**，不改配置键、不新增依赖。
+
+- **落盘档位如实化（D-1 裁决 = 保持 FULL）**：SQLite 连接显式化 `busy_timeout=5000`；`synchronous` **保持 SQLite 默认 FULL**（逐次 fsync）——用户裁决不启用 WAL 下的 `NORMAL`；`core/storage_writer.py` docstring 从"NORMAL 下 WAL 已写"改为如实描述；PENDING P-4 增条款⑩、P-7 现状行注明 flush 档语义同上。
+- **协议边界校验**：`json_depth` 递归改**迭代**（深嵌套不再 `RecursionError`，实测快 ≈2×）+ 拆出 `check_frame_depth`；入站帧体积一律按**线上字节**计（去掉每帧一次整帧 `json.dumps`）+ `RecursionError → ValueError` 兜底。
+- **stdio 读循环单帧容错**：decode 与 dispatch 全包进逐帧 try/except —— 修复 `type` 字段不可哈希（`TypeError`）逃出 `except ValueError` 导致**整条通道死亡**的真实缺陷。
+- **快照体积增量记账**：`_SizeCache`（messages 同一性失效 + revision 进位差分），`_check_snapshot_budget` 稳态零全量序列化 —— 实测 605 KiB 快照 `apply_action_batch` **3.156 ms → 0.016 ms（≈194×）**。
+- **超时原语**：`asyncio.wait_for` → `asyncio.timeout`（llm 逐 chunk + hooks 逐钩子）—— 实测 8000 chunk **77.5 → 21.2 ms**、单钩子 **9.5 → 2.5 µs**。
+- **L3 批处理修复**：恢复"64 条先到立即冲刷"（此前同 tick 500 条 0 次触发）、在途冲刷不被取消、缓冲 `list.pop(0)` → `deque.popleft()`、close 兜底投递。
+- **验证**：`pytest teage_liu2/tests_core` **150 passed**（新增 26 条）；行为套件 **21/21**；关键改动均做变异验证（还原旧语义 → 对应用例变红）。
+- **执行后严格审计（plan-auditor）修复 9 项**：①**[主要]** `json_depth` 迭代版在"宽而浅"帧上比递归慢 6× 且内存放大（70 万容器 378 ms / 42.9 MB）→ 改**迭代器栈 DFS** + 空容器不入栈 + `limit` 早退，复测宽浅 700k **50 ms**（快于递归 77 ms）、内存 0 MB；②`L3BatchSink.close()` 不 await 在途冲刷 → shutdown 期事件静默丢失 → 改为 await + 补红测试；③`_flush` 的 `while` 续送语义补用例；④`check_frame_limits` 零调用方零覆盖 → 补语义单测；⑤stdio 逐帧异常日志限速；⑥`_SizeCache` 失效契约补 `history`/元素原地改写；⑦超时原语等价性声明加 `timeout<=0` 限定；⑧dispatch_error 用例文案更正；⑨文档口径回写。审计独立复测：记账 16 000 步差分模糊 0 处不一致、`apply_action_batch` 0.0136 ms（≈237×）、L3 1000 并发投递守恒。
+
 ## 2026-09-09 Rust 存储后端扩展（首个异语言扩展 + 协议 P-6 登记）
 
 > 设计/执行计划见 `docs/plans/2026-09-09-rust存储后端扩展-设计.md` 与同名执行计划。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。

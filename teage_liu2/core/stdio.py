@@ -79,6 +79,8 @@ class StdioChannel:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending: Optional[asyncio.Future] = None
         self._closed = False
+        #: 读循环丢弃的异常帧累计计数(日志限速用,见 _read_loop)
+        self._frame_drops = 0
         self._peer_protocol_version: Optional[str] = None
         self._peer_name: Optional[str] = None
         self._peer_lang: Optional[str] = None
@@ -316,11 +318,26 @@ class StdioChannel:
                 if not line.strip():
                     continue
                 try:
-                    frame = TransportFrame.decode(line)
-                except ValueError as e:
-                    logger.error("通道 %s 收到非法帧,拒绝: %s", self.name, e)
+                    frame = TransportFrame.decode(line, raw_bytes=len(line_bytes))
+                    await self._dispatch(frame)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # 单帧失败(非法 JSON / 超深 / 字段类型不可哈希 / 分发异常)只丢该帧
+                    # 并继续 —— 绝不终止读循环。读循环终止 = 通道死亡(在途请求失败,
+                    # 且需依赖心跳超时才重建)。
+                    # 日志限速(2026-09-10 执行后审计 D-9):触发面从"仅 ValueError"扩大到
+                    # 全部异常,故障/恶意 peer 可按行速率刷日志 —— 只在前 3 次与每第 100
+                    # 次告警,其余降为 debug。
+                    self._frame_drops += 1
+                    log = logger.error if (
+                        self._frame_drops <= 3 or self._frame_drops % 100 == 0
+                    ) else logger.debug
+                    log(
+                        "通道 %s 丢弃异常帧并继续(累计 %d 次,本帧 %d 字节): %s",
+                        self.name, self._frame_drops, len(line_bytes), e,
+                    )
                     continue
-                await self._dispatch(frame)
         except asyncio.CancelledError:
             logger.debug("通道 %s 读循环被取消(正常关闭路径)", self.name)
         except Exception as e:

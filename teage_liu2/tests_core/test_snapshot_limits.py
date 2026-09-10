@@ -119,3 +119,72 @@ def test_over_budget_input_refuses_appends_but_keeps_set_actions():
     assert cur.stop is True, "入参超限时拦截仍必须生效"
     assert cur.extra.get("guardrails.denied") is True, "SetExtra 必须保留"
     assert len(cur.messages) == len(over.messages), "已超限快照不得再长(append 被拒绝)"
+
+
+# ---------------------------------------------------------------------------
+# 体积增量记账(2026-09-10 性能完善):预算检查不得每次全量序列化快照
+# ---------------------------------------------------------------------------
+def test_incremental_size_matches_ground_truth():
+    """验收:增量记账值必须逐点等于 len(json.dumps(to_dict()))(记账正确性唯一锚)。
+
+    覆盖:纯追加(apply_action_batch)、**revision 进位**(9→10 的整数位数变化)、
+    with_round 的位数变化、base 失效后的重算、以及**截尾**路径(loop 终止清理会走)。
+    """
+    from teage_liu2.core.snapshot import snapshot_bytes
+
+    cur = _base()
+    assert snapshot_bytes(cur) == _size(cur)
+    for content in ("a" * 10, "b" * 1000, "c" * 50_000):
+        cur, bad = _append(cur, content)
+        assert not bad
+        assert snapshot_bytes(cur) == _size(cur)
+
+    # revision 进位:apply_action_batch 会把 revision +1,而 revision 在 to_dict 中
+    # 是整数 —— 9→10 会让 JSON 长度 +1,记账必须同步(否则偏差 1 字节)。
+    cur = dataclasses.replace(cur, revision=8, _size_cache=None)
+    cur, _ = _append(cur, "y")            # revision 9,缓存以 revision=9 建立
+    assert cur.revision == 9
+    cur, _ = _append(cur, "z")            # revision 10 → 进位必须被记账
+    assert cur.revision == 10
+    assert snapshot_bytes(cur) == _size(cur)
+
+    cur = cur.with_round(9)
+    assert snapshot_bytes(cur) == _size(cur)
+    cur = cur.with_round(1234)          # 位数变化 → base 分量必须精确跟随
+    assert snapshot_bytes(cur) == _size(cur)
+    cur = cur.with_stop(True, "拦截")   # base 失效 → 精确重算
+    assert snapshot_bytes(cur) == _size(cur)
+    cur = cur.with_extra({"a.b": "c"})
+    assert snapshot_bytes(cur) == _size(cur)
+    cur = cur.with_messages(cur.messages[:-1])   # 截尾 → 缓存失效并精确重算
+    assert snapshot_bytes(cur) == _size(cur)
+    cur = cur.with_messages(cur.messages + [{"role": "user", "content": "尾"}] * 3)
+    assert snapshot_bytes(cur) == _size(cur)
+
+
+def test_budget_check_does_not_serialize_whole_snapshot(monkeypatch):
+    """验收:缓存建立后,稳态批次不再对整快照序列化(99% 开销来源)。
+
+    锚定口径说明:全量序列化入口是 ``snapshot._json_len(整快照 dict)`` ——
+    ``_json_len`` 定义在 types 模块但被 ``snapshot`` 以模块级名字引用,故 patch
+    ``snapshot._json_len`` 即可精确拦截"整快照序列化";首次预算检查允许一次
+    base 精确计算(缓存为空),之后必须为零。
+    """
+    from teage_liu2.core import snapshot as snap_mod
+
+    calls = {"n": 0}
+    real_len = snap_mod._json_len
+
+    def counting_len(obj):
+        if isinstance(obj, dict) and "messages" in obj:
+            calls["n"] += 1
+        return real_len(obj)
+
+    monkeypatch.setattr(snap_mod, "_json_len", counting_len)
+    cur = _base()
+    cur, _ = _append(cur, "x" * 100)     # 首次:允许一次 base 精确计算
+    calls["n"] = 0
+    for _ in range(3):
+        cur, _ = _append(cur, "x" * 100)
+    assert calls["n"] == 0, "缓存建立后,追加批次不得整快照序列化"
+    assert snap_mod.snapshot_bytes(cur) == _size(cur)

@@ -111,3 +111,12 @@ def test_message_store_is_abc_contract():
     # 契约方法签名存在
     for method in ("log_message", "get_session_messages"):
         assert callable(getattr(MessageStore, method, None))
+
+
+def test_connection_pragmas_are_explicit(tmp_path):
+    """验收:通用落盘平台连接档位显式化(与 history 同口径,含 D-1 裁决固化)。"""
+    provider = SQLiteStorageProvider(str(tmp_path / "p.db"))
+    assert provider.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert provider.conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # 2 = FULL(用户裁决)
+    assert provider.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    provider.close()

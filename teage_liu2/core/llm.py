@@ -88,13 +88,24 @@ async def _with_activity_timeout(
 ) -> AsyncIterator[Any]:
     """通用 per-item 活跃超时 wrapper(async generator)。
 
-    对输入逐项用 ``asyncio.wait_for`` 等待,每项之间最多等 ``timeout_sec`` 秒。
-    超时则调用 ``on_timeout``(失败仅告警,不掩盖 ActivityTimeout),然后 raise。
+    对输入逐项等待,每项之间最多等 ``timeout_sec`` 秒;超时则 ``await on_timeout()``
+    (失败仅告警,不掩盖 ActivityTimeout),然后 raise。
+
+    实现选择(2026-09-10):用 ``asyncio.timeout`` 而非 ``asyncio.wait_for`` —— 后者
+    每次都要新建 Task + 定时器 + 取消机制(同一事件循环内实测 ≈11 µs/chunk;8000
+    chunk 约 88 ms),前者直接对当前 await 施加取消(≈2.7 µs/chunk;8000 chunk 约
+    22 ms)。语义等价性逐条验证(2026-09-10 执行后审计 D-5):7 类边界(正常透传 /
+    空闲超时 / on_timeout 触发 / on_timeout 抛错 / 内部 await 收到 CancelledError /
+    与外层 ``asyncio.timeout`` 嵌套 / 外部取消不被误转)与 ``wait_for`` 一致。
+    **唯一例外** ``timeout_sec <= 0`` 且首个 await 不挂起:``wait_for`` 必抛
+    TimeoutError,而 ``asyncio.timeout``(3.11,``call_soon`` 语义)可能让该 await 先完成。
+    生产不可达 —— ``hook_timeout`` 有 0.1 下界,LLM 流首个 ``__anext__`` 必然挂起。
     """
     ait = aiter.__aiter__()
     while True:
         try:
-            item = await asyncio.wait_for(ait.__anext__(), timeout=timeout_sec)
+            async with asyncio.timeout(timeout_sec):
+                item = await ait.__anext__()
         except StopAsyncIteration:
             return
         except asyncio.TimeoutError:

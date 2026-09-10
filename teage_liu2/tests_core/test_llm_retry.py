@@ -85,3 +85,69 @@ def test_retry_decorator_never_retries_activity_timeout():
     with pytest.raises(ActivityTimeout):
         asyncio.run(timeout_always())
     assert calls["n"] == 1  # 只调用一次,无重试
+
+
+def test_activity_timeout_wrapper_passthrough():
+    """验收:活跃超时 wrapper 对正常流逐项透传,不改内容。"""
+    from teage_liu2.core.llm import _with_activity_timeout
+
+    async def _fast():
+        for c in "abc":
+            yield c
+
+    got: list = []
+
+    async def run():
+        async for item in _with_activity_timeout(_fast(), 1.0):
+            got.append(item)
+
+    asyncio.run(run())
+    assert got == ["a", "b", "c"]
+
+
+def test_activity_timeout_wrapper_calls_on_timeout_then_raises():
+    """验收:空闲超时 → 先 await on_timeout(关流),再抛 ActivityTimeout。"""
+    from teage_liu2.core.llm import _with_activity_timeout
+
+    marks: list = []
+
+    async def _slow():
+        yield "a"
+        await asyncio.sleep(5)
+        yield "b"
+
+    async def _on_timeout():
+        marks.append("closed")
+
+    async def run():
+        async for _ in _with_activity_timeout(_slow(), 0.05, _on_timeout):
+            pass
+
+    with pytest.raises(ActivityTimeout):
+        asyncio.run(run())
+    assert marks == ["closed"]
+
+
+def test_activity_timeout_wrapper_does_not_swallow_external_cancel():
+    """验收:外部取消(任务 cancel)不得被误转成 ActivityTimeout。"""
+    from teage_liu2.core.llm import _with_activity_timeout
+
+    async def _blocked():
+        yield "a"
+        await asyncio.sleep(5)
+
+    async def main():
+        task = asyncio.create_task(_consume())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "not-cancelled"
+
+    async def _consume():
+        async for _ in _with_activity_timeout(_blocked(), 30.0):
+            pass
+
+    assert asyncio.run(main()) == "cancelled"

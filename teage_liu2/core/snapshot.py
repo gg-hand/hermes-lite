@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,17 +23,53 @@ from .actions import (
     SetTools,
     validate_action,
 )
-from .types import RESOURCE_LIMITS, Snapshot, validate_message_shape
+from .types import (
+    RESOURCE_LIMITS,
+    Snapshot,
+    _SizeCache,
+    _json_len,
+    validate_message_shape,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _estimate_bytes(obj: Any) -> int:
-    """估算对象序列化体积(资源上限检查用,非精确 JSON 长度)。"""
-    try:
-        return len(json.dumps(obj, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return 0
+def snapshot_bytes(snapshot: Snapshot) -> int:
+    """快照序列化体积(增量记账):恒等于 len(json.dumps(snapshot.to_dict()))。
+
+    稳态下只做常数级算术;仅当缓存失效(未建立/messages 列表被换)时才做一次
+    精确计算(见 _measure)。
+    """
+    return _measure(snapshot)[0]
+
+
+def _measure(snapshot: Snapshot) -> Tuple[int, Snapshot]:
+    """返回 (体积, 带缓存的新快照)。
+
+    体积 = base_bytes - 2 + msg_bytes:``to_dict()`` 的 JSON 中,``messages`` 以外的
+    部分是固定模板,把 ``[]``(2 字符)换成真实数组即改变 ``msg_bytes - 2`` 字节 ——
+    与全量 ``json.dumps`` 精确恒等。
+    """
+    cache = snapshot._size_cache
+    valid = cache is not None and cache.messages_ref is snapshot.messages
+    msg_bytes = cache.msg_bytes if valid else -1
+    base_bytes = cache.base_bytes if valid else -1
+    if msg_bytes < 0:
+        msg_bytes = _json_len(snapshot.messages)
+    if base_bytes < 0:
+        base_bytes = _json_len(replace(snapshot, messages=[]).to_dict())
+        if base_bytes == 0:
+            # 不可序列化(如 SetExtra 写入非 JSON 值:validate_action 不校验可序列化性)
+            # → 与历史 _estimate_bytes 语义一致:体积**恒**视为 0(永不拒绝)。
+            # 缓存 base 分量必须存 -1 而非 0:0 会被下一次判定为"已知的 0 字节",
+            # 从而使 base-2+msg_bytes 变成可能超限的正数 → 误拒。
+            return 0, replace(
+                snapshot, _size_cache=_SizeCache(snapshot.messages, msg_bytes, -1)
+            )
+    cached = replace(
+        snapshot, _size_cache=_SizeCache(snapshot.messages, msg_bytes, base_bytes)
+    )
+    return base_bytes - 2 + msg_bytes, cached
 
 
 def _check_message_budget(
@@ -47,7 +82,7 @@ def _check_message_budget(
             f"消息总条数超上限 {limit_count}(HOOK_INVALID_ACTION)"
         )
     limit_msg = RESOURCE_LIMITS["max_message_bytes"]
-    size = _estimate_bytes(message)
+    size = _json_len(message)
     if size > limit_msg:
         return (
             f"单条消息体积 {size} 字节超上限 {limit_msg}"
@@ -56,15 +91,15 @@ def _check_message_budget(
     return None
 
 
-def _check_snapshot_budget(snapshot: Snapshot) -> Optional[str]:
-    """快照总体积上限检查(§15-A6)。"""
+def _check_snapshot_budget(snapshot: Snapshot) -> Tuple[Optional[str], Snapshot]:
+    """快照总体积上限检查(§15-A6)。返回 (问题描述, 带体积缓存的新快照)。"""
     limit = RESOURCE_LIMITS["max_snapshot_bytes"]
-    size = _estimate_bytes(snapshot.to_dict())
+    size, snapshot = _measure(snapshot)
     if size > limit:
         return (
             f"快照体积 {size} 字节超上限 {limit}(HOOK_INVALID_ACTION)"
-        )
-    return None
+        ), snapshot
+    return None, snapshot
 
 
 def apply_action_batch(
@@ -104,6 +139,12 @@ def apply_action_batch(
     stop = snapshot.stop
     stop_reason = snapshot.stop_reason
 
+    # 体积记账(§15-A6 增量):缓存失效时分量留 -1,由 _check_snapshot_budget 精确重算
+    cache = snapshot._size_cache
+    cache_ok = cache is not None and cache.messages_ref is snapshot.messages
+    msg_bytes = cache.msg_bytes if cache_ok else -1
+    base_bytes = cache.base_bytes if cache_ok else -1
+
     for a in valid:
         if isinstance(a, AppendMessage):
             budget = _check_message_budget(messages, a.message)
@@ -111,18 +152,31 @@ def apply_action_batch(
                 logger.error("HOOK_INVALID_ACTION: %s", budget)
                 invalid.append(budget)
                 continue
+            was_empty = not messages
+            encoded = _json_len(a.message)
             messages = messages + [dict(a.message)]
+            if msg_bytes >= 0:
+                msg_bytes += encoded + (0 if was_empty else 2)
         elif isinstance(a, SetTools):
             tools = list(a.tools)
+            base_bytes = -1
         elif isinstance(a, SetExtra):
             extra[a.key] = a.value
+            base_bytes = -1
         elif isinstance(a, SetStop):
             stop = True
             stop_reason = a.reason
+            base_bytes = -1
         elif isinstance(a, SetSystem):
             system_text = a.text
+            base_bytes = -1
         elif isinstance(a, ModifyToolSchema):
             tools = _modify_tool_schema(tools, a)
+            base_bytes = -1
+
+    # revision +1 会让 base 中的整数位数变化(9→10 / 99→100),必须精确差分
+    if base_bytes >= 0:
+        base_bytes += len(str(snapshot.revision + 1)) - len(str(snapshot.revision))
 
     # 语义级检查:追加消息的角色/形状(逐条结构校验,交替由 assembler 收口)
     new_snapshot = replace(
@@ -134,9 +188,10 @@ def apply_action_batch(
         stop=stop,
         stop_reason=stop_reason,
         revision=snapshot.revision + 1,
+        _size_cache=_SizeCache(messages, msg_bytes, base_bytes),
     )
 
-    budget = _check_snapshot_budget(new_snapshot)
+    budget, new_snapshot = _check_snapshot_budget(new_snapshot)
     if budget:
         # §15-A6 T-8 × hooks H-8 一致性(2026-09-10 评审 FIX-1):
         # 体积上限只拒绝**本批次的 append 类 action**(消息增长的主因,与消息级上限
@@ -146,7 +201,17 @@ def apply_action_batch(
         # 此前"整批回滚"的两处后果均已修复:①同批 [AppendMessage 超限, SetStop]
         # 把拦截一起丢掉;②入参已超限时该会话此后所有钩子批次被永久拒绝。
         set_names = [type(a).__name__ for a in valid if not isinstance(a, AppendMessage)]
-        safe = replace(new_snapshot, messages=list(snapshot.messages))
+        rolled = list(snapshot.messages)
+        safe = replace(
+            new_snapshot,
+            messages=rolled,
+            # 消息回滚 → 消息分量回到入参;set 类保留 → base 分量必须失效
+            _size_cache=(
+                None if snapshot._size_cache is None
+                # 消息分量按回滚后的列表重新度量(不沿用入参缓存值,防"非 None 但陈旧")
+                else _SizeCache(rolled, _json_len(rolled), -1)
+            ),
+        )
         logger.error(
             "HOOK_INVALID_ACTION: %s(本批次 append 类 action 已拒绝,set 类保留:%s)",
             budget, set_names,
@@ -193,7 +258,7 @@ def snapshot_with_user_message(snapshot: Snapshot, content: Any) -> Snapshot:
     if budget:
         logger.error("HOOK_INVALID_ACTION: %s", budget)
         return snapshot
-    return replace(snapshot, messages=messages + [user_msg])
+    return snapshot.with_messages(messages + [user_msg])
 
 
 def validate_snapshot_messages(snapshot: Snapshot) -> Optional[str]:

@@ -164,26 +164,61 @@ def negotiate_protocol_version(
 # ---------------------------------------------------------------------------
 # 序列化边界校验(§15-A7)
 # ---------------------------------------------------------------------------
-def json_depth(obj: Any, depth: int = 0) -> int:
-    """递归计算 JSON 结构嵌套深度。"""
-    if isinstance(obj, dict):
-        if not obj:
-            return depth + 1
-        return max(json_depth(v, depth + 1) for v in obj.values())
-    if isinstance(obj, list):
-        if not obj:
-            return depth + 1
-        return max(json_depth(v, depth + 1) for v in obj)
-    return depth
+def json_depth(obj: Any, depth: int = 0, limit: Optional[int] = None) -> int:
+    """计算 JSON 结构嵌套深度(迭代实现,迭代器栈 DFS)。
+
+    为什么改迭代(2026-09-10):递归版在数百层嵌套即抛 RecursionError(实测 900 层
+    崩溃),而 `json.loads` 在数千层才崩 —— 这个窗口让"深度校验"本身成为崩溃源。
+
+    实现选择(2026-09-10 执行后审计 D-1 修正):**不用**"逐容器压栈"的写法 —— 那会为
+    每个容器分配一个栈元组,在"宽而浅"帧上比递归版慢数倍、峰值内存随容器数线性增长
+    (实测 70 万容器:378 ms / 42.9 MB,递归版仅 61 ms / 0 MB)。改用**迭代器栈**
+    (栈深 = 嵌套深度,兄弟节点在同一层内被 `for` 消耗):宽帧回到与递归同级、内存
+    O(depth),同时保留"深嵌套不崩"。(消息型帧 800 条消息:0.58 ms vs 递归 1.01 ms。)
+
+    limit:给定则深度一旦超过它即刻返回(供 :func:`check_frame_depth` 短路超限帧,
+    免去继续遍历其余容器)。
+    """
+    if not isinstance(obj, (dict, list)):
+        return depth
+    max_depth = depth + 1
+    if limit is not None and max_depth > limit:
+        return max_depth
+    stack: List[Any] = [iter(obj.values() if isinstance(obj, dict) else obj)]
+    while stack:
+        for value in stack[-1]:
+            if isinstance(value, (dict, list)):
+                child_depth = depth + len(stack) + 1
+                if child_depth > max_depth:
+                    max_depth = child_depth
+                    if limit is not None and max_depth > limit:
+                        return max_depth
+                if value:
+                    # 空容器无子节点 → 不入栈(宽帧上省去每容器的 push/pop/iter)
+                    stack.append(iter(value.values() if isinstance(value, dict) else value))
+                    break
+        else:
+            stack.pop()
+    return max_depth
+
+
+def check_frame_depth(payload: Any) -> Optional[str]:
+    """JSON 深度边界校验(§15-A7)。合法返回 None;非法返回错误描述。"""
+    if json_depth(payload, limit=JSON_MAX_DEPTH) > JSON_MAX_DEPTH:
+        return f"payload 嵌套深度超过上限 {JSON_MAX_DEPTH}"
+    return None
 
 
 def check_frame_limits(payload: Any, max_bytes: int = FRAME_MAX_BYTES) -> Optional[str]:
-    """序列化边界校验(§15-A7):JSON 深度 + 体积上限。
+    """序列化边界校验(§15-A7):深度 + 体积。
 
-    合法返回 None;非法返回错误描述(调用方据此拒绝该帧)。
+    保留给宿主**出站**/编程式调用(需要按对象体积判定时)。入站帧请走
+    :meth:`TransportFrame.decode` —— 它按线上原始字节数校验,不做重新序列化
+    (重新 dumps 与原始字节口径不一致,且每帧多付一次全量序列化)。
     """
-    if json_depth(payload) > JSON_MAX_DEPTH:
-        return f"payload 嵌套深度超过上限 {JSON_MAX_DEPTH}"
+    problem = check_frame_depth(payload)
+    if problem:
+        return problem
     try:
         size = len(json.dumps(payload, ensure_ascii=False))
     except (TypeError, ValueError) as e:
@@ -306,17 +341,24 @@ class TransportFrame:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
-    def decode(cls, line: str) -> "TransportFrame":
+    def decode(cls, line: str, raw_bytes: Optional[int] = None) -> "TransportFrame":
         """解码 + 序列化边界校验(§15-A7)。
+
+        raw_bytes: 该帧在通道上的原始字节数(stdio 读循环已持有,传入即免一次
+        UTF-8 重编码);未提供时按 ``line`` 的 UTF-8 字节数计算。体积上限一律
+        以**线上字节**为准,不再对已解析对象重新 json.dumps。
 
         非法帧(非 JSON / 非对象 / 类型非法 / 编码非法 / 版本缺失 / 超限)→ ValueError。
         """
-        if len(line) > FRAME_MAX_BYTES:
-            raise ValueError(f"帧超过字节上限 {FRAME_MAX_BYTES}")
+        size = len(line.encode("utf-8")) if raw_bytes is None else raw_bytes
+        if size > FRAME_MAX_BYTES:
+            raise ValueError(f"帧超过字节上限 {FRAME_MAX_BYTES}(实际 {size} 字节)")
         try:
             obj = json.loads(line)
         except json.JSONDecodeError as e:
             raise ValueError(f"非法帧:JSON 解析失败: {e}") from e
+        except RecursionError as e:
+            raise ValueError("非法帧:JSON 嵌套过深(解析超出递归上限)") from e
         if not isinstance(obj, dict):
             raise ValueError(f"非法帧:帧必须是对象,实际 {type(obj).__name__}")
         if "type" not in obj or "payload" not in obj or "encoding" not in obj or "protocol_version" not in obj:
@@ -328,7 +370,7 @@ class TransportFrame:
             raise ValueError(f"非法帧:未知编码 {obj['encoding']!r}")
         if not isinstance(obj["protocol_version"], str) or not obj["protocol_version"]:
             raise ValueError("非法帧:protocol_version 必须是非空字符串")
-        problem = check_frame_limits(obj)
+        problem = check_frame_depth(obj)
         if problem:
             raise ValueError(f"非法帧:{problem}")
         # delta 编码:payload 必须符合 {base_revision, ops} 形态(§transport.3)

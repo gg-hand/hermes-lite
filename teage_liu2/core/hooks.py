@@ -225,10 +225,8 @@ class HookChain:
         超时 / 异常 → 跳过该枝干 + logger.error,不向上抛。
         """
         try:
-            return await asyncio.wait_for(
-                getattr(branch, hook_name)(*args, **kwargs),
-                timeout=self.hook_timeout,
-            )
+            async with asyncio.timeout(self.hook_timeout):
+                return await getattr(branch, hook_name)(*args, **kwargs)
         except asyncio.TimeoutError:
             logger.error(
                 "%s: 枝干 %s 的 %s 钩子超时(>%.1fs),跳过该枝干",

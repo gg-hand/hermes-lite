@@ -170,9 +170,11 @@ class L3BatchSink:
         self.queue_max = queue_max
         #: 冲刷前全局缓冲上限(§15-A6 有界原则:观测旁路任何环节不无界)
         self.buffer_max: int = queue_max
-        self._buffer: List[Dict[str, Any]] = []
+        self._buffer: "deque[Dict[str, Any]]" = deque()
         self._observers: Dict[str, L3ObserverQueue] = {}
         self._flush_task: Optional[asyncio.Task] = None
+        #: 定时窗口任务(与"在途冲刷"区分:立即冲刷只取消定时窗口,绝不取消在途冲刷)
+        self._timer_task: Optional[asyncio.Task] = None
         self._closed = False
         #: 全局缓冲满丢弃最旧计数(观测者挂起等异常场景的背压信号)
         self._buffer_dropped: int = 0
@@ -201,38 +203,71 @@ class L3BatchSink:
             return
         if len(self._buffer) >= self.buffer_max:
             # 满则丢弃最旧 + 计数(§15-A6):观测者投递受阻时缓冲不无界堆积
-            self._buffer.pop(0)
+            self._buffer.popleft()
             self._buffer_dropped += 1
         self._buffer.append(event)
         if len(self._buffer) >= self.batch_max:
             self._schedule_flush(immediate=True)
-        elif self._flush_task is None:
-            self._flush_task = asyncio.create_task(self._timer())
+        else:
+            self._start_timer()
+
+    def _start_timer(self) -> None:
+        """启动定时窗口(已有活跃窗口则不重复启动)。
+
+        ``_timer_task`` 在**任务创建时**登记(而非任务首次运行时)—— 否则同一事件循环
+        tick 内"先建窗口、再达 batch_max"会把未启动的定时任务误判为在途冲刷,
+        导致即时冲刷被跳过(实测:即时触发失效)。
+        """
+        if self._timer_task is not None and not self._timer_task.done():
+            return
+        self._timer_task = asyncio.create_task(self._timer())
+        self._flush_task = self._timer_task
 
     def _schedule_flush(self, immediate: bool = False) -> None:
-        if self._flush_task is not None and not self._flush_task.done():
+        """冲刷调度:immediate=True 只取消**待触发的定时窗口**并立刻冲刷(§18.5 64 条先到)。
+
+        在途冲刷(已取走缓冲、正在投递)绝不被取消 —— 其 ``while`` 循环会继续消费
+        当前缓冲,故此时无需另起任务。
+        """
+        if not immediate:
+            self._start_timer()
             return
-        self._flush_task = asyncio.create_task(self._flush() if immediate else self._timer())
+        timer = self._timer_task
+        if timer is not None and not timer.done():
+            timer.cancel()
+        self._timer_task = None
+        current = self._flush_task
+        if current is None or current is timer or current.done():
+            self._flush_task = asyncio.create_task(self._flush())
 
     async def _timer(self) -> None:
-        """定时窗口(50ms):到期冲刷缓冲。"""
+        """定时窗口(batch_window):到期冲刷缓冲。"""
+        me = asyncio.current_task()
         try:
             await asyncio.sleep(self.batch_window)
         finally:
-            self._flush_task = None
+            # 只清理"仍指向自己"的引用:期间若已调度了立即冲刷/新窗口,不得清别人的
+            if self._timer_task is me:
+                self._timer_task = None
+            if self._flush_task is me:
+                self._flush_task = None
         if self._buffer and not self._closed:
             await self._flush()
 
     async def _flush(self) -> None:
-        """冲刷缓冲 → 分发各观测扩展有界队列 → 批量投递。"""
-        if not self._buffer:
-            return
-        batch = self._buffer
-        self._buffer = []
-        for queue in list(self._observers.values()):
-            for ev in batch:
-                queue.put(ev)
-            await queue.deliver()
+        """冲刷缓冲 → 分发各观测扩展有界队列 → 批量投递。
+
+        循环消费到缓冲为空:投递期间新到达的事件(``accept`` 在 await 间隙追加)
+        由同一任务继续送达,避免"缓冲非空却无待触发任务"的滞留。
+        取缓冲是"拷贝 + 清空"的原子段(无 await),并发冲刷不会重复投递同一批。
+        """
+        while self._buffer:
+            batch = list(self._buffer)
+            self._buffer.clear()
+            for queue in list(self._observers.values()):
+                for ev in batch:
+                    queue.put(ev)
+                await queue.deliver()
 
     # ------------------------------------------------------------------
     # 可观测(丢弃计数随心跳上报,§15-A6)
@@ -246,22 +281,36 @@ class L3BatchSink:
         return sum(q.dropped for q in self._observers.values()) + self._buffer_dropped
 
     async def close(self) -> None:
-        """关闭(幂等):取消定时冲刷,尽力送达缓冲与各观测队列的未投递事件。
+        """关闭(幂等):停收新事件 → **等完在途冲刷** → 冲刷缓冲 → 逐观察者兜底投递。
 
-        先置 closed 拒绝新事件,再把缓冲分发入队并逐队列 deliver(投递失败
-        仅计数,不抛出 —— 关闭路径绝不阻断 shutdown;旁路 best-effort)。
+        只取消**定时窗口**;在途冲刷不取消而是 ``await`` 其完成(该批事件由它自己送达),
+        之后已入队但未投递的事件再由兜底循环送达 —— 旁路 best-effort,但"已接收事件
+        不因关闭而静默丢失"。
+
+        2026-09-10 执行后审计 D-2:此前把 ``_flush_task`` 直接置 ``None`` 而不 await,
+        而兜底循环因 ``queue.pending == 0`` 空转 ⇒ 已被 ``_flush`` 取走、正在投递的那批
+        事件被静默丢弃(shutdown 期单次投递最长可达 5s,窗口真实存在)。
         """
         if self._closed:
             return
         self._closed = True
-        if self._flush_task is not None and not self._flush_task.done():
-            self._flush_task.cancel()
-        self._flush_task = None
-        buffered, self._buffer = self._buffer, []
+        timer, self._timer_task = self._timer_task, None
+        if timer is not None and not timer.done():
+            timer.cancel()
+        inflight, self._flush_task = self._flush_task, None
         try:
+            if inflight is not None and not inflight.done():
+                try:
+                    await inflight
+                except asyncio.CancelledError:
+                    # 只吞"我们自己刚取消的定时窗口任务";外部取消 close() 必须放行
+                    if not inflight.cancelled():
+                        raise
+                except Exception as e:
+                    logger.warning("L3 关闭等待在途冲刷异常(best-effort): %s", e)
+            await self._flush()
             for queue in list(self._observers.values()):
-                for ev in buffered:
-                    queue.put(ev)
-                await queue.deliver()
+                if queue.pending:
+                    await queue.deliver()
         except Exception as e:
             logger.warning("L3 旁路关闭冲刷失败(best-effort,不阻断 shutdown): %s", e)
