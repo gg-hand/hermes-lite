@@ -1,13 +1,17 @@
-"""外壳路由:最小 /chat + /chat/stream(SSE 是事件流编码器)。"""
+"""外壳路由:最小 /chat + /chat/stream(SSE 是事件流编码器)+ 会话历史分页查询。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.transport import DEFAULT_PROTOCOL_VERSION
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -41,6 +45,7 @@ async def chat(request: Request, body: Dict[str, Any]):
     async with lock:
         text_parts: list[str] = []
         done_reason: Optional[str] = None
+        done_response: Optional[str] = None
         async for ev in pipeline.chat_stream(
             session_id, user_input, system=body.get("system")
         ):
@@ -48,13 +53,17 @@ async def chat(request: Request, body: Dict[str, Any]):
                 text_parts.append(ev.get("text", ""))
             elif ev.get("type") == "done":
                 done_reason = ev.get("termination_reason")
+                # 响应单一事实源 = done.response(与流式口径一致):拦截路径
+                # 无 text_delta,只有 done.response 有提示文案;loop 多轮的
+                # 全量 text_delta 拼接会混入中间轮文本(P2-1 回归锚定)
+                done_response = ev.get("response") or "".join(text_parts)
             elif ev.get("type") == "error":
                 return JSONResponse(
                     status_code=502,
                     content={"error": ev.get("message", "LLM 调用失败"), "session_id": session_id},
                 )
     return {
-        "response": "".join(text_parts),
+        "response": done_response or "".join(text_parts),
         "session_id": session_id,
         "termination_reason": done_reason,
     }
@@ -80,11 +89,13 @@ async def chat_stream(request: Request, body: Dict[str, Any]):
             async for ev in pipeline.chat_stream(
                 session_id, user_input, system=body.get("system")
             ):
-                # 事件 → SSE 帧(data: {json}\n\n);done/error 后结束
+                # 事件 → SSE 帧(data: {json}\n\n)
                 payload = json.dumps(ev, ensure_ascii=False)
                 yield f"data: {payload}\n\n"
-                if ev.get("type") in ("done", "error"):
-                    return
+                # 注意:done/error 后不得提前 return 关闭生成器 —— pipeline
+                # 契约是收尾事件之后还执行 after/on_error 终态钩子(观测扩展
+                # 落盘 audit.* 依赖);提前关闭会导致 after 永不触发。
+                # pipeline 在钩子执行完自然结束,循环随即退出。
 
     return StreamingResponse(
         event_source(),
@@ -156,7 +167,10 @@ async def reload(request: Request):
         )
     return {
         "reloaded": True,
-        "branches": [name for name, _ in registry.entries],
+        # registry.entries 是 (Branch, 配置段) 元组表 —— 取 Branch.name,
+        # 不能直接返回 Branch 实例(FastAPI 序列化会钻进 host_port/bus 触
+        # _thread.lock 不可编码 → 500;reload 本身在此前已完成)
+        "branches": [branch.name for branch, _ in registry.entries],
     }
 
 
@@ -178,8 +192,8 @@ async def health(request: Request):
         snap = getattr(store, "metrics_snapshot", None)
         if callable(snap):
             payload["storage_metrics"] = snap()
-    except Exception:
-        pass  # 降级:指标缺失不影响健康检查
+    except Exception as e:  # noqa: BLE001 - 降级:指标缺失不影响健康检查
+        logger.debug("存储指标不可用(降级,已忽略): %s", e)
     return JSONResponse(content=payload)
 
 

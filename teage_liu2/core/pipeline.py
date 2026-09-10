@@ -165,6 +165,10 @@ class ChatPipeline:
             extra=extra_base,
             revision=0,
         )
+        # 防陈旧快照:模式实例跨对话复用,final_snapshot 残留上一场对话终态
+        # (SetStop 短路/早期异常都发生在 run_stream 之前,不会经过其重置点)。
+        # 此处先归位为本次构建后快照;run_stream 进入后按推进点正常覆盖。
+        self._mode_instance.final_snapshot = snapshot
 
         # 3. 收口四连(§4.4):
         #    ① 注入声明收集(build_injections,注册序)
@@ -195,10 +199,13 @@ class ChatPipeline:
         try:
             if stop_reason is not None:
                 # SetStop 短路:跳过组装收口与 LLM,直接 done(intercepted,9 键齐整)
+                # on_error 语义(E2:拦截也触发 on_error):先给出可区分文案,
+                # 让观测扩展(audit.errors)能区分"拦截"与"真失败"
+                error_message = "对话被安全策略拦截"
                 yield {
                     "type": EV_DONE,
                     "session_id": session_id,
-                    "response": "对话已被枝干拦截",
+                    "response": "您的消息包含不允许的内容，已被安全策略拦截。请调整表述后再试。",
                     "messages": snapshot.messages,
                     "is_complete": False,
                     "termination_reason": TERMINATION_INTERCEPTED,
