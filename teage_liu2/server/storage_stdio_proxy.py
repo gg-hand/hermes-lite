@@ -33,6 +33,10 @@ PROTOCOL_VERSION = "0.1.0"
 _HANDSHAKE_TIMEOUT = 15.0
 #: close 时 bye 后等待子进程自行退出的超时(秒)
 _SHUTDOWN_TIMEOUT = 5.0
+#: P-7 缓冲阈值:达到即触发合帧(窗口兜底见 _flush_loop)
+_BUFFER_MAX = 32
+#: P-7 冲刷窗口(秒):后台守护线程的轮询间隔
+_FLUSH_INTERVAL = 0.025
 
 
 class _OpMetrics:
@@ -299,8 +303,8 @@ class _BackendConnection:
         if proc is not None and proc.returncode is None:
             try:
                 proc.kill()
-            except ProcessLookupError:
-                pass
+            except ProcessLookupError as e:  # noqa: BLE001 - 进程已退出
+                logger.debug("同步杀后端进程时已退出: %s", e)
 
     def _fail_pending(self, error: Exception) -> None:
         for fut in self._pending.values():
@@ -326,10 +330,24 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         self._ensured_sessions: set = set()
         self._ensured_lock = threading.Lock()
         self._metrics = _OpMetrics()
+        # P-7 双档聚合:background 档消息入缓冲,按窗口合帧发送;
+        # flush 档(log_message)直发,发送前先冲刷缓冲保 FIFO 序。
+        self._closed = False
+        self._msg_buffer: List[dict] = []
+        self._buffer_lock = threading.Lock()
+        self._batch_lock = threading.Lock()
+        self._flush_stop = threading.Event()
+        self._flusher = threading.Thread(
+            target=self._flush_loop, daemon=True, name="stdio-storage-flusher"
+        )
 
     def start(self) -> None:
-        """spawn + 握手(装配点调用;失败抛 = 启动失败)。"""
+        """spawn + 握手(装配点调用;失败抛 = 启动失败)。
+
+        冲刷线程在握手成功后启动——启动失败路径不留守护线程空转。
+        """
         self._conn.start()
+        self._flusher.start()
 
     # -- 内部:同步调用 → 内部 loop --------------------------------------
     def _call(self, op: str, payload: dict) -> Any:
@@ -390,6 +408,7 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         content_blocks: Optional[List[dict]] = None,
         message_type: Optional[str] = None,
     ) -> None:
+        self._drain_and_send()
         self._call("log_message", {
             "session_id": session_id, "role": role, "content": content,
             "tool_name": tool_name, "tool_call_id": tool_call_id,
@@ -398,10 +417,108 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
             "message_type": message_type,
         })
 
+    def log_message_buffered(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_name: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        token_count: int = 0,
+        is_error: bool = False,
+        reasoning: Optional[str] = None,
+        content_blocks: Optional[List[dict]] = None,
+        message_type: Optional[str] = None,
+    ) -> None:
+        """background 档消息写(P-7):payload 入缓冲,由合帧条件触发发送。
+
+        仅 background 档可走此路径——flush 档(断连不丢)必须调 log_message。
+        立即返回;真实发送失败在本方法不可见(background 语义),由
+        _drain_and_send 内降级重发 + error 日志兜底。
+        """
+        # 关停期守卫(评审 2026-09-10):代理已关闭时冲刷线程已停、连接已关,
+        # 入缓冲将永不发送——显式 error 日志,不静默丢弃(降级优先:不抛异常)
+        if self._closed:
+            logger.error(
+                "存储代理已关闭,背景消息写丢弃(session=%s, role=%s)",
+                session_id, role,
+            )
+            return
+        payload = {
+            "session_id": session_id, "role": role, "content": content,
+            "tool_name": tool_name, "tool_call_id": tool_call_id,
+            "token_count": token_count, "is_error": is_error,
+            "reasoning": reasoning, "content_blocks": content_blocks,
+            "message_type": message_type,
+        }
+        with self._buffer_lock:
+            self._msg_buffer.append(payload)
+            reach_max = len(self._msg_buffer) >= _BUFFER_MAX
+        if reach_max:
+            self._drain_and_send()
+
+    def _drain_and_send(self) -> None:
+        """冲刷缓冲:单帧 log_messages 发送;失败按类型分流处置(error 日志)。
+
+        batch 锁串行化"取走+发送"(冲刷线程/写线程/读路径/close 四方
+        竞争点),保证帧序 = 缓冲入队序;空缓冲为廉价无操作。
+
+        前提:缓冲 append 侧必须单线程(当前唯一来源 = StorageWriter 单写
+        线程经 pipeline._persist 调用);多 append 线程下"冲刷先于直发"的
+        窗口可能造成帧序反转。
+
+        失败分流(评审 2026-09-10):
+        - 超时:批量可能已在后端提交,逐条重发会产生重复消息且每条再等
+          一个超时(最坏 N×timeout 阻塞,可能落在 flush 前置路径)→ 只记
+          error,不降级。
+        - 连接已关闭:重发必然瞬时失败,无意义 → 只记 error。
+        - 其余(后端 ok:false 类,如元素非法):降级逐条重发,保住有效条目。
+        """
+        with self._batch_lock:
+            with self._buffer_lock:
+                items = self._msg_buffer
+                self._msg_buffer = []
+            if not items:
+                return
+            try:
+                self._call("log_messages", {"messages": items})
+            except TimeoutError as e:
+                logger.error(
+                    "存储批量消息写超时(%d 条),不降级重发(防重复/防阻塞): %s",
+                    len(items), e,
+                )
+            except Exception as e:
+                if self._closed or getattr(self._conn, "_closed", False):
+                    logger.error(
+                        "存储批量消息写失败(连接已关闭,%d 条),不重发: %s",
+                        len(items), e,
+                    )
+                    return
+                logger.error(
+                    "存储批量消息写失败(%d 条),降级逐条重发: %s", len(items), e
+                )
+                for item in items:
+                    try:
+                        self._call("log_message", item)
+                    except Exception as ie:
+                        logger.error(
+                            "存储消息降级重发失败(session=%s, role=%s): %s",
+                            item.get("session_id"), item.get("role"), ie,
+                        )
+
+    def _flush_loop(self) -> None:
+        """冲刷窗口守护线程:窗口到期缓冲非空即合帧发出。"""
+        while not self._flush_stop.wait(_FLUSH_INTERVAL):
+            try:
+                self._drain_and_send()
+            except Exception as e:
+                logger.error("存储消息窗口冲刷失败: %s", e)
+
     def get_session_messages(
         self, session_id: str, limit: Optional[int] = None,
         before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        self._drain_and_send()
         return self._call("get_session_messages", {
             "session_id": session_id, "limit": limit, "before_id": before_id,
         })
@@ -415,18 +532,38 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
     def search_messages(
         self, keyword: str, session_id: Optional[str] = None, limit: int = 20
     ) -> List[Dict[str, Any]]:
+        self._drain_and_send()
         return self._call("search_messages", {
             "keyword": keyword, "session_id": session_id, "limit": limit,
         })
 
     def metrics_snapshot(self) -> Dict[str, Dict[str, Any]]:
-        """per-op 耗时快照(/health 暴露;无数据返回空 dict)。"""
+        """per-op 耗时快照(/health 暴露;无数据返回空 dict)。
+
+        口径注意(P-7):``log_messages`` 计的是**帧数**(帧内条数不在此
+        统计,avg_ms 为整批耗时);``log_message`` 自双档起只统计 flush 档
+        直发 + 降级重发。单条成本不可由单键直读。
+        """
         return self._metrics.snapshot()
 
     # -- 生命周期 ------------------------------------------------------------
     def close(self) -> None:
-        """优雅关闭(幂等;registry.shutdown 会对同一实例调两次)。"""
+        """优雅关闭(幂等;registry.shutdown 会对同一实例调两次)。
+
+        先冲刷残留缓冲 → 停冲刷线程 → 关连接;冲刷失败仅 error 日志
+        (background 档语义,与现状 close 丢写队列一致,不放大)。
+        """
         with self._close_lock:
-            if self._conn._closed:
+            if self._closed:
                 return
-            self._conn.close()
+            self._closed = True
+        try:
+            self._drain_and_send()
+        except Exception as e:
+            logger.error("存储代理关闭前冲刷缓冲失败: %s", e)
+        self._flush_stop.set()
+        # join 冲刷线程:避免在途批次被关连接打断(降级噪声/丢失);超时
+        # 上限 = 单请求超时 + 余量(覆盖一次在途发送)
+        if self._flusher.is_alive():
+            self._flusher.join(timeout=self._request_timeout + 1.0)
+        self._conn.close()

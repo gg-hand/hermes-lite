@@ -81,7 +81,16 @@
           "type": "array",
           "items": { "$ref": "#/definitions/InvocationExpectation" }
         },
-        "final": { "$ref": "#/definitions/FinalExpectation" }
+        "final": { "$ref": "#/definitions/FinalExpectation" },
+        "error_codes": {
+          "type": "object",
+          "description": "错误码断言(§errors §6 三面模型):must_include / must_exclude 为 errors 域错误码字符串数组(含 transport 小写子命名空间码);事件面取 error 事件 code 字段,日志面取 `CODE: ` 前缀。",
+          "properties": {
+            "must_include": { "type": "array", "items": { "type": "string" } },
+            "must_exclude": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

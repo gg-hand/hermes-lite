@@ -6,6 +6,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 pub fn init_tables(conn: &Connection) -> Result<(), String> {
+    // 2026-09-10 定案(与 core/history.py 同步,P-4 语义条款⑨):DDL 不声明
+    // messages.session_id 的外键约束 —— SQLite 外键默认 OFF,声明不执行属误导;
+    // session 存在性由 ensure_session 调用契约保证。
+    // 理由写在代码注释而非 SQL 文本内,避免注释字样击穿文本化 schema 检查。
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
@@ -27,8 +31,7 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             attachments TEXT,
             message_type TEXT,
             reasoning TEXT,
-            content_blocks TEXT,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
+            content_blocks TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
@@ -48,7 +51,9 @@ pub fn ensure_session(conn: &Connection, p: &Value) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-pub fn log_message(conn: &Connection, p: &Value) -> Result<Value, String> {
+/// 单条插入(校验 + INSERT + updated_at 同步),不含事务边界——
+/// 供 log_message(独立事务)与 log_messages(P-7 批量同事务)复用。
+fn insert_message(conn: &Connection, p: &Value) -> Result<(), String> {
     let session_id = take_str(p, "session_id")?;
     let role = take_str(p, "role")?;
     let content = take_str(p, "content")?;
@@ -80,6 +85,28 @@ pub fn log_message(conn: &Connection, p: &Value) -> Result<Value, String> {
         params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn log_message(conn: &Connection, p: &Value) -> Result<Value, String> {
+    insert_message(conn, p)?;
+    Ok(Value::Null)
+}
+
+/// P-7 批量消息写:单事务原子(P-4 条款③范式)——任一元素非法/SQL 错
+/// 则整体回滚返回 ok:false,不产生部分写入。
+pub fn log_messages(conn: &Connection, p: &Value) -> Result<Value, String> {
+    let msgs = match p.get("messages") {
+        Some(Value::Array(a)) if !a.is_empty() => a,
+        _ => return Err("参数 messages 缺失或为空数组/非数组".into()),
+    };
+    // dispatch 为单线程串行处理(P-4 条款⑥),unchecked_transaction 的借用
+    // 放宽在并发化之前是安全的;若未来引入多线程须改回 transaction()。
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for m in msgs {
+        insert_message(&tx, m)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(Value::Null)
 }
 

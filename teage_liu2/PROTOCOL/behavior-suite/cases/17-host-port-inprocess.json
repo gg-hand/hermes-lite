@@ -33,10 +33,10 @@
         "payload": {
           "write_batch_ids": { "length": 2 },
           "query_limit_docs": { "length": 1 },
-          "cross_prefix_rejected": { "type": "boolean" },
-          "invoke_llm_ok": { "type": "boolean" },
-          "task_register_ok": { "type": "boolean" },
-          "task_cancel_ok": { "type": "boolean" }
+          "cross_prefix_rejected": true,
+          "invoke_llm_ok": true,
+          "task_register_ok": true,
+          "task_cancel_ok": true
         }
       }
     ],

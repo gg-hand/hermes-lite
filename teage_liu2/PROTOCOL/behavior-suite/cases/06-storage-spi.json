@@ -32,9 +32,9 @@
         "payload": {
           "write_batch_ids": { "length": 2 },
           "query_limit_docs": { "length": 1 },
-          "prefix_isolation": { "type": "boolean" },
-          "cross_prefix_rejected": { "type": "boolean" },
-          "illegal_kind_rejected": { "type": "boolean" }
+          "prefix_isolation": true,
+          "cross_prefix_rejected": true,
+          "illegal_kind_rejected": true
         }
       }
     ],

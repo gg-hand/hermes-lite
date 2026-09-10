@@ -254,6 +254,7 @@ core:
   max_snapshot_bytes: 2097152            # §15-A6 资源上限(独立配置项,防 DoS)
   max_message_bytes: 524288
   max_messages_per_conversation: 2000
+  extensions_root: data2/extensions   # 扩展安装根(2026-09-08 统一扩展目录树;仓库外)
   branches:                     # 枝干声明,顺序 = 注册顺序
     guardrails: { enabled: true }
     audit:                      # 异语言扩展(transport: stdio)
@@ -318,6 +319,7 @@ core.storage_provider.close()
 - **扩展访问宿主存储的唯一通道 = transport `storage_*` 消息**(§storage S-2):kind 必须带 `{extension_name}.` 前缀(§15-A3 读写隔离,跨前缀拒绝);同语言实现亦走消息冷路径(host_port),不得以对象引用访问;
 - 默认实现 `SQLiteStorageProvider`(单库多 kind,每 kind 一张 doc 表);
 - `MessageStore` = 消息级落盘契约(content_blocks JSON / token_count / reasoning / message_type),实现 `SQLiteHistoryStore`;
+- `HistoryStore` 查询签名:`get_session_messages(session_id, limit=None, before_id=None)` —— `limit` 取**最近** N 条(子查询倒序后正序返回);`before_id` 为向上翻页游标(`id < before_id`),与 `limit` 可组合;二者皆不传 = 全量正序(向后兼容)。2026-09-09 新增,2026-09-10 审计补录(实现视图同步);承载方 = 默认 SQLite 与 stdio 代理双通道(proxy 侧 `before_id` 与 Rust 后端同步实现);
 - **落盘时机(事件驱动,全部 SQLite 写经 StorageWriter 异步单写者,§18.1)**:user 前置(flush,断连不丢)→ step_end 落盘 assistant → tool_result 缓冲聚合落盘 user(配对 tool_use_id)→ finally 兜底;注入永不落盘。
 
 ---

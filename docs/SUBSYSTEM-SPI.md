@@ -185,6 +185,7 @@ StorageProvider(ABC)          # 通用持久化通道 —— 扩展接口
 - **全部 SQLite 写经 StorageWriter 异步单写者**(§18.1):user 前置 flush / 其余 background,事件循环零同步写;
 - **落盘时机(事件驱动)**:user 前置 → step_end 落盘 assistant(content_blocks)→ tool_result 缓冲聚合落盘 user(配对 tool_use_id)→ finally 兜底(断连不丢);**注入永不落盘**;
 - 历史读取窗口:最近 `history_window_messages`(默认 100)条;M2 condenser 做 token 预算 + 配对安全截断。
+- `HistoryStore` 查询签名:`get_session_messages(session_id, limit=None, before_id=None)` —— `limit` 取**最近** N 条,`before_id` 为向上翻页游标(`id < before_id`),二者可组合;不传 = 全量正序(向后兼容)。2026-09-09 新增、2026-09-10 补录;默认 SQLite 与 stdio 代理(含 Rust 后端)双通道同步实现。
 
 ---
 

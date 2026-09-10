@@ -1,0 +1,40 @@
+{
+  "id": "config-domain-21",
+  "protocol_version": "v1.0.0",
+  "description": "config 域契约(§config C-1/C-2): core 段严格校验 —— 合法配置通过、未知键拒绝(CONFIG_UNKNOWN_KEY)、mode/范围/注入层名非法拒绝(CONFIG_INVALID_VALUE);错误消息必须携带错误码(可读错误 + 可断言)。扩展段不在 core 域 schema 内(由扩展 setup 自校验)。",
+  "setup": {
+    "extensions": []
+  },
+  "inputs": {
+    "valid": {
+      "core": {
+        "mode": "loop",
+        "max_loops": 10,
+        "hook_timeout": 3.0,
+        "injection_budget_chars": { "PREFIX": 1000 }
+      }
+    },
+    "invalid": [
+      { "label": "unknown_key", "cfg": { "core": { "no_such_key": 1 } }, "code": "CONFIG_UNKNOWN_KEY" },
+      { "label": "bad_mode", "cfg": { "core": { "mode": "nope" } }, "code": "CONFIG_INVALID_VALUE" },
+      { "label": "range", "cfg": { "core": { "max_loops": 0 } }, "code": "CONFIG_INVALID_VALUE" },
+      { "label": "bad_layer", "cfg": { "core": { "injection_budget_chars": { "NOPE": 1 } } }, "code": "CONFIG_INVALID_VALUE" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      {
+        "type": "custom:config_result",
+        "payload": {
+          "valid_ok": true,
+          "all_invalid_carry_code": true,
+          "invalid_count": 4,
+          "observed_codes": ["CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE"]
+        }
+      }
+    ],
+    "error_codes": {
+      "must_include": ["CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE"]
+    }
+  }
+}

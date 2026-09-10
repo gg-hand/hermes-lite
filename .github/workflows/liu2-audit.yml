@@ -1,0 +1,54 @@
+name: liu2 audit
+
+# liu2 一致性审计门禁:协议行为套件 + 契约测试(计划 T6.3,用户 2026-09-10 批准)
+# 最小依赖策略:不安装整套 requirements.txt(paddleocr/chromadb 等重型依赖与审计
+# 无关,装入会显著拖慢并可能构建失败);但必须覆盖"模块级 import 全集"——
+#   pyyaml        ← core/config.py:24、core/extension_loader.py:21(模块级)
+#   python-dotenv ← core/config.py:25(模块级硬依赖;tests_core/test_config.py 与
+#                   套件用例 21 都会 import 它,缺则 pytest 与套件双双失败)
+#   jsonschema    ← requirements.txt:13 已声明(供套件用例 schema 校验)
+#   pytest        ← 契约测试
+
+on:
+  push:
+    paths:
+      - "teage_liu2/**"
+      - "storage-rust/**"
+      - "scripts/audit_liu2.ps1"
+      - ".github/workflows/liu2-audit.yml"
+  pull_request:
+    paths:
+      - "teage_liu2/**"
+      - "storage-rust/**"
+      - ".github/workflows/liu2-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: liu2-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyyaml jsonschema python-dotenv
+
+      - name: Protocol behavior suite (teage_liu2/PROTOCOL/behavior-suite)
+        run: python teage_liu2/PROTOCOL/behavior-suite/runner.py
+
+      - name: Contract tests (tests_core + tests_branches)
+        run: python -m pytest teage_liu2/tests_core teage_liu2/tests_branches -q

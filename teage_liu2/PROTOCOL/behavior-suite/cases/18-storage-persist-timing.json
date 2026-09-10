@@ -1,0 +1,44 @@
+{
+  "id": "storage-persist-18",
+  "protocol_version": "v1.0.0",
+  "description": "storage 域 S-1 落盘时机(§storage S-1): user 前置落盘(断连不丢) → step_end 落 assistant(content_blocks 在位) → tool_result 聚合落 user(message_type=tool_results) → 注入内容永不落盘。锚定单轮工具路径的落盘调用序与消息类型。【注】P-7 的 flush/background 双档属 experimental 机制(见 PENDING P-7),不在本黄金用例断言范围内 —— 档位由实现级测试 tests_core/test_persist_channels.py 覆盖。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_tools",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["on_tool_call"],
+        "capabilities": ["tool_executor"]
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-18",
+    "user_input": "请调用工具",
+    "tool_name": "echo",
+    "tool_input": { "x": 1 },
+    "ext_tools_result": "工具结果",
+    "ext_tools_injections": [
+      { "layer": "PREFIX", "content": "注入标记_不得落盘", "key": "tools.prefix" }
+    ]
+  },
+  "expected": {
+    "event_stream": [
+      { "type": "tool_use", "payload": { "name": "echo" } },
+      { "type": "tool_result", "payload": { "name": "echo" } },
+      { "type": "done", "payload": { "termination_reason": "normal", "is_complete": true } }
+    ],
+    "final": {
+      "termination_reason": "normal",
+      "persisted": {
+        "roles": ["user", "assistant", "user", "assistant"],
+        "message_types": [null, "assistant", "tool_results", "assistant"],
+        "has_blocks": [false, true, true, true],
+        "count": 4,
+        "text_blob": { "regex": "(?s)^(?!.*注入标记_不得落盘)" }
+      }
+    }
+  }
+}

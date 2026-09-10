@@ -24,6 +24,7 @@ fn run(b: &mut Backend, op: &str, p: &Value) -> Result<Value, String> {
         "delete" => crate::docs::delete(&b.conn, p),
         "ensure_session" => crate::history::ensure_session(&b.conn, p),
         "log_message" => crate::history::log_message(&b.conn, p),
+        "log_messages" => crate::history::log_messages(&b.conn, p),
         "get_session_messages" => crate::history::get_session_messages(&b.conn, p),
         "update_session_title" => crate::history::update_session_title(&b.conn, p),
         "get_session_title" => crate::history::get_session_title(&b.conn, p),

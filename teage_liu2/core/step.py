@@ -13,6 +13,12 @@ import asyncio
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from .errors import (
+    LLM_API_ERROR,
+    LLM_CANCELED,
+    LLM_STREAM_FAILED,
+    LLM_TIMEOUT,
+)
 from .llm import ActivityTimeout, LLMClient, StreamCancelled
 from .types import (
     EV_ERROR,
@@ -96,35 +102,41 @@ class StepExecutor:
                         content_blocks = ev.get("content_blocks", []) or []
                         usage = ev.get("usage")
         except ActivityTimeout:
-            logger.warning("LLM 响应超时(无输出 %s)", activity_timeout)
+            logger.warning("%s: LLM 响应超时(无输出 %s)", LLM_TIMEOUT, activity_timeout)
             yield {
                 "type": EV_ERROR,
                 "session_id": session_id,
                 "message": f"LLM 响应超时({activity_timeout}s 无输出)",
+                "code": LLM_TIMEOUT,
             }
             return
         except StreamCancelled:
-            logger.info("LLM 流被用户取消")
+            logger.info("%s: LLM 流被用户取消", LLM_CANCELED)
             yield {
                 "type": EV_ERROR,
                 "session_id": session_id,
                 "message": "对话已取消",
+                "code": LLM_CANCELED,
             }
             return
         except asyncio.TimeoutError:
-            logger.error("LLM 流式调用总超时(>%.1fs)", stream_total_timeout)
+            logger.error(
+                "%s: LLM 流式调用总超时(>%.1fs)", LLM_STREAM_FAILED, stream_total_timeout
+            )
             yield {
                 "type": EV_ERROR,
                 "session_id": session_id,
                 "message": f"LLM 响应超时(> {stream_total_timeout}s)",
+                "code": LLM_STREAM_FAILED,
             }
             return
         except Exception as e:
-            logger.error("LLM 调用失败: %s", e)
+            logger.error("%s: LLM 调用失败: %s", LLM_API_ERROR, e)
             yield {
                 "type": EV_ERROR,
                 "session_id": session_id,
                 "message": f"LLM 调用失败: {e}",
+                "code": LLM_API_ERROR,
             }
             return
 

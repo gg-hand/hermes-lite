@@ -22,6 +22,15 @@
         "CONFIG_UNKNOWN_KEY", "CONFIG_INVALID_VALUE", "CONFIG_MISSING_KEY"
       ]
     },
+    "TransportErrorCode": {
+      "type": "string",
+      "description": "transport 消息响应面错误码(errors 域子命名空间,见 errors.spec.md §5.1;与 core/transport.py ERR_* 逐字一致)。",
+      "enum": [
+        "invalid_frame", "unknown_message_type", "invalid_payload",
+        "kind_prefix_violation", "capability_not_declared", "unavailable",
+        "storage_failed", "llm_call_failed", "task_rejected", "internal_error"
+      ]
+    },
     "ErrorInfo": {
       "type": "object",
       "properties": {

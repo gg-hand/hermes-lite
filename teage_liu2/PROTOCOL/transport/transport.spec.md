@@ -28,6 +28,8 @@
 **行为条款 T-3（invoke_llm = 扩展调 LLM 唯一通道）**: payload 含 role/messages；走 LLMAdapter 直调，协议级防重入（不进钩子链）。
 **行为条款 T-4（task_* = 后台任务通道）**: payload = `{task_id, description}`（task_cancel = `{task_id}`）；后台任务归属扩展进程——宿主只登记（可观测/取消协调），不承载执行；扩展 teardown 时自取消其任务，宿主 shutdown 与热重载重建时 cancel_all 兜底。
 **行为条款 T-5（invoke_tool vs invoke_hook 分工）**: `invoke_hook` 为通用钩子调用（参数 = Invocation{hook, snapshot, args}，返回 ActionResult）；`invoke_tool` 为工具执行专用消息（payload 仅 name+input，**免快照序列化**），语义 = 扩展声明 `capabilities: [..., "tool_executor"]` 时 core 派发工具的首选通道；未声明 tool_executor 的扩展，工具执行退化为 invoke_hook(on_tool_call)；两种路径结果等价，仅传输开销不同。
+**错误响应面（2026-09-10 登记）**: 宿主对入站消息的失败响应形如 `{error: {code, message}}`，其 `code` 取自 **errors 域的小写子命名空间**（`invalid_frame` / `unknown_message_type` / `invalid_payload` / `kind_prefix_violation` / `capability_not_declared` / `unavailable` / `storage_failed` / `llm_call_failed` / `task_rejected` / `internal_error`），完整定义与枚举见 `errors.spec.md` §5.1 与 `errors.schema.json#/definitions/TransportErrorCode`。
+
 **行为条款 T-6（多扩展派发聚合）**: 工具派发按**注册序**遍历全部扩展（含 tool_executor 者走 `invoke_tool`，未含者走 `invoke_hook(on_tool_call)`），单个扩展不执行该工具（语义等价 NotImplemented）则继续下一扩展，全部均不执行 → `no_tool_executor` 友好终止——两种通道的"不执行"信号统一计入 no_tool_executor 判定。
 
 ## 5. 异语言扩展接入

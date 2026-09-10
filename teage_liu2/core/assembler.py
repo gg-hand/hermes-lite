@@ -10,8 +10,9 @@
 + 语义级校验**——首轮全量收口四连;后续轮 inject_round 全收集 → 增量收口;
 轮中钩子(post_tool_call/after_step)的 AppendMessage 应用后,同样在
 下一次送 LLM 前过增量收口。
-现状缺陷标注:现状 validate_messages 仅对话开头执行一次,每轮注入/追加
-不过校验——本模块为阶段 2 修复的真实缺陷(非平移项)。
+历史沿革:阶段 1 的 validate_messages 仅在对话开头执行一次、每轮注入/追加
+不过校验;阶段 2 引入本模块后,任何进入 LLM 的消息序列均过 merge + 语义校验
+(见 incremental_finalize),该缺陷已闭环。
 """
 
 from __future__ import annotations

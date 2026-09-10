@@ -107,6 +107,13 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
         """创建表结构与索引(若不存在),含旧库列迁移。"""
         with self._lock:
             cur = self.conn.cursor()
+            # 2026-09-10 定案:DDL 不声明 messages.session_id 的外键约束 ——
+            # SQLite 外键默认 OFF,声明而不启用属"声明不执行"的误导;
+            # session 存在性由调用契约保证(ensure_session 先于 log_message,
+            # core 侧由 pipeline._load_history_sync 保证)。
+            # 评估见 docs/plans/2026-09-10-T5.2幽灵外键约束-评估.md
+            # 说明:理由写在此处而非 SQL 文本内,避免注释中的 "FOREIGN KEY"
+            # 字样击穿基于文本的 schema 检查(schema 转储应保持无歧义)。
             cur.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -124,8 +131,7 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
                     tool_call_id TEXT,
                     token_count INTEGER DEFAULT 0,
                     is_error INTEGER DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                    created_at TEXT NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);

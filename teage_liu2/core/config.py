@@ -24,6 +24,11 @@ from typing import Any, Dict, Optional
 import yaml
 from dotenv import load_dotenv
 
+from .errors import (
+    CONFIG_INVALID_VALUE,
+    CONFIG_MISSING_KEY,
+    CONFIG_UNKNOWN_KEY,
+)
 from .modes import MODE_BARE, MODE_LOOP
 from .injection import _ALL_LAYERS
 from .types import RESOURCE_LIMITS
@@ -207,7 +212,7 @@ def validate_required_env_vars(config: dict) -> None:
     missing = [p for p in _CRITICAL_API_KEY_PATHS if not _get_nested(config, p)]
     if missing:
         raise ValueError(
-            f"关键 API Key 未配置(环境变量缺失):{', '.join(missing)}。\n"
+            f"{CONFIG_MISSING_KEY}: 关键 API Key 未配置(环境变量缺失):{', '.join(missing)}。\n"
             "请设置对应的环境变量或在 config.yaml 中使用 ${VAR_NAME} 占位符。"
         )
     for path in ("llm.consolidation_api_key", "security.api_key"):
@@ -314,18 +319,18 @@ class CoreConfig:
 
 def _require_int_range(value: Any, key: str, lo: int, hi: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"core.{key} 必须是整数,实际 {value!r}")
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: core.{key} 必须是整数,实际 {value!r}")
     if not (lo <= value <= hi):
-        raise ValueError(f"core.{key} 超出范围 [{lo}, {hi}]: {value}")
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: core.{key} 超出范围 [{lo}, {hi}]: {value}")
     return value
 
 
 def _require_float_range(value: Any, key: str, lo: float, hi: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"core.{key} 必须是数字,实际 {value!r}")
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: core.{key} 必须是数字,实际 {value!r}")
     value = float(value)
     if not (lo <= value <= hi):
-        raise ValueError(f"core.{key} 超出范围 [{lo}, {hi}]: {value}")
+        raise ValueError(f"{CONFIG_INVALID_VALUE}: core.{key} 超出范围 [{lo}, {hi}]: {value}")
     return value
 
 
@@ -345,31 +350,36 @@ def core_config_from(cfg: dict) -> CoreConfig:
     unknown = sorted(set(raw) - _CORE_ALLOWED_KEYS)
     if unknown:
         raise ValueError(
-            f"core 段包含未知配置键: {', '.join(unknown)}"
+            f"{CONFIG_UNKNOWN_KEY}: core 段包含未知配置键: {', '.join(unknown)}"
             f"(可用: {', '.join(sorted(_CORE_ALLOWED_KEYS))})"
         )
 
     mode = raw.get("mode", MODE_LOOP)
     if mode not in _CORE_VALID_MODES:
         raise ValueError(
-            f"core.mode 非法: {mode!r}(可选: {', '.join(_CORE_VALID_MODES)})"
+            f"{CONFIG_INVALID_VALUE}: core.mode 非法: {mode!r}"
+            f"(可选: {', '.join(_CORE_VALID_MODES)})"
         )
 
     system_prompt = raw.get("system_prompt")
     if system_prompt is not None and not isinstance(system_prompt, str):
-        raise ValueError(f"core.system_prompt 必须是字符串,实际 {system_prompt!r}")
+        raise ValueError(
+            f"{CONFIG_INVALID_VALUE}: core.system_prompt 必须是字符串,"
+            f"实际 {system_prompt!r}"
+        )
 
     budget = raw.get("injection_budget_chars")
     if budget is not None:
         if not isinstance(budget, dict):
             raise ValueError(
-                f"core.injection_budget_chars 必须是映射(层名 → 字符数),"
+                f"{CONFIG_INVALID_VALUE}: core.injection_budget_chars 必须是映射(层名 → 字符数),"
                 f"实际 {type(budget).__name__}"
             )
         unknown_layers = sorted(set(budget) - _INJECTION_LAYERS)
         if unknown_layers:
             raise ValueError(
-                f"core.injection_budget_chars 包含未知注入层: {', '.join(unknown_layers)}"
+                f"{CONFIG_INVALID_VALUE}: core.injection_budget_chars 包含未知注入层: "
+                f"{', '.join(unknown_layers)}"
                 f"(可用: {', '.join(sorted(_INJECTION_LAYERS))})"
             )
         for layer, chars in budget.items():
@@ -377,11 +387,17 @@ def core_config_from(cfg: dict) -> CoreConfig:
 
     branches = raw.get("branches", {})
     if not isinstance(branches, dict):
-        raise ValueError(f"core.branches 必须是映射,实际 {type(branches).__name__}")
+        raise ValueError(
+            f"{CONFIG_INVALID_VALUE}: core.branches 必须是映射,"
+            f"实际 {type(branches).__name__}"
+        )
 
     extensions_root = raw.get("extensions_root", "data2/extensions")
     if not isinstance(extensions_root, str) or not extensions_root.strip():
-        raise ValueError(f"core.extensions_root 必须是非空字符串,实际 {extensions_root!r}")
+        raise ValueError(
+            f"{CONFIG_INVALID_VALUE}: core.extensions_root 必须是非空字符串,"
+            f"实际 {extensions_root!r}"
+        )
 
     return CoreConfig(
         mode=mode,

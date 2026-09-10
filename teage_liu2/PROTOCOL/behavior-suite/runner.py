@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -37,6 +38,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from teage_liu2.core.actions import ToolDecision, make_action  # noqa: E402
+from teage_liu2.core.errors import ERROR_CODES  # noqa: E402
 from teage_liu2.core.event_stream import L3BatchSink  # noqa: E402
 from teage_liu2.core.hooks import Branch, HookChain  # noqa: E402
 from teage_liu2.core.injection import Injection  # noqa: E402
@@ -59,6 +61,11 @@ from teage_liu2.core.types import (  # noqa: E402
     EV_TOOL_USE,
 )
 from teage_liu2.tests_core.fake_llm import FakeLLMClient  # noqa: E402
+
+try:  # jsonschema 已在 requirements.txt:13 声明;缺失时降级(仅跳过用例结构校验)
+    import jsonschema
+except ImportError:  # pragma: no cover
+    jsonschema = None
 
 _CASES_DIR = os.path.join(os.path.dirname(__file__), "cases")
 
@@ -110,6 +117,176 @@ def _snapshot_fields(snapshot: Any) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 断言能力守卫:用例出现 runner 未实现的断言键 → 显式失败(绝不静默通过)
+# 2026-09-10 深度审计 F-1:此前 persisted / isolation 被静默忽略 → 假绿
+# ---------------------------------------------------------------------------
+_SUPPORTED_TOP_KEYS = {
+    "event_stream": None, "invocations": None, "final": None, "error_codes": None,
+}
+_SUPPORTED_FINAL_KEYS = {"termination_reason", "is_complete", "persisted"}
+_SUPPORTED_INVOCATION_KEYS = {
+    "hook", "extension", "order", "absent", "snapshot_assert", "actions_assert",
+    "isolation",
+}
+_SUPPORTED_EVENT_KEYS = {"type", "absent", "payload"}
+
+
+def _check_supported(expected: Dict[str, Any]) -> List[str]:
+    """校验 expected 只使用已实现的断言键;返回不支持项描述(空 = 通过)。"""
+    problems: List[str] = []
+    for key in expected:
+        if key not in _SUPPORTED_TOP_KEYS:
+            problems.append(f"expected.{key} 未被 runner 实现")
+    for key in (expected.get("final") or {}):
+        if key not in _SUPPORTED_FINAL_KEYS:
+            problems.append(f"expected.final.{key} 未被 runner 实现")
+    for item in expected.get("invocations") or []:
+        for key in item:
+            if key not in _SUPPORTED_INVOCATION_KEYS:
+                problems.append(f"expected.invocations[].{key} 未被 runner 实现")
+    for item in expected.get("event_stream") or []:
+        for key in item:
+            if key not in _SUPPORTED_EVENT_KEYS:
+                problems.append(f"expected.event_stream[].{key} 未被 runner 实现")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 错误码断言(事件面 error.code + 日志面 "CODE: " 前缀)
+# 2026-09-10 深度审计 F-3:errors 域 18 码此前在套件中 0 命中
+# ---------------------------------------------------------------------------
+_CODE_RE = re.compile(r"\b(?:" + "|".join(sorted(ERROR_CODES)) + r")\b")
+
+
+def _extract_codes(text: str) -> List[str]:
+    """从日志文本中提取 v1.0 错误码(按 errors.py 全集精确匹配)。"""
+    return _CODE_RE.findall(text or "")
+
+
+class _LogCapture(logging.Handler):
+    """捕获 teage_liu2 日志并提取错误码(错误码"日志面"断言用)。"""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.records.extend(_extract_codes(record.getMessage()))
+        except Exception:  # noqa: BLE001 - 捕获器自身绝不干扰对话
+            pass
+
+
+def _assert_error_codes(expected: Dict[str, Any], observed: List[str],
+                        captured: List[str]) -> List[str]:
+    """断言错误码的事件面 + 日志面覆盖(must_include / must_exclude)。"""
+    errors: List[str] = []
+    seen = list(dict.fromkeys(list(observed) + list(captured)))
+    for code in expected.get("must_include") or []:
+        if code not in seen:
+            errors.append(f"错误码 {code} 未出现(事件面+日志面均无), 实际={seen}")
+    for code in expected.get("must_exclude") or []:
+        if code in seen:
+            errors.append(f"错误码 {code} 不应出现, 实际={seen}")
+    return errors
+
+
+def _count_assertions(expected: Dict[str, Any]) -> int:
+    """统计用例的有效断言条数(空壳用例必须失败,见 _check_min_assertions)。"""
+    ec = expected.get("error_codes") or {}
+    return (
+        len(expected.get("event_stream") or [])
+        + len(expected.get("invocations") or [])
+        + len(expected.get("final") or {})
+        + len(ec.get("must_include") or [])
+        + len(ec.get("must_exclude") or [])
+    )
+
+
+def _check_min_assertions(expected: Dict[str, Any]) -> List[str]:
+    """空壳守卫(2026-09-10 评审 P-4):`expected` 为空或全是空容器 ⇒ 断言恒真。
+
+    此前这类用例会静默 PASS —— 与"禁止静默忽略"的套件纪律冲突。
+    """
+    if _count_assertions(expected) == 0:
+        return ["用例没有任何有效断言(expected 为空容器) —— 空壳用例一律失败"]
+    return []
+
+
+def _schema_errors(case: Dict[str, Any]) -> List[str]:
+    """按 suite.schema.json 校验用例结构(2026-09-10 评审 P-4)。
+
+    schema 此前从未被机器加载(schemas 只作文档);jsonschema 缺失时降级为不校验。
+    """
+    if jsonschema is None:
+        return []
+    schema_path = os.path.join(_CASES_DIR, "..", "suite.schema.json")
+    matcher_path = os.path.join(_CASES_DIR, "..", "matcher.schema.json")
+    try:
+        with open(schema_path, encoding="utf-8") as f:
+            suite = json.load(f)
+    except OSError as e:  # pragma: no cover - 仓库内文件应恒在
+        return [f"无法读取 suite.schema.json: {e}"]
+    try:
+        with open(matcher_path, encoding="utf-8") as f:
+            matcher = json.load(f)
+    except OSError:
+        matcher = {}
+    # 合并两份 schema 的内联文档并把外部 $ref 降级为内部引用 —— 避免使用
+    # 已弃用的 jsonschema.RefResolver(会向 stderr 打 DeprecationWarning,
+    # 进而被严格模式的 shell / 审计脚本判为失败)。
+    merged = _inline_external_refs({
+        "definitions": {
+            **(suite.get("definitions") or {}),
+            **(matcher.get("definitions") or {}),
+        },
+        **suite["definitions"]["TestCase"],
+    })
+    validator = jsonschema.Draft7Validator(merged)
+    return [
+        f"{'/'.join(str(p) for p in err.path) or '<root>'}: {err.message}"
+        for err in sorted(validator.iter_errors(case), key=lambda e: list(e.path))
+    ]
+
+
+def _inline_external_refs(obj: Any) -> Any:
+    """把 `matcher.schema.json#/definitions/X` 内联为 `#/definitions/X`。
+
+    用于避免 `jsonschema.RefResolver`（v4.18 起已弃用，会向 stderr 打警告）。
+    """
+    if isinstance(obj, dict):
+        return {
+            k: (
+                v.replace("matcher.schema.json#/definitions/", "#/definitions/")
+                if k == "$ref" and isinstance(v, str)
+                else _inline_external_refs(v)
+            )
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_inline_external_refs(v) for v in obj]
+    return obj
+
+
+def _persisted_view(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """落盘调用视图(供 expected.final.persisted 对拍)。
+
+    text_blob = 全部落盘内容的拼接(用于"注入永不落盘"类负断言:
+    正则 ``(?s)^(?!.*标记)`` 可断言整个拼接文本不含某标记)。
+    """
+    return {
+        "roles": [r.get("role") for r in records],
+        "channels": [r.get("channel") for r in records],
+        "contents": [r.get("content") for r in records],
+        "message_types": [r.get("message_type") for r in records],
+        # D1 契约:assistant/tool_results 必须携带 content_blocks(供 LLM 重建)
+        "has_blocks": [bool(r.get("has_blocks")) for r in records],
+        "text_blob": "\n".join(str(r.get("content") or "") for r in records),
+        "count": len(records),
+    }
+
+
+# ---------------------------------------------------------------------------
 # ScriptedBranch:按 inputs 行为脚本化的同语言扩展
 # ---------------------------------------------------------------------------
 class ScriptedBranch(Branch):
@@ -123,6 +300,8 @@ class ScriptedBranch(Branch):
         self._behaviors = behaviors
         self._invocations = invocations
         self.host_port = host_port
+        #: 抛错过的钩子名(isolation 断言用;抛错发生在 _record 之前)
+        self.raised: List[str] = []
 
     def implements(self, hook: str) -> bool:
         return hook in self._hooks_implemented
@@ -148,6 +327,13 @@ class ScriptedBranch(Branch):
     def _actions(self, key: str) -> List[Any]:
         return list(self._behaviors.get(key) or [])
 
+    def _maybe_raise(self, hook: str) -> None:
+        """isolation 用例:按 behaviors.raise_on 在钩子内抛错(验证 H-6 隔离)。"""
+        exc = (self._behaviors.get("raise_on") or {}).get(hook)
+        if exc is not None:
+            self.raised.append(hook)
+            raise exc
+
     async def setup(self, config: dict, host: Any) -> None:
         self._record("setup")
 
@@ -164,6 +350,7 @@ class ScriptedBranch(Branch):
         return items[0] if items else None
 
     async def before(self, snapshot: Any) -> List[Any]:
+        self._maybe_raise("before")
         actions = self._actions("before_actions")
         self._record("before", snapshot, actions=actions)
         return actions
@@ -187,16 +374,19 @@ class ScriptedBranch(Branch):
         return actions
 
     async def after_step(self, snapshot: Any, summary: Any) -> List[Any]:
+        self._maybe_raise("after_step")
         actions = self._actions("after_step_actions")
         self._record("after_step", snapshot, actions=actions)
         return actions
 
     async def after(self, snapshot: Any, response: Any) -> List[Any]:
+        self._maybe_raise("after")
         actions = self._actions("after_actions")
         self._record("after", snapshot, actions=actions)
         return actions
 
     async def on_error(self, snapshot: Any, error: Any) -> List[Any]:
+        self._maybe_raise("on_error")
         actions = self._actions("on_error_actions")
         self._record("on_error", snapshot, actions=actions)
         return actions
@@ -244,6 +434,12 @@ def _build_behaviors(name: str, inputs: Dict[str, Any], decl: Dict[str, Any]) ->
     # tool-path-modify:pre_modify_input → 声明 pre_tool_call 的扩展执行 modify 变形
     if "pre_modify_input" in inputs and "pre_tool_call" in hooks:
         b["pre_decision"] = {"decision": "modify", "input": inputs["pre_modify_input"]}
+    # isolation 用例:`<name>_raise_on`: {"before": "boom"} → 该钩子内抛错
+    raise_on = inputs.get(f"{name}_raise_on")
+    if raise_on:
+        b["raise_on"] = {
+            h: RuntimeError(f"脚本化异常:{h}") for h in raise_on
+        }
     return b
 
 
@@ -262,6 +458,11 @@ def _assert_event_stream(expected_events: List[Dict[str, Any]], actual_events: L
     absent_items = [e for e in expected_events if e.get("absent")]
     ordered_items = [e for e in expected_events if not e.get("absent")]
     actual_types = [e.get("type") for e in actual_events]
+    # 事件源契约 E-1:done/error 为终态事件,恰好一次(重复 = 实现缺陷)
+    for terminal in (EV_DONE, EV_ERROR):
+        n = actual_types.count(terminal)
+        if n > 1:
+            errors.append(f"终止事件 {terminal} 出现 {n} 次(契约要求恰好一次)")
     # absent:全程负断言
     for item in absent_items:
         if item["type"] in actual_types:
@@ -287,13 +488,24 @@ def _assert_event_stream(expected_events: List[Dict[str, Any]], actual_events: L
     return errors
 
 
-def _assert_invocations(expected_invocations: List[Dict[str, Any]], actual: List[Dict[str, Any]]) -> List[str]:
+def _assert_invocations(expected_invocations: List[Dict[str, Any]],
+                        actual: List[Dict[str, Any]],
+                        raised: Optional[List[str]] = None) -> List[str]:
     errors: List[str] = []
     for item in expected_invocations:
         hook, ext = item.get("hook"), item.get("extension")
         if item.get("absent"):
             if any(r.get("hook") == hook and r.get("extension") == ext for r in actual):
                 errors.append(f"负断言失败: {ext} 的 {hook} 不应被调用但发生了")
+            continue
+        iso = item.get("isolation")
+        if iso is not None:
+            # H-6 隔离断言:该扩展的该钩子抛错 → 被跳过并记录,对话不中断
+            # (抛错发生在 _record 之前,故该扩展不会出现在 actual 中)
+            if iso.get("error") and ext not in (raised or []):
+                errors.append(
+                    f"{ext} 期望钩子抛错被隔离,但未抛出(实际 raised={raised or []})"
+                )
             continue
         order = item.get("order")
         candidates = [i for i, r in enumerate(actual) if r.get("hook") == hook and r.get("extension") == ext]
@@ -319,7 +531,8 @@ def _assert_invocations(expected_invocations: List[Dict[str, Any]], actual: List
 
 
 def _assert_final(expected_final: Dict[str, Any], done_event: Optional[Dict[str, Any]],
-                  error_events: List[Dict[str, Any]]) -> List[str]:
+                  error_events: List[Dict[str, Any]],
+                  persisted_view: Optional[Dict[str, Any]] = None) -> List[str]:
     errors: List[str] = []
     if not expected_final:
         return errors
@@ -333,6 +546,16 @@ def _assert_final(expected_final: Dict[str, Any], done_event: Optional[Dict[str,
             errors.append(f"is_complete 不匹配: {done_event.get('is_complete')}")
         elif done_event is None and expected_final.get("is_complete"):
             errors.append("期望 is_complete=true 但无 done 事件")
+    if expected_final.get("persisted") is not None:
+        # storage S-1 落盘时机断言(§storage S-1):
+        if persisted_view is None:
+            errors.append(
+                "expected.final.persisted 出现在无落盘观测的用例类型中(该类型不支持)"
+            )
+        elif not match_value(expected_final["persisted"], persisted_view):
+            errors.append(
+                f"persisted 不匹配: expect={expected_final['persisted']} actual={persisted_view}"
+            )
     return errors
 
 
@@ -340,21 +563,46 @@ def _assert_final(expected_final: Dict[str, Any], done_event: Optional[Dict[str,
 # 临时存储
 # ---------------------------------------------------------------------------
 class _EphemeralStorage:
-    """临时 SQLite 存储(会话存根 + 日志落盘),用完删除。"""
+    """临时 SQLite 存储 + 落盘调用记录(用完删除)。
+
+    2026-09-10 深度审计 F-1:原实现 log_message 为空操作,导致 storage 域
+    S-1(落盘时机)无法被断言。现按调用序记录:
+      - channel="direct"   : flush 档(user 前置,断连不丢)
+      - channel="buffered" : background 档(assistant/tool_results,P-7 双档可选能力)
+    """
 
     def __init__(self) -> None:
         self._tmpdir = tempfile.mkdtemp(prefix="bs_runner_")
         self.db_path = os.path.join(self._tmpdir, "cases.db")
         self.provider = SQLiteStorageProvider(self.db_path)
+        self.records: List[Dict[str, Any]] = []
+        self.sessions: List[str] = []
 
     def ensure_session(self, sid: str) -> None:
-        pass
+        self.sessions.append(sid)
 
-    def get_session_messages(self, sid: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_session_messages(
+        self, sid: str, limit: Optional[int] = None, before_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         return []
 
-    def log_message(self, *a: Any, **kw: Any) -> None:
-        pass
+    def _record(self, channel: str, flush: bool, session_id: str, role: str,
+                content: str, kw: Dict[str, Any]) -> None:
+        self.records.append({
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "channel": channel,
+            "flush": flush,
+            "message_type": kw.get("message_type"),
+            "has_blocks": bool(kw.get("content_blocks")),
+        })
+
+    def log_message(self, session_id: str, role: str, content: str, **kw: Any) -> None:
+        self._record("direct", True, session_id, role, content, kw)
+
+    def log_message_buffered(self, session_id: str, role: str, content: str, **kw: Any) -> None:
+        self._record("buffered", False, session_id, role, content, kw)
 
     def close(self) -> None:
         try:
@@ -374,7 +622,8 @@ class _CaseResult:
         self.detail = detail
 
 
-async def _run_pipeline_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
+async def _run_pipeline_case(case: Dict[str, Any], verbose: bool,
+                             capture_codes: Optional[List[str]] = None) -> _CaseResult:
     case_id = case["id"]
     inputs = case.get("inputs") or {}
     expected = case.get("expected") or {}
@@ -432,6 +681,8 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool) -> _CaseResult
     await asyncio.sleep(0.15)
 
     errors: List[str] = []
+    errors += _check_supported(expected)
+    errors += _check_min_assertions(expected)
     if case_id.startswith("l1-invariant"):
         # L1 不变量:event_stream 的 absent 项(text_delta/reasoning_delta)对 L3 投递流断言;
         # done 项对外壳事件流断言(§3.2 三层事件流)
@@ -444,10 +695,25 @@ async def _run_pipeline_case(case: Dict[str, Any], verbose: bool) -> _CaseResult
             errors.append("l1-invariant: 期望外壳事件流 done(normal, is_complete=true)")
     else:
         errors += _assert_event_stream(expected.get("event_stream") or [], events)
-    errors += _assert_invocations(expected.get("invocations") or [], invocations)
+    errors += _assert_invocations(
+        expected.get("invocations") or [], invocations,
+        [
+            getattr(b, "name", "")
+            for b in getattr(hooks, "_branches", [])
+            if getattr(b, "raised", [])
+        ],
+    )
     done_event = next((e for e in events if e.get("type") == EV_DONE), None)
     error_events = [e for e in events if e.get("type") == EV_ERROR]
-    errors += _assert_final(expected.get("final") or {}, done_event, error_events)
+    errors += _assert_final(
+        expected.get("final") or {}, done_event, error_events,
+        _persisted_view(storage.records),
+    )
+    errors += _assert_error_codes(
+        expected.get("error_codes") or {},
+        [e.get("code") for e in error_events if e.get("code")],
+        capture_codes or [],
+    )
 
     storage.close()
     return _CaseResult(case_id, not errors, "; ".join(errors))
@@ -542,11 +808,14 @@ class _ForeverToolLLM(FakeLLMClient):
 # ---------------------------------------------------------------------------
 # 协议层用例执行(不经 pipeline,直接对拍宿主协议层)
 # ---------------------------------------------------------------------------
-async def _run_protocol_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
+async def _run_protocol_case(case: Dict[str, Any], verbose: bool,
+                             capture_codes: Optional[List[str]] = None) -> _CaseResult:
     case_id = case["id"]
     inputs = case.get("inputs") or {}
     expected = case.get("expected") or {}
     errors: List[str] = []
+    errors += _check_supported(expected)
+    errors += _check_min_assertions(expected)
     custom_events: List[Dict[str, Any]] = []
 
     if case_id.startswith("transport-frame"):
@@ -637,7 +906,9 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool) -> _CaseResult
         event_type = "custom:host_port_result" if case_id.startswith("host-port-inprocess") else "custom:storage_result"
         custom_events.append({"type": event_type, "payload": r})
         errors += _assert_event_stream(expected.get("event_stream") or [], custom_events)
-        errors += _assert_final(expected.get("final") or {}, {"type": EV_DONE, "is_complete": True}, [])
+        errors += _assert_final(
+            expected.get("final") or {}, {"type": EV_DONE, "is_complete": True}, [], None
+        )
         storage.close()
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -746,8 +1017,21 @@ async def _run_protocol_case(case: Dict[str, Any], verbose: bool) -> _CaseResult
     elif case_id.startswith("error-responsibility"):
         errors += await _run_error_matrix(case)
 
+    elif case_id.startswith("error-codes"):
+        errors += await _run_error_code_matrix(case)
+
+    elif case_id.startswith("config-domain"):
+        errors += await _run_config_case(case, custom_events)
+
     else:
         errors.append(f"未知用例类型: {case_id}")
+
+    # 错误码断言:事件面(用例 payload 内出现的码)+ 日志面(捕获的前缀码)
+    errors += _assert_error_codes(
+        expected.get("error_codes") or {},
+        _extract_codes(json.dumps(custom_events, ensure_ascii=False)),
+        capture_codes or [],
+    )
 
     return _CaseResult(case["id"], not errors, "; ".join(errors))
 
@@ -904,6 +1188,119 @@ async def _run_error_matrix(case: Dict[str, Any]) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# 20 错误码矩阵 / 21 config 域
+# ---------------------------------------------------------------------------
+async def _run_error_code_matrix(case: Dict[str, Any]) -> List[str]:
+    """20 错误码矩阵:按 scenarios 驱动各码的发射路径。
+
+    断言发生在 _run_protocol_case 末尾 —— 日志面由 _LogCapture 捕获
+    ("CODE: message" 前缀),事件面由 error 事件的 code 字段。
+    """
+    inputs = case.get("inputs") or {}
+    errors: List[str] = []
+
+    async def _drive(chain: HookChain, llm: Any, session_id: str) -> None:
+        storage = _EphemeralStorage()
+        try:
+            pipeline = ChatPipeline(
+                llm_client=llm, history_store=storage, hooks=chain,
+                max_loops=int(inputs.get("max_loops", 3) or 3), storage_writer=None,
+            )
+            async for _ in pipeline.chat_stream(session_id, "错误码矩阵"):
+                pass
+        finally:
+            storage.close()
+
+    for sc in inputs.get("scenarios") or []:
+        kind = sc.get("kind")
+        try:
+            if kind == "raise_on":  # HOOK_EXCEPTION
+                chain = HookChain()
+                chain.register(ScriptedBranch(
+                    "ext_boom",
+                    {"name": "ext_boom", "hooks_implemented": ["before"], "capabilities": []},
+                    {"raise_on": {sc.get("hook", "before"): RuntimeError("脚本化异常")}},
+                    [],
+                ))
+                await _drive(chain, _build_fake_llm({"llm_text_deltas": ["ok"]}), "s-20-exc")
+            elif kind == "terminal_action":  # HOOK_TERMINAL_ACTION_IGNORED
+                chain = HookChain()
+                chain.register(ScriptedBranch(
+                    "ext_terminal",
+                    {"name": "ext_terminal", "hooks_implemented": ["after"], "capabilities": []},
+                    {"after_actions": [make_action("SetSystem", text="被忽略")]},
+                    [],
+                ))
+                await _drive(chain, _build_fake_llm({"llm_text_deltas": ["ok"]}), "s-20-terminal")
+            elif kind == "tool_path_no_executor":  # TOOL_NO_EXECUTOR
+                chain = HookChain()
+                await _drive(chain, _build_fake_llm({"tool_name": "t"}), "s-20-noexec")
+            elif kind == "loop_max":  # LOOP_MAX_REACHED
+                chain = HookChain()
+                chain.register(ScriptedBranch(
+                    "ext_tools",
+                    {"name": "ext_tools", "hooks_implemented": ["on_tool_call"],
+                     "capabilities": ["tool_executor"]},
+                    {"tool_result": "executed"}, [],
+                ))
+                await _drive(chain, _ForeverToolLLM("t", {}), "s-20-loopmax")
+            else:
+                errors.append(f"未知错误码场景: {kind!r}")
+        except Exception as e:  # noqa: BLE001 - 矩阵驱动,异常计入用例结果
+            errors.append(f"场景 {kind} 驱动异常: {e}")
+    return errors
+
+
+async def _run_config_case(case: Dict[str, Any],
+                           custom_events: List[Dict[str, Any]]) -> List[str]:
+    """21 config 域:core 段严格校验对拍(码写入 payload 供事件面断言)。
+
+    custom_events 由调用方传入并就地追加 —— 错误码断言在 _run_protocol_case
+    末尾统一做(它扫描 custom_events 序列化文本取码)。
+    """
+    from teage_liu2.core.config import core_config_from
+
+    inputs = case.get("inputs") or {}
+    errors: List[str] = []
+    observed: List[str] = []
+
+    try:
+        cfg = core_config_from(inputs.get("valid") or {})
+        valid_ok = cfg.mode == "loop" and cfg.max_loops == 10
+    except Exception as e:  # noqa: BLE001 - 合法配置被拒 = 用例失败
+        valid_ok = False
+        errors.append(f"合法配置被拒: {e}")
+
+    all_carry = True
+    invalid = inputs.get("invalid") or []
+    for item in invalid:
+        try:
+            core_config_from(item["cfg"])
+            all_carry = False
+            errors.append(f"{item['label']}: 期望抛错但通过")
+        except ValueError as e:
+            found = _extract_codes(str(e))
+            observed.extend(found)
+            if item["code"] not in str(e):
+                all_carry = False
+                errors.append(f"{item['label']}: 错误消息未携带 {item['code']}: {e}")
+
+    custom_events.append({
+        "type": "custom:config_result",
+        "payload": {
+            "valid_ok": valid_ok,
+            "all_invalid_carry_code": all_carry,
+            "invalid_count": len(invalid),
+            "observed_codes": list(dict.fromkeys(observed)),
+        },
+    })
+    errors += _assert_event_stream(
+        (case.get("expected") or {}).get("event_stream") or [], custom_events
+    )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 async def run_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
@@ -912,11 +1309,18 @@ async def run_case(case: Dict[str, Any], verbose: bool) -> _CaseResult:
         "storage-spi-06", "transport-frame-10", "storage-prefix-transport-11",
         "invoke-llm-12", "l3-observe-13", "lifecycle-reload-14",
         "evolution-negotiation-15", "error-responsibility-16",
-        "host-port-inprocess-17",
+        "host-port-inprocess-17", "error-codes-20", "config-domain-21",
     }
-    if case_id in protocol_pipeline_ids:
-        return await _run_protocol_case(case, verbose)
-    return await _run_pipeline_case(case, verbose)
+    # 错误码"日志面"捕获(错误码断言的唯一日志通道)
+    capture = _LogCapture()
+    pkg_logger = logging.getLogger("teage_liu2")
+    pkg_logger.addHandler(capture)
+    try:
+        if case_id in protocol_pipeline_ids:
+            return await _run_protocol_case(case, verbose, capture.records)
+        return await _run_pipeline_case(case, verbose, capture.records)
+    finally:
+        pkg_logger.removeHandler(capture)
 
 
 async def main() -> int:
@@ -937,7 +1341,15 @@ async def main() -> int:
         path = os.path.join(_CASES_DIR, fname)
         with open(path, encoding="utf-8") as f:
             case = json.load(f)
-        result = await run_case(case, args.verbose)
+        schema_errors = _schema_errors(case)
+        if schema_errors:
+            # 用例结构必须自洽(语言无关交付物):违反 suite.schema.json 直接判失败
+            result = _CaseResult(
+                case.get("id", fname), False,
+                "用例结构违反 suite.schema.json: " + "; ".join(schema_errors),
+            )
+        else:
+            result = await run_case(case, args.verbose)
         results.append(result)
         status = "PASS" if result.ok else "FAIL"
         print(f"  [{status}] {result.case_id}" + (f"  <- {result.detail}" if not result.ok else ""))

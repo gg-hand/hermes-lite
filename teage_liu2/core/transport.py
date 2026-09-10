@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .errors import STORAGE_READ_FAILED, STORAGE_WRITE_FAILED
 from .hooks import CAP_LLM
 from .types import is_valid_extension_name, is_valid_kind
 
@@ -597,7 +598,15 @@ class TransportBus:
                 )
                 return {"result": {}}
         except Exception as e:
-            logger.error("storage_%s 失败(扩展 %s, kind=%s): %s", msg_type, extension_name, kind, e)
+            # 日志面错误码(§errors §6):写类 → STORAGE_WRITE_FAILED,其余 → STORAGE_READ_FAILED
+            code = (
+                STORAGE_WRITE_FAILED if msg_type == MSG_STORAGE_WRITE
+                else STORAGE_READ_FAILED
+            )
+            logger.error(
+                "%s: storage_%s 失败(扩展 %s, kind=%s): %s",
+                code, msg_type, extension_name, kind, e,
+            )
             return {"error": {"code": ERR_STORAGE_FAILED, "message": str(e)}}
         return {"error": {"code": ERR_UNKNOWN_MESSAGE, "message": msg_type}}
 

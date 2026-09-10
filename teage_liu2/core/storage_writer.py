@@ -29,6 +29,8 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from .errors import STORAGE_WRITE_FAILED
+
 logger = logging.getLogger(__name__)
 
 # 队列容量上限(§15-A6:防无界堆积;阈值进 types 域 schema 为协议常量)
@@ -164,8 +166,8 @@ class StorageWriter:
                 with self._dropped_lock:
                     self._dropped_count += 1
                 logger.error(
-                    "StorageWriter 队列已满(%d),丢弃最旧写操作(丢弃累计 %d)",
-                    self._max_queue_size, self._dropped_count,
+                    "%s: StorageWriter 队列已满(%d),丢弃最旧写操作(丢弃累计 %d)",
+                    STORAGE_WRITE_FAILED, self._max_queue_size, self._dropped_count,
                 )
                 if isinstance(oldest, _WriteTask):
                     oldest.resolve(
@@ -200,8 +202,8 @@ class StorageWriter:
                     except Exception as retry_e:
                         if attempt == _BACKGROUND_RETRIES:
                             logger.error(
-                                "StorageWriter background 写失败(重试 %d 次后): %r",
-                                _BACKGROUND_RETRIES, retry_e,
+                                "%s: StorageWriter background 写失败(重试 %d 次后): %r",
+                                STORAGE_WRITE_FAILED, _BACKGROUND_RETRIES, retry_e,
                             )
                             task.resolve(error=retry_e)
                             return

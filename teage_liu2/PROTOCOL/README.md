@@ -27,6 +27,10 @@
 
 `behavior-suite/` 是协议级语言无关黄金用例集（JSON），每个宿主实现运行同一套用例并报告通过率——v1.0 冻结前提 + 新宿主验收门槛 + 协议-实现漂移审计工具。
 
+**交付物边界（2026-09-10 明确）**：语言无关交付物 = `cases/*.json` + `suite.schema.json` + `matcher.schema.json`；`runner.py` 是**本实现的 Python 参考执行器**，允许依赖宿主实现（`teage_liu2/core/`）与其测试基础设施（`teage_liu2/tests_core/fake_llm.py`）——该依赖经用户 2026-09-10 授权（测试套件允许入库）显式化，非隐性耦合。
+
+**断言能力纪律（2026-09-10 起）**：runner 对**未实现的断言键一律显式失败**（`_check_supported`），禁止静默忽略——此前 `final.persisted` / `invocations[].isolation` 曾被静默跳过，形成"假绿"。
+
 ## 核心约束（速查）
 
 - `extension_name`: `^[a-z0-9_]+$`（禁点）

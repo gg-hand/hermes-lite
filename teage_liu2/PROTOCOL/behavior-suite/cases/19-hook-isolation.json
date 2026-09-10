@@ -1,0 +1,41 @@
+{
+  "id": "hook-isolation-19",
+  "protocol_version": "v1.0.0",
+  "description": "钩子异常隔离(§hooks H-6): before 钩子抛错的扩展被跳过并记日志(HOOK_EXCEPTION 前缀),不中断对话;其余扩展照常参与,对话以 done(normal) 收尾。",
+  "setup": {
+    "extensions": [
+      {
+        "name": "ext_boom",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      },
+      {
+        "name": "ext_ok",
+        "lang": "python",
+        "transport": "in-process",
+        "protocol_version": "v1.0.0",
+        "hooks_implemented": ["before"],
+        "capabilities": []
+      }
+    ]
+  },
+  "inputs": {
+    "session_id": "s-19",
+    "user_input": "隔离测试",
+    "ext_boom_raise_on": { "before": "boom" }
+  },
+  "expected": {
+    "invocations": [
+      { "hook": "before", "extension": "ext_boom", "isolation": { "error": true } },
+      { "hook": "before", "extension": "ext_ok" }
+    ],
+    "event_stream": [
+      { "type": "done", "payload": { "termination_reason": "normal", "is_complete": true } }
+    ],
+    "final": { "termination_reason": "normal", "is_complete": true },
+    "error_codes": { "must_include": ["HOOK_EXCEPTION"] }
+  }
+}

@@ -37,10 +37,10 @@
       {
         "type": "custom:llm_result",
         "payload": {
-          "llm_ext_success": { "type": "boolean" },
-          "plain_ext_rejected": { "type": "boolean" },
-          "unknown_role_fallback_main": { "type": "boolean" },
-          "concurrency_max": { "type": "integer" }
+          "llm_ext_success": true,
+          "plain_ext_rejected": true,
+          "unknown_role_fallback_main": true,
+          "concurrency_max": { "range": [1, 64] }
         }
       }
     ],

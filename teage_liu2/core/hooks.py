@@ -24,6 +24,7 @@ from abc import ABC
 from typing import Any, Dict, List, Optional, Tuple
 
 from .actions import Action, ActionResult, ToolDecision, validate_action
+from .errors import HOOK_EXCEPTION, HOOK_TIMEOUT
 from .injection import Injection, _dedupe_by_key
 from .snapshot import apply_action_batch
 from .types import Snapshot, StepSummary
@@ -230,11 +231,14 @@ class HookChain:
             )
         except asyncio.TimeoutError:
             logger.error(
-                "枝干 %s 的 %s 钩子超时(>%.1fs),跳过该枝干",
-                branch.name, hook_name, self.hook_timeout,
+                "%s: 枝干 %s 的 %s 钩子超时(>%.1fs),跳过该枝干",
+                HOOK_TIMEOUT, branch.name, hook_name, self.hook_timeout,
             )
         except Exception as e:
-            logger.error("枝干 %s 的 %s 钩子异常,跳过: %s", branch.name, hook_name, e)
+            logger.error(
+                "%s: 枝干 %s 的 %s 钩子异常,跳过: %s",
+                HOOK_EXCEPTION, branch.name, hook_name, e,
+            )
         return None
 
     # ------------------------------------------------------------------

@@ -21,9 +21,15 @@ core:
   history_window_messages: 100  # 1-10000
   injection_budget_chars:       # 分层预算(层名白名单)
     PREFIX: 8000
+  max_snapshot_bytes: 2097152   # 2 MiB(1MiB-256MiB,§types T-8 资源上限)
+  max_message_bytes: 524288     # 512 KiB(1KiB-16MiB)
+  max_messages_per_conversation: 2000   # 单次对话消息条数上限(§types T-8)
+  extensions_root: data2/extensions     # 扩展安装根(非空字符串,目录发现)
   branches:                     # 扩展声明, 顺序 = 注册顺序
     guardrails: { enabled: true }
 ```
+
+> **补录说明（2026-09-10）**：`max_snapshot_bytes` / `max_message_bytes` / `max_messages_per_conversation`（§types T-8 资源上限）与 `extensions_root`（2026-09-08 统一扩展目录树）此前实现已支持但本表遗漏，现补录。按 §3 演进规则，新增 core 配置键属 minor 演进面：`extensions_root` 与 manifest 规范一并登记于 PENDING **P-1**（涉及域含 config）；三个资源上限键**尚无 PENDING 条目**（其语义由 `types.spec.md` §7 的 T-8 条款承载），待 P-1 收口评审时一并决定是否登记。
 
 ## 3. 版本与演进
 

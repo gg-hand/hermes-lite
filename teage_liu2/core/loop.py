@@ -18,11 +18,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .assembler import incremental_finalize
 from .errors import (
+    LOOP_MAX_REACHED,
     TERMINATION_INTERCEPTED,
     TERMINATION_MAX_LOOPS,
     TERMINATION_NORMAL,
     TERMINATION_NO_TOOL_EXECUTOR,
     TERMINATION_USER_CANCEL,
+    TOOL_NO_EXECUTOR,
 )
 from .hooks import HookChain, no_executor
 from .llm import LLMClient
@@ -243,7 +245,8 @@ class ReactLoop:
                 if no_executor(result):
                     # 无枝干可执行:友好终止(保留已产出的文本)
                     logger.warning(
-                        "模型请求工具 %s 但无枝干执行,友好终止", tool_name
+                        "%s: 模型请求工具 %s 但无枝干执行,友好终止",
+                        TOOL_NO_EXECUTOR, tool_name,
                     )
                     cur = cur.with_messages(drop_trailing_orphan_tool_calls(cur.messages))
                     self.final_snapshot = cur
@@ -298,7 +301,7 @@ class ReactLoop:
                 return
 
         # max_loops 耗尽
-        logger.warning("React 循环达到最大次数 %d", self.max_loops)
+        logger.warning("%s: React 循环达到最大次数 %d", LOOP_MAX_REACHED, self.max_loops)
         cur = cur.with_messages(drop_trailing_orphan_tool_calls(cur.messages))
         self.final_snapshot = cur
         yield self._done(

@@ -138,9 +138,21 @@ def apply_action_batch(
 
     budget = _check_snapshot_budget(new_snapshot)
     if budget:
-        # 快照体积超限:已应用批次整体超限,记录(error 级)但对话继续
-        # (与 §15-A6 T-8 对齐:超限通道拒绝 + error 日志;语义由组装兜底)
-        logger.error("HOOK_INVALID_ACTION: %s", budget)
+        # §15-A6 T-8 × hooks H-8 一致性(2026-09-10 评审 FIX-1):
+        # 体积上限只拒绝**本批次的 append 类 action**(消息增长的主因,与消息级上限
+        # 的"逐条拒绝 + 其余照常应用"语义一致);set 类(SetStop / SetExtra /
+        # SetSystem / SetTools / ModifyToolSchema)一律保留 —— 其中 SetStop 承载
+        # 安全拦截语义,且 set 类不随轮次累积增长,不接受体积拒绝。
+        # 此前"整批回滚"的两处后果均已修复:①同批 [AppendMessage 超限, SetStop]
+        # 把拦截一起丢掉;②入参已超限时该会话此后所有钩子批次被永久拒绝。
+        set_names = [type(a).__name__ for a in valid if not isinstance(a, AppendMessage)]
+        safe = replace(new_snapshot, messages=list(snapshot.messages))
+        logger.error(
+            "HOOK_INVALID_ACTION: %s(本批次 append 类 action 已拒绝,set 类保留:%s)",
+            budget, set_names,
+        )
+        invalid.append(budget)
+        return safe, invalid
 
     return new_snapshot, invalid
 

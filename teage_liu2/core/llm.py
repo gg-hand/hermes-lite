@@ -911,8 +911,8 @@ class AsyncOpenAICompatBackend(AsyncBaseBackend):
         finally:
             try:
                 await stream.close()
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 - 关闭为尽力而为,不阻断主流程
+                logger.debug("关闭 LLM 流失败(已忽略): %s", e)
 
         content_blocks: List[Dict[str, Any]] = []
         full_text = "".join(full_text_parts)
@@ -1226,8 +1226,8 @@ class LLMClient:
                     if asyncio.iscoroutine(result):
                         try:
                             asyncio.get_running_loop().create_task(result)
-                        except RuntimeError:
-                            # 事件循环已关闭(进程退出中):连接由 GC 回收,忽略
-                            pass
+                        except RuntimeError as e:
+                            # 事件循环已关闭(进程退出中):连接由 GC 回收
+                            logger.debug("事件循环已关闭,LLM 客户端 close 协程未调度: %s", e)
                 except Exception as e:
                     logger.warning("关闭 LLM 客户端失败: %s", e)

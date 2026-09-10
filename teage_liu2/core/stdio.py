@@ -203,8 +203,8 @@ class StdioChannel:
                     self.request(MSG_SHUTDOWN, {"reason": reason}, timeout=shutdown_timeout),
                     timeout=shutdown_timeout,
                 )
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 - 优雅关闭为尽力而为,走终止兜底
+                logger.debug("stdio 通道 %s 优雅关闭失败(走终止兜底): %s", self.name, e)
         current_task = asyncio.current_task()
         for task in (self._read_task, self._heartbeat_task):
             if task is not None and task is not current_task:
@@ -212,8 +212,8 @@ class StdioChannel:
         if self._writer is not None:
             try:
                 self._writer.close()
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 - 关闭失败不影响后续终止兜底
+                logger.debug("stdio 通道 %s 关闭 stdin 失败(已忽略): %s", self.name, e)
         if self._proc is not None and self._proc.returncode is None:
             try:
                 self._proc.terminate()
@@ -221,10 +221,10 @@ class StdioChannel:
             except asyncio.TimeoutError:
                 try:
                     self._proc.kill()
-                except Exception:
-                    pass
-            except ProcessLookupError:
-                pass
+                except Exception as e:  # noqa: BLE001 - 进程可能已退出
+                    logger.debug("stdio 通道 %s kill 失败(进程可能已退出): %s", self.name, e)
+            except ProcessLookupError as e:  # noqa: BLE001 - 进程已退出,终止兜底无需处理
+                logger.debug("stdio 通道 %s terminate 时进程已退出: %s", self.name, e)
         if self._proc is not None:
             # Windows 下 asyncio subprocess transport 需显式关闭,
             # 否则事件循环关闭后 __del__ 触发 ResourceWarning(良性噪音)
@@ -232,8 +232,8 @@ class StdioChannel:
             if transport is not None:
                 try:
                     transport.close()
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 - 关闭 transport 为清理动作
+                    logger.debug("stdio 通道 %s 关闭 transport 失败(已忽略): %s", self.name, e)
         # 挂起请求失败送达(扩展退出)
         if self._pending is not None and not self._pending.done():
             self._pending.set_exception(StdioError(f"扩展进程 {self.name} 已关闭"))
@@ -322,7 +322,7 @@ class StdioChannel:
                     continue
                 await self._dispatch(frame)
         except asyncio.CancelledError:
-            pass
+            logger.debug("通道 %s 读循环被取消(正常关闭路径)", self.name)
         except Exception as e:
             logger.error("通道 %s 读循环异常: %s", self.name, e)
         finally:

@@ -25,7 +25,12 @@ from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .assembler import finalize_conversation
-from .errors import TERMINATION_INTERCEPTED, TERMINATION_NORMAL
+from .errors import (
+    HOOK_INVALID_ACTION,
+    STORAGE_WRITE_FAILED,
+    TERMINATION_INTERCEPTED,
+    TERMINATION_NORMAL,
+)
 from .event_stream import EventStream
 from .history import HistoryStore
 from .hooks import HookChain
@@ -220,11 +225,15 @@ class ChatPipeline:
                 injections, snapshot, budgets=self.injection_budget,
             )
             if problem:
-                logger.error("消息序列不合法(会话 %s): %s", session_id, problem)
+                logger.error(
+                    "%s: 消息序列不合法(会话 %s): %s",
+                    HOOK_INVALID_ACTION, session_id, problem,
+                )
                 yield {
                     "type": EV_ERROR,
                     "session_id": session_id,
                     "message": f"消息序列不合法: {problem}",
+                    "code": HOOK_INVALID_ACTION,
                 }
                 return
 
@@ -422,7 +431,13 @@ class ChatPipeline:
         消息级(D1):content_blocks 供 LLM 重建,content 纯文本保 FTS。
         """
         def _do() -> None:
-            self.history_store.log_message(
+            # background 档:实现声明双档能力(P-7 log_message_buffered)时
+            # 走缓冲由代理合帧;flush 档(断连不丢)与无该能力的实现
+            # (默认 SQLite)走 log_message 直发,行为不变。
+            target = self.history_store.log_message
+            if not flush:
+                target = getattr(self.history_store, "log_message_buffered", target)
+            target(
                 session_id, role, content,
                 content_blocks=content_blocks,
                 token_count=token_count,
@@ -436,8 +451,8 @@ class ChatPipeline:
                 _do()
             except Exception as e:
                 logger.error(
-                    "落盘失败(session=%s, role=%s, %d 字符): %s",
-                    session_id, role, len(content), e,
+                    "%s: 落盘失败(session=%s, role=%s, %d 字符): %s",
+                    STORAGE_WRITE_FAILED, session_id, role, len(content), e,
                 )
             return
         try:
@@ -447,8 +462,8 @@ class ChatPipeline:
                 writer.enqueue_background(_do)
         except Exception as e:
             logger.error(
-                "落盘入队失败(session=%s, role=%s, %d 字符): %s",
-                session_id, role, len(content), e,
+                "%s: 落盘入队失败(session=%s, role=%s, %d 字符): %s",
+                STORAGE_WRITE_FAILED, session_id, role, len(content), e,
             )
 
     # ------------------------------------------------------------------
