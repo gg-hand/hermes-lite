@@ -30,6 +30,7 @@ from ..core.storage_writer import StorageWriter
 from ..core.supervisor import Supervisor
 from ..core.tasks import TaskRegistry
 from ..core.transport import TransportBus
+from .host_components import load_host_components
 from .routes import router
 from .session_locks import SessionLocks
 
@@ -130,13 +131,20 @@ def create_app(
     # 1. LLM 客户端(失败抛错 = 启动失败)
     llm_client = LLMClient(config_path=config_path, config=cfg)
 
-    # 2. 历史存储(SQLite 默认;M1 独立库文件,避免与老库格式冲突)
+    # 1.5 统一扩展目录树(2026-09-08;P-6):扫描 → 校验声明 → 合并 stdio 字段。
+    #     须先于宿主组件装载:目录发现(options.extension)依赖 extension_specs
+    cfg, extension_specs, disabled_installed = wire_extensions(cfg)
+    if disabled_installed:
+        logger.info("已安装未启用扩展(安装 ≠ 激活): %s", ", ".join(disabled_installed))
+
+    # 2. 历史存储 + 存储平台:插槽制装载(P-5/P-6,设计 §4)。
+    #    host_components 未接管 = SQLite 默认,与既有行为完全一致
+    loaded_components = load_host_components(cfg, extension_specs)
     storage_cfg = cfg.get("storage", {}) or {}
     sqlite_path = storage_cfg.get("sqlite_path", "data2/sessions.db")
-    history_store = SQLiteHistoryStore(sqlite_path)
-
-    # 2.5 存储平台(D1):枝干通用落盘通道,与历史库同一文件(WAL 多连接安全)
-    storage_provider = SQLiteStorageProvider(sqlite_path)
+    history_store = loaded_components.get("history") or SQLiteHistoryStore(sqlite_path)
+    # 2.5 存储平台(D1):枝干通用落盘通道;接管时与 history 同对象(见 stdio-proxy)
+    storage_provider = loaded_components.get("storage") or SQLiteStorageProvider(sqlite_path)
 
     # 2.6 StorageWriter 异步单写者(§18.1):全部 SQLite 写经单一写队列,
     #     根治同步落盘阻塞事件循环;user flush / 其余 background
@@ -146,11 +154,6 @@ def create_app(
     #    工厂由装配层注册(registry 不 import 任何枝干实现)
     # F1/F2:core 段严格校验(未知键/类型/范围,失败 = 启动失败)
     core_config = core_config_from(cfg)
-
-    # 3.2 统一扩展目录树(2026-09-08):扫描 → 校验声明 → 合并 stdio 字段
-    cfg, extension_specs, disabled_installed = wire_extensions(cfg)
-    if disabled_installed:
-        logger.info("已安装未启用扩展(安装 ≠ 激活): %s", ", ".join(disabled_installed))
 
     # 3.5 编排容器(E4/E7):TaskRegistry 后台任务 + SessionStore 会话态
     task_registry = TaskRegistry()

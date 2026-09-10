@@ -382,7 +382,18 @@ entry: main.py             # language=python 必填,相对 manifest 目录
 capabilities: [observe]    # 必填(可空列表),值域 = observe | tool_executor | llm | self_hosted_storage
 description: ...           # 可选
 # requirements: [...]     # 可选,同语言第三方依赖声明(仅文档,宿主不自动安装)
+# kind: branch(缺省) | host-component   # P-6(2026-09-09,experimental)可选新增字段
+# slots: [storage, history]             # host-component 必填:可接管插槽(⊆ SLOTS 白名单)
 ```
+
+**P-6 宿主组件 backend 目录发现**(2026-09-09):manifest 新增可选 `kind` 字段(缺省
+`branch`,存量扩展零影响)。`kind: host-component` = 宿主组件 backend(如 Rust 存储
+后端 storage_rust),不作为枝干装载、不计入"已装未启用"统计;其 `slots` 必填且须覆盖
+请求插槽、`capabilities` 必须为空(钩子授权面不适用)、强制 `language: other` +
+`transport: stdio`;**core.branches 声明 host-component 扩展名 = 启动失败**。引用方式
+= host_components 的 `options.extension`(与 `options.command` 二选一),宿主按
+extensions_root 读 manifest 取 command(相对 manifest 目录解析),`options.args`
+追加启动参数(如 `--db`);首个用方见 `docs/plans/2026-09-09-rust存储后端扩展-设计.md`。
 
 **main.py 约定**(language=python):导出 `def create_branch(config: dict) -> Branch`;扩展只允许 import `teage_liu2.core` 的接口(hooks/actions/types 等纯数据契约),禁止 import core 实现内部模块与 `teage_liu2.server`;子模块/资源经 `__file__` 相对定位,装载器不污染 `sys.path`。
 

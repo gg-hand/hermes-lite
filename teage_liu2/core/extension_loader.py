@@ -30,6 +30,7 @@ _VALID_CAPABILITIES = frozenset({"observe", "tool_executor", "llm", "self_hosted
 _MANIFEST_ALLOWED_KEYS = frozenset({
     "name", "version", "language", "entry", "transport", "command",
     "protocol_version", "capabilities", "description", "requirements",
+    "kind", "slots",  # P-6: host-component 类型声明（storage_rust 后端）
 })
 _MANIFEST_NAME = "manifest.yaml"
 #: 扩展名规范(与 registry is_valid_extension_name 同源,设计 §3)
@@ -48,6 +49,8 @@ class ExtensionSpec:
     command: Optional[List[str]]      # other: 启动命令(相对路径待合并期解析)
     protocol_version: Optional[str]
     capabilities: List[str]
+    kind: str                         # branch(缺省) | host-component(P-6)
+    slots: List[str]                  # host-component: 可接管插槽;branch 恒为 []
     description: str
     requirements: List[str]
     path: str                         # manifest 所在目录(绝对路径字符串)
@@ -114,6 +117,21 @@ def parse_manifest(dir_path: Path) -> ExtensionSpec:
     bad = [c for c in capabilities if c not in _VALID_CAPABILITIES]
     _require(not bad, f"扩展 {name!r} capabilities 含非法值 {bad}(可用: {sorted(_VALID_CAPABILITIES)})")
 
+    kind = data.get("kind", "branch")
+    _require(kind in ("branch", "host-component"),
+             f"扩展 {name!r} kind 必须是 branch/host-component,实际 {kind!r}")
+    slots = data.get("slots", [])
+    _require(isinstance(slots, list) and all(isinstance(s, str) for s in slots),
+             f"扩展 {name!r} slots 必须是字符串列表")
+    if kind == "host-component":
+        _require(language == "other",
+                 f"host-component 扩展 {name!r} 必须是 language: other(stdio 子进程形态)")
+        _require(bool(slots), f"host-component 扩展 {name!r} 必须声明非空 slots")
+        _require(capabilities == [],
+                 f"host-component 扩展 {name!r} capabilities 必须为空(钩子授权面不适用)")
+    else:
+        _require(not slots, f"branch 扩展 {name!r} 不支持 slots 字段(P-6)")
+
     description = data.get("description", "")
     _require(isinstance(description, str), f"扩展 {name!r} description 必须是字符串")
     requirements = data.get("requirements", [])
@@ -130,6 +148,8 @@ def parse_manifest(dir_path: Path) -> ExtensionSpec:
         command=command,
         protocol_version=protocol_version,
         capabilities=list(capabilities),
+        kind=kind,
+        slots=list(slots),
         description=description,
         requirements=list(requirements),
         path=str(dir_path),
@@ -158,8 +178,8 @@ def discover_extensions(root: Path) -> Tuple[Dict[str, ExtensionSpec], Dict[str,
             logger.warning("扩展 %s manifest 非法: %s", child.name, e)
             continue
         specs[spec.name] = spec
-        logger.info("发现扩展 %s v%s (%s, capabilities=%s)",
-                    spec.name, spec.version, spec.language, spec.capabilities)
+        logger.info("发现扩展 %s v%s (kind=%s, %s, capabilities=%s)",
+                    spec.name, spec.version, spec.kind, spec.language, spec.capabilities)
     return specs, errors
 
 
@@ -224,7 +244,7 @@ def make_directory_loader(specs: Dict[str, ExtensionSpec]) -> Any:
     return loader
 
 
-def _resolve_command(command: List[str], base_dir: Path) -> List[str]:
+def resolve_command(command: List[str], base_dir: Path) -> List[str]:
     """command 相对路径 → 相对 manifest 目录解析(目录边界内才绝对化,防穿越)。
 
     目录内存在的路径 → 绝对路径;否则原样保留(如可执行名 python / 绝对路径)。
@@ -279,19 +299,49 @@ def wire_extensions(
             raise ValueError(
                 f"扩展 {name!r} 未安装(extensions_root={root} 下无 {name}/{_MANIFEST_NAME})"
             )
+        if specs[name].kind == "host-component":
+            raise ValueError(
+                f"扩展 {name!r} 是 host-component(宿主组件 backend),"
+                "不得声明在 core.branches(经 host_components 接管,P-6)"
+            )
     for name, raw in branches_cfg.items():
         if not isinstance(raw, dict) or not raw.get("enabled", True):
             continue
         spec = specs[name]
         if spec.language == "other" and "transport" not in raw:
             raw["transport"] = spec.transport
-            raw["command"] = _resolve_command(spec.command or [], Path(spec.path))
+            raw["command"] = resolve_command(spec.command or [], Path(spec.path))
             if spec.protocol_version:
                 raw.setdefault("protocol_version", spec.protocol_version)
 
     disabled_installed = sorted(
-        n for n in specs
-        if n not in branches_cfg
-        or (isinstance(branches_cfg.get(n), dict) and not branches_cfg[n].get("enabled", True))
+        n for n, s in specs.items()
+        if s.kind == "branch"
+        and (n not in branches_cfg
+             or (isinstance(branches_cfg.get(n), dict) and not branches_cfg[n].get("enabled", True)))
     )
     return merged, specs, disabled_installed
+
+
+def find_host_component(
+    specs: Dict[str, ExtensionSpec], name: str, slot: str
+) -> ExtensionSpec:
+    """供宿主组件装载器查询(P-6):校验存在/kind/slots 后返回 spec。
+
+    任一不满足 → ValueError(启动失败,不静默降级)。
+    """
+    spec = specs.get(name)
+    if spec is None:
+        raise ValueError(
+            f"host_component 引用的扩展 {name!r} 未安装"
+            "(extensions_root 下无该目录或 manifest)"
+        )
+    if spec.kind != "host-component":
+        raise ValueError(
+            f"扩展 {name!r} 的 manifest kind={spec.kind!r},不能作为宿主组件 backend 引用"
+        )
+    if slot not in spec.slots:
+        raise ValueError(
+            f"host-component 扩展 {name!r} 的 slots {spec.slots} 未声明插槽 {slot!r}"
+        )
+    return spec

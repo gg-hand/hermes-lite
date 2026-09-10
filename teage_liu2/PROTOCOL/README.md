@@ -19,6 +19,10 @@
 | `errors/` | 错误协议（终止原因 + 错误码全集 + 责任矩阵） | `errors.spec.md` / `errors.schema.json` |
 | `evolution/` | 演进机制（稳定面冻结 vs 演进面开放 + 三阶演进） | `evolution.spec.md` / `evolution.schema.json` |
 
+## 演进追踪
+
+候选/实验性协议元素（未入冻结面）统一记录在 [`PENDING.md`](./PENDING.md)：新扩展协议**先写 PENDING.md**，正式使用且迭代稳定后才更新进本目录契约（spec + schema + 行为套件用例 + VERSION），并在 PENDING.md"已并入记录"区登记。
+
 ## 行为套件（黄金用例集）
 
 `behavior-suite/` 是协议级语言无关黄金用例集（JSON），每个宿主实现运行同一套用例并报告通过率——v1.0 冻结前提 + 新宿主验收门槛 + 协议-实现漂移审计工具。

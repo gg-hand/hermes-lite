@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-09-09 Rust 存储后端扩展（首个异语言扩展 + 协议 P-6 登记）
+
+> 设计/执行计划见 `docs/plans/2026-09-09-rust存储后端扩展-设计.md` 与同名执行计划。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。
+
+- **新 crate `storage-rust/`（仓库内正式入库）**：teage-storage-rust 以 Rust 实现 P-4 storage-stdio 存储线协议（rusqlite bundled + 单线程同步循环 + WAL，schema 与 core 兼容），编译产物 + manifest 安装到 `data2/extensions/storage_rust/`（gitignore），作为正式扩展纳入统一扩展目录树。
+- **协议演进 P-6**：manifest 新增 `kind: host-component` + `slots` 字段，宿主组件 backend 与枝干扩展同样目录发现（VSCode 式）；host_components stdio-proxy 支持 `options.extension` 引用 + `options.args` 参数通道。P-4 语义条款增补⑧；P-2（异语言全链路实战验证）由本扩展兑现——e2e + 快速失败矩阵 6 项全过。
+- **注意**：扩展名白名单 `^[a-z0-9_]+$` 禁连字符，故扩展名为 `storage_rust`（crate/二进制名仍为 teage-storage-rust）。
+
 ## 2026-09-08 liu2 统一扩展目录树：扩展装载运行期化（跨系统架构变更）
 
 > 设计/实现计划见 `docs/plans/2026-09-08-统一扩展目录树-设计.md` 与同名实现计划（用户逐条定案）。teage_liu2 侧详情见 `teage_liu2/docs/plans/开发日志.md` 顶部。

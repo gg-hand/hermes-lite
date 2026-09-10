@@ -103,3 +103,7 @@ teage-liu/sv*.txt
 
 # ── teage_liu2 新系统 ──
 data2/
+
+# ── Rust 存储后端（只管理源文件：Cargo.toml / src / manifest.yaml / README）──
+storage-rust/target/
+storage-rust/Cargo.lock

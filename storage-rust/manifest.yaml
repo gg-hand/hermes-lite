@@ -1,0 +1,9 @@
+name: storage_rust
+version: 0.1.0
+kind: host-component
+slots: [storage, history]
+language: other
+transport: stdio
+command: [teage-storage-rust.exe]
+capabilities: []
+description: Rust 存储后端(P-4 storage-stdio 线协议实现,接管 storage+history 双插槽)
