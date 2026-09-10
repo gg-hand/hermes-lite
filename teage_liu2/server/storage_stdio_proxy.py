@@ -18,6 +18,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from ..core.history import HistoryStore
@@ -32,6 +33,38 @@ PROTOCOL_VERSION = "0.1.0"
 _HANDSHAKE_TIMEOUT = 15.0
 #: close 时 bye 后等待子进程自行退出的超时(秒)
 _SHUTDOWN_TIMEOUT = 5.0
+
+
+class _OpMetrics:
+    """per-op 耗时统计(线程安全轻量聚合,诊断/健康检查用,不改变行为)。
+
+    统计口径 = 宿主调用线程视角的端到端耗时(含线程投递 + IPC 往返)。
+    """
+
+    __slots__ = ("_lock", "_data")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._data: Dict[str, Dict[str, Any]] = {}
+
+    def record(self, op: str, duration_ms: float, ok: bool) -> None:
+        with self._lock:
+            d = self._data.setdefault(
+                op, {"count": 0, "total_ms": 0.0, "max_ms": 0.0, "errors": 0}
+            )
+            d["count"] += 1
+            d["total_ms"] += duration_ms
+            if duration_ms > d["max_ms"]:
+                d["max_ms"] = duration_ms
+            if not ok:
+                d["errors"] += 1
+
+    def snapshot(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {
+                op: {**d, "avg_ms": round(d["total_ms"] / d["count"], 3)}
+                for op, d in self._data.items()
+            }
 
 
 class _BackendConnection:
@@ -287,6 +320,12 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         self._request_timeout = request_timeout
         self._conn = _BackendConnection(command)
         self._close_lock = threading.Lock()
+        # 幂等短路:ensure_session 后端语义为 INSERT OR IGNORE(幂等),
+        # 同会话首次成功后进程内标记,后续调用零 IPC(P-1)。
+        # 仅成功后标记;连接断开 = 代理整体失效(不原地重建),集合不会失效。
+        self._ensured_sessions: set = set()
+        self._ensured_lock = threading.Lock()
+        self._metrics = _OpMetrics()
 
     def start(self) -> None:
         """spawn + 握手(装配点调用;失败抛 = 启动失败)。"""
@@ -294,7 +333,14 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
 
     # -- 内部:同步调用 → 内部 loop --------------------------------------
     def _call(self, op: str, payload: dict) -> Any:
-        return self._conn.request(op, payload, timeout=self._request_timeout)
+        t0 = time.perf_counter()
+        try:
+            result = self._conn.request(op, payload, timeout=self._request_timeout)
+        except Exception:
+            self._metrics.record(op, (time.perf_counter() - t0) * 1000.0, ok=False)
+            raise
+        self._metrics.record(op, (time.perf_counter() - t0) * 1000.0, ok=True)
+        return result
 
     # -- StorageProvider ---------------------------------------------------
     def write(self, kind: str, doc):
@@ -324,7 +370,12 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
 
     # -- HistoryStore / MessageStore ---------------------------------------
     def ensure_session(self, session_id: str) -> None:
+        with self._ensured_lock:
+            if session_id in self._ensured_sessions:
+                return
         self._call("ensure_session", {"session_id": session_id})
+        with self._ensured_lock:
+            self._ensured_sessions.add(session_id)
 
     def log_message(
         self,
@@ -367,6 +418,10 @@ class StdioStorageProxy(StorageProvider, HistoryStore, MessageStore):
         return self._call("search_messages", {
             "keyword": keyword, "session_id": session_id, "limit": limit,
         })
+
+    def metrics_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """per-op 耗时快照(/health 暴露;无数据返回空 dict)。"""
+        return self._metrics.snapshot()
 
     # -- 生命周期 ------------------------------------------------------------
     def close(self) -> None:

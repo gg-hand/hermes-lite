@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -105,6 +106,17 @@ class ChatPipeline:
             )
         self._mode_instance = mode_instances[mode]
 
+    def _load_history_sync(self, session_id: str) -> List[Dict[str, Any]]:
+        """同步读历史(仅限 to_thread 上下文调用,事件循环外执行)。
+
+        ensure_session 与 get_session_messages 合并为单次线程跳;
+        顺序契约:先 ensure 后 read(与原实现一致)。
+        """
+        self.history_store.ensure_session(session_id)
+        return self.history_store.get_session_messages(
+            session_id, limit=self.history_window_messages
+        ) or []
+
     async def chat_stream(
         self,
         session_id: str,
@@ -122,13 +134,12 @@ class ChatPipeline:
         ④ 兜底 —— finally:断连/异常时已产出的部分文本与工具结果也落盘
         落盘失败不阻断对话(logger.error,持久化是旁路,不静默)。
         """
-        # 1. 会话与历史
+        # 1. 会话与历史(to_thread:同步磁盘 IO 出事件循环,P-0 修正;
+        #    默认 SQLite 与 stdio 后端同时受益)
         #    顺序关键:先读历史,再落盘 user —— 若先落盘再读,本轮 user
-        #    会混入 history 导致当前输入重复
-        self.history_store.ensure_session(session_id)
-        raw_history = self.history_store.get_session_messages(
-            session_id, limit=self.history_window_messages
-        ) or []
+        #    会混入 history 导致当前输入重复(ensure→read 顺序在
+        #    _load_history_sync 内保持,read 先于下方 user 落盘)
+        raw_history = await asyncio.to_thread(self._load_history_sync, session_id)
         # ① user 立即落盘(此后断连/LLM 失败都不丢;事件流开始时库中即可见)
         #    flush 语义 = await commit(§18.1:保"断连不丢输入"契约)
         await self._persist(session_id, "user", user_input, flush=True)

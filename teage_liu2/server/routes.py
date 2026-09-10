@@ -161,13 +161,26 @@ async def reload(request: Request):
 
 
 @router.get("/health")
-async def health():
-    """健康检查(与项目健康检查约定对齐:curl -s http://127.0.0.1:8000/health)。
+async def health(request: Request):
+    """健康检查(与项目健康检查约定对齐:curl -s http://127.0.0.1:7878/health)。
 
     protocol_version 显式区分协议契约版本(PROTOCOL/ v1.0.0)与应用自身版本,
     避免与 app.version 混淆。
+    storage_metrics 仅 stdio 代理后端存在时出现(降级优先:任何异常不致
+    健康检查失败)。
     """
-    return JSONResponse(content={"status": "ok", "protocol_version": DEFAULT_PROTOCOL_VERSION})
+    payload: Dict[str, Any] = {
+        "status": "ok",
+        "protocol_version": DEFAULT_PROTOCOL_VERSION,
+    }
+    try:
+        store = request.app.state.pipeline.history_store
+        snap = getattr(store, "metrics_snapshot", None)
+        if callable(snap):
+            payload["storage_metrics"] = snap()
+    except Exception:
+        pass  # 降级:指标缺失不影响健康检查
+    return JSONResponse(content=payload)
 
 
 @router.get("/")
