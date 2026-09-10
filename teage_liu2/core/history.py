@@ -57,9 +57,12 @@ class HistoryStore(abc.ABC):
 
     @abc.abstractmethod
     def get_session_messages(
-        self, session_id: str, limit: Optional[int] = None
+        self,
+        session_id: str,
+        limit: Optional[int] = None,
+        before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """获取会话全部消息(按时间正序)。"""
+        """获取会话消息(按时间正序;before_id 游标向上翻页)。"""
 
     @abc.abstractmethod
     def update_session_title(self, session_id: str, title: str) -> None:
@@ -250,20 +253,28 @@ class SQLiteHistoryStore(HistoryStore, MessageStore):
             self.conn.commit()
 
     def get_session_messages(
-        self, session_id: str, limit: Optional[int] = None
+        self,
+        session_id: str,
+        limit: Optional[int] = None,
+        before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """获取会话全部消息(按时间正序)。
+        """获取会话消息(按时间正序)。
 
         limit = 历史读取窗口(D2):取**最近** N 条(子查询倒序取后正序返回)。
+        before_id = 向上翻页游标:只取 id < before_id 的消息(配合 limit
+        实现"最近 N 条 → 更早 N 条"的分页回放)。
         """
-        if limit is not None:
-            # 最近 N 条:先按 id 倒序 LIMIT,再正序返回
-            sql = (
-                "SELECT * FROM ("
-                "  SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
-                ") ORDER BY id ASC"
-            )
-            params: list = [session_id, limit]
+        if limit is not None or before_id is not None:
+            sql = "SELECT * FROM (SELECT * FROM messages WHERE session_id = ?"
+            params: list = [session_id]
+            if before_id is not None:
+                sql += " AND id < ?"
+                params.append(before_id)
+            sql += " ORDER BY id DESC"
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+            sql += ") ORDER BY id ASC"
         else:
             sql = "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC"
             params = [session_id]

@@ -1,170 +1,117 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>teage_liu2</title>
-<style>
-  :root {
-    --bg: #101418; --panel: #1a2027; --border: #2a323c;
-    --text: #e6ebf0; --muted: #8b98a5; --accent: #4f8cff;
-    --user-bg: #2b4a7a; --err: #e5534b;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg); color: var(--text);
-    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-    height: 100vh; display: flex; flex-direction: column;
-  }
-  header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
-  }
-  header .title { font-weight: 600; }
-  header .meta { color: var(--muted); font-size: 12px; margin-left: 12px; }
-  header button {
-    background: none; border: 1px solid var(--border); color: var(--muted);
-    padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
-  }
-  header button:hover { color: var(--text); border-color: var(--accent); }
-  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: var(--user-bg); }
-  .msg.bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); }
-  .msg.err { align-self: flex-start; background: var(--panel); border: 1px solid var(--err); color: var(--err); }
-  .status { align-self: flex-start; color: var(--muted); font-size: 12px; padding: 0 4px; }
-  footer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
-  #input {
-    flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: none; font-family: inherit;
-  }
-  #input:focus { outline: none; border-color: var(--accent); }
-  #send {
-    background: var(--accent); color: #fff; border: none; border-radius: 8px;
-    padding: 0 20px; cursor: pointer; font-size: 14px;
-  }
-  #send:disabled { opacity: .5; cursor: default; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>teage</title>
+  <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg">
+  <link rel="stylesheet" href="/ui/css/theme.css?v=20260909k">
 </head>
 <body>
-<header>
-  <div><span class="title">teage_liu2</span><span class="meta" id="meta"></span></div>
-  <button id="newSession">新会话</button>
-</header>
-<div id="log"></div>
-<footer>
-  <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-  <button id="send">发送</button>
-</footer>
-<script>
-const $log = document.getElementById('log');
-const $input = document.getElementById('input');
-const $send = document.getElementById('send');
-const $meta = document.getElementById('meta');
 
-let sessionId = localStorage.getItem('liu2_session');
-if (!sessionId) {
-  sessionId = 'user_' + Math.random().toString(16).slice(2, 14);
-  localStorage.setItem('liu2_session', sessionId);
-}
-$meta.textContent = 'session: ' + sessionId;
+<div class="sea" aria-hidden="true">
+  <div class="sea-swell-mask">
+  <div class="sea-swells">
+    <svg class="swell swell-1">
+      <defs>
+        <pattern id="swellPat1" width="560" height="360" patternUnits="userSpaceOnUse">
+          <path d="M0 90 Q50 62 100 90 Q180 126 260 90 Q330 60 400 90 Q480 122 540 90 Q550 84 560 90" fill="none" stroke="rgba(238,250,255,.7)" stroke-width="4" stroke-linecap="round"/>
+          <path d="M0 250 Q70 230 140 250 Q220 272 300 250 Q380 230 460 250 Q510 260 560 250" fill="none" stroke="rgba(255,255,255,.38)" stroke-width="2" stroke-linecap="round"/>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#swellPat1)"/>
+    </svg>
+    <svg class="swell swell-2">
+      <defs>
+        <pattern id="swellPat2" width="600" height="420" patternUnits="userSpaceOnUse">
+          <path d="M0 120 Q50 84 100 120 Q180 170 260 120 Q330 78 400 120 Q490 168 560 120 Q580 110 600 120" fill="none" stroke="rgba(240,252,255,.8)" stroke-width="5.5" stroke-linecap="round"/>
+          <path d="M0 320 Q60 298 120 320 Q200 344 280 320 Q360 298 440 320 Q520 342 560 320 Q580 314 600 320" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="2.5" stroke-linecap="round"/>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#swellPat2)"/>
+    </svg>
+    <svg class="swell swell-3">
+      <defs>
+        <pattern id="swellPat3" width="640" height="480" patternUnits="userSpaceOnUse">
+          <path d="M0 150 Q55 106 110 150 Q195 210 280 150 Q355 96 430 150 Q520 212 600 150 Q620 140 640 150" fill="none" stroke="rgba(244,253,255,.88)" stroke-width="8" stroke-linecap="round"/>
+          <path d="M0 390 Q60 366 120 390 Q200 416 280 390 Q360 366 440 390 Q530 414 600 390 Q620 384 640 390" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="3" stroke-linecap="round"/>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#swellPat3)"/>
+    </svg>
+  </div>
+  </div>
+  <div class="sea-bottom"></div>
+  <div class="sea-caustics-mask">
+    <svg class="sea-caustics-svg">
+      <filter id="causticF" x="0" y="0" width="100%" height="100%">
+        <feTurbulence type="turbulence" baseFrequency="0.014 0.02" numOctaves="3" seed="7" result="n">
+          <animate attributeName="baseFrequency" dur="26s" values="0.014 0.02;0.018 0.014;0.014 0.02" repeatCount="indefinite"/>
+        </feTurbulence>
+        <feColorMatrix in="n" type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  8 8 8 0 -12"/>
+        <feComponentTransfer><feFuncA type="gamma" amplitude="1.1" exponent="2.4" offset="0"/></feComponentTransfer>
+      </filter>
+      <rect width="100%" height="100%" filter="url(#causticF)"/>
+    </svg>
+  </div>
+  <div class="sea-glints g1"></div>
+  <div class="sea-glints g2"></div>
+  <div class="sea-shore"></div>
+  <div class="sea-swash"></div>
+  <div class="sea-foam"></div>
+  <div class="sea-sand"></div>
+</div>
 
-function addMsg(cls, text) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + cls;
-  div.textContent = text;
-  $log.appendChild(div);
-  $log.scrollTop = $log.scrollHeight;
-  return div;
-}
-function addStatus(text) {
-  const div = document.createElement('div');
-  div.className = 'status';
-  div.textContent = text;
-  $log.appendChild(div);
-  $log.scrollTop = $log.scrollHeight;
-  return div;
-}
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <img class="brand-icon" src="/ui/favicon.svg" alt="" width="26" height="26">
+        <div class="brand-text">
+          <h1>teage</h1>
+        </div>
+      </div>
+      <button class="icon-btn" id="btnNewSession" title="新建会话">+</button>
+    </div>
+    <div class="session-list" id="sessionList">
+      <div class="empty-state"><div class="empty-state-icon">≈</div><div class="empty-state-text">暂无会话<br>点击上方 + 新建</div></div>
+    </div>
+    <div class="sidebar-footer">teage · liu2 dev</div>
+  </aside>
 
-let busy = false;
-async function send() {
-  const text = $input.value.trim();
-  if (!text || busy) return;
-  busy = true; $send.disabled = true;
-  $input.value = '';
-  addMsg('user', text);
-  const bot = addMsg('bot', '');
-  let status = null;
+  <main class="main">
+    <div class="main-header">
+      <button class="menu-toggle" id="menuToggle" title="切换侧边栏">&#9776;</button>
+      <span class="session-title" id="sessionTitle">新会话</span>
+      <span class="termination-badge" id="terminationBadge" hidden></span>
+      <span class="connection-dot" id="connectionDot" title="连接状态"></span>
+    </div>
 
-  try {
-    const resp = await fetch('/chat/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, user_input: text }),
-    });
-    if (!resp.ok || !resp.body) {
-      const detail = await resp.text().catch(() => '');
-      throw new Error('HTTP ' + resp.status + ' ' + detail);
-    }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const frames = buf.split('\n\n');
-      buf = frames.pop();
-      for (const frame of frames) {
-        const line = frame.trim();
-        if (!line.startsWith('data:')) continue;
-        let ev;
-        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-        switch (ev.type) {
-          case 'text_delta':
-            bot.textContent += ev.text || '';
-            break;
-          case 'step_start':
-            status = addStatus('… 处理中');
-            break;
-          case 'step_end':
-          case 'tool_use':
-          case 'tool_result':
-            if (status) { status.remove(); status = null; }
-            break;
-          case 'done':
-            if (!bot.textContent) bot.remove();
-            break;
-          case 'error':
-            bot.className = 'msg err';
-            bot.textContent = ev.message || '服务端错误';
-            break;
-        }
-        $log.scrollTop = $log.scrollHeight;
-      }
-    }
-    if (status) status.remove();
-    if (!bot.textContent && bot.className === 'msg bot') bot.remove();
-  } catch (e) {
-    bot.className = 'msg err';
-    bot.textContent = '请求失败: ' + e.message;
-  } finally {
-    busy = false; $send.disabled = false; $input.focus();
-  }
-}
+    <div class="messages" id="messages">
+      <div class="welcome-screen" id="welcomeScreen">
+        <img class="logo-img" src="/ui/favicon.svg" alt="teage" width="64" height="64">
+        <div class="subtitle">teage</div>
+        <div class="hints">输入消息开始对话</div>
+      </div>
+    </div>
 
-$send.addEventListener('click', send);
-$input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-});
-$input.focus();
+    <div class="input-area">
+      <div class="input-area-row">
+        <div class="input-wrapper">
+          <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1"></textarea>
+          <button class="send-btn" id="sendBtn">发送</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
 
-document.getElementById('newSession').addEventListener('click', () => {
-  sessionId = 'user_' + Math.random().toString(16).slice(2, 14);
-  localStorage.setItem('liu2_session', sessionId);
-  $meta.textContent = 'session: ' + sessionId;
-  $log.innerHTML = '';
-});
-</script>
+<div class="toast" id="toast"></div>
+
+<!-- CDN: Markdown + DOMPurify -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="/ui/js/app.js?v=20260910a"></script>
+
 </body>
 </html>

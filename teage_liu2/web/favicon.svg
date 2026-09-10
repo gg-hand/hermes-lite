@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <!-- 主浪：蓝白渐变，整体半透明 -->
+    <linearGradient id="waveMain" gradientUnits="userSpaceOnUse" x1="0" y1="50" x2="0" y2="24">
+      <stop offset="0"    stop-color="#1878a6" stop-opacity="0.88"/>
+      <stop offset="0.45" stop-color="#3d9fc8" stop-opacity="0.8"/>
+      <stop offset="0.75" stop-color="#9fd9f0" stop-opacity="0.65"/>
+      <stop offset="1"    stop-color="#d8f2fc" stop-opacity="0.5"/>
+    </linearGradient>
+
+    <!-- 背层浪：更浅更透 -->
+    <linearGradient id="waveBack" gradientUnits="userSpaceOnUse" x1="0" y1="34" x2="0" y2="24">
+      <stop offset="0" stop-color="#bfe9fa" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.3"/>
+    </linearGradient>
+
+    <!-- 杯体描边：蓝白渐变，自下而上 -->
+    <linearGradient id="cupLine" gradientUnits="userSpaceOnUse" x1="0" y1="50" x2="0" y2="22">
+      <stop offset="0"    stop-color="#3d9fc8" stop-opacity="0.9"/>
+      <stop offset="0.55" stop-color="#9fd9f0" stop-opacity="0.8"/>
+      <stop offset="1"    stop-color="#ffffff" stop-opacity="0.85"/>
+    </linearGradient>
+
+    <!-- 杯体裁剪 -->
+    <clipPath id="cupClip">
+      <path d="M14 23 h32 v13 a12 12 0 0 1 -12 12 h-8 a12 12 0 0 1 -12 -12 z"/>
+    </clipPath>
+  </defs>
+
+  <!-- 杯内双层棱角浪 -->
+  <g clip-path="url(#cupClip)">
+    <polygon points="12,33 20,29 30,34 40,26 48,32 48,50 12,50" fill="url(#waveBack)"/>
+    <polygon points="12,36 22,29 31,36 40,28 48,34 48,50 12,50" fill="url(#waveMain)"/>
+  </g>
+
+  <!-- 杯体：蓝白渐变描边（单层，无叠色） -->
+  <path d="M14 23 h32 v13 a12 12 0 0 1 -12 12 h-8 a12 12 0 0 1 -12 -12 z"
+        fill="none" stroke="url(#cupLine)" stroke-width="1.8"/>
+
+  <!-- 把手：同渐变 -->
+  <path d="M46 27 h3 a5 5 0 0 1 0 10 H46"
+        fill="none" stroke="url(#cupLine)" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- 杯垫：淡蓝 -->
+  <line x1="21" y1="51" x2="39" y2="51" stroke="#a8ddf2" stroke-width="2.6" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- 蒸汽：白色透明渐变 -->
+  <linearGradient id="steam" gradientUnits="userSpaceOnUse" x1="0" y1="18" x2="0" y2="8">
+    <stop offset="0" stop-color="#ffffff" stop-opacity="0.85"/>
+    <stop offset="1" stop-color="#ffffff" stop-opacity="0.15"/>
+  </linearGradient>
+  <polyline points="25,17 28.5,13 25.5,9" fill="none" stroke="url(#steam)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="35,17 38.5,13 35.5,9" fill="none" stroke="url(#steam)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

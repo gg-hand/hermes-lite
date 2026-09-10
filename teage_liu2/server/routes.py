@@ -108,6 +108,38 @@ async def chat_stream(request: Request, body: Dict[str, Any]):
     )
 
 
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(
+    request: Request, session_id: str, limit: int = 30, before_id: Optional[int] = None
+):
+    """会话历史分页查询(前端回放)。
+
+    - limit:单页条数(默认 30,上限 200),取**最近** N 条,正序返回;
+    - before_id:向上翻页游标,只取 id < before_id 的更早消息;
+    - has_more = 本页取满 → 前端据此决定是否继续展示"加载更早"。
+
+    SQLite 同步 IO → asyncio.to_thread 包裹,不阻塞事件循环。
+    """
+    if limit < 1:
+        limit = 1
+    elif limit > 200:
+        limit = 200
+    store = _get_pipeline(request).history_store
+    try:
+        msgs = await asyncio.to_thread(
+            store.get_session_messages, session_id, limit, before_id
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, content={"error": f"历史读取失败: {e}"}
+        )
+    return {
+        "session_id": session_id,
+        "messages": msgs,
+        "has_more": len(msgs) == limit,
+    }
+
+
 @router.post("/reload")
 async def reload(request: Request):
     """热重载(§5 L-3 原子替换 + 回滚保旧链):supervisor.reload + pipeline 重绑钩子链。
@@ -206,6 +238,7 @@ async def index():
             "protocol_version": DEFAULT_PROTOCOL_VERSION,
             "endpoints": [
                 "POST /chat", "POST /chat/stream",
+                "GET /sessions/{session_id}/messages",
                 "POST /reload", "GET /health",
             ],
         }
